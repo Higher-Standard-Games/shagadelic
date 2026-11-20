@@ -184,6 +184,8 @@ Run `cargo build` and `node tests/control.test.mjs ./target/debug/shagadelic.exe
 
 **Implemented the Washoi event codec.** The decoder comes from `wash-fps-rust/src/shared/net/snapshot_events.rs` and uses the headless SHAGGER codec APIs. A snapshot fixture checks that a combat update and a match update survive decoding in wire order.
 
+**Implemented pilot input pacing.** The first Washoi behavior walks forward while its own entity is present and alive. The single-bot socket loop observes snapshots and wakes at the 8 ms input cadence. It caps ordinary catch-up at four commands, discards debt above 25 ticks, and pauses movement after 500 ms without a usable observation. A clock-controlled test covers those limits. The pilot temporarily paces input in the connection loop. Multi-bot integration will use the shared scheduler.
+
 | Change | Implementation | Acceptance |
 | --- | --- | --- |
 | 1. Host contract and Rust entry point | Trace the current Node runner launch, message ordering, and match teardown. Add the Cargo package and small `control` module with startup, readiness, shutdown, and diagnostics. Use a fake host to exercise the chosen framing. | The child reaches ready, stays alive in an empty lobby, and exits on shutdown or loss of the owner channel. Verify process cleanup on Windows and Linux. |

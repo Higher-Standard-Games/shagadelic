@@ -14,7 +14,7 @@ use tokio_tungstenite::{
     tungstenite::{Error as WebSocketError, Message},
 };
 
-use super::{Admission, AdmissionEvent, SnapshotReceiver};
+use super::{Admission, AdmissionEvent, SnapshotReceiver, WashoiEvents};
 
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
@@ -79,6 +79,40 @@ impl<C: EventCodec> Connection<C> {
             let frame = next_binary(&mut self.socket).await?;
             if let Some(state) = acknowledge(&mut self.socket, &mut self.snapshots, &frame).await? {
                 return Ok(state);
+            }
+        }
+    }
+}
+
+impl Connection<WashoiEvents> {
+    /// Drive the pilot behavior until this connection closes or the task is cancelled.
+    pub async fn play(&mut self, mut bot: super::super::BotPlayer) -> Result<(), AdmissionError> {
+        use super::super::behavior::INPUT_PERIOD;
+        use tokio::time::{Instant, MissedTickBehavior, interval};
+
+        let mut updates = interval(INPUT_PERIOD);
+        updates.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        loop {
+            tokio::select! {
+                // Process a selected frame to completion before polling either
+                // branch again. A movement deadline cannot interrupt its ACK.
+                frame = self.socket.next() => {
+                    match frame.transpose()? {
+                        Some(Message::Binary(frame)) => {
+                            if let Some(state) = acknowledge(&mut self.socket, &mut self.snapshots, &frame).await? {
+                                bot.observe(&state, Instant::now());
+                            }
+                        }
+                        Some(Message::Ping(_)) => self.socket.flush().await?,
+                        Some(Message::Close(_)) | None => return Ok(()),
+                        Some(_) => {}
+                    }
+                }
+                _ = updates.tick() => {
+                    for input in bot.inputs(Instant::now()) {
+                        self.send_input(input).await?;
+                    }
+                }
             }
         }
     }
