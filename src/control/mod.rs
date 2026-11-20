@@ -2,6 +2,9 @@ use std::io::{self, BufRead, Read, Write};
 
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "washoi")]
+mod washoi;
+
 const VERSION: u32 = 1;
 const MAX_RECORD_BYTES: usize = 64 * 1024;
 
@@ -10,6 +13,7 @@ struct Initialization {
     version: u32,
     lobby_id: String,
     pilot: Option<Pilot>,
+    washoi_endpoint: Option<String>,
 }
 
 #[cfg(feature = "washoi")]
@@ -29,6 +33,13 @@ type Pilot = serde_json::Value;
 enum Command {
     Initialize(Initialization),
     Shutdown,
+    #[cfg(feature = "washoi")]
+    Spawn(washoi::Spawn),
+    #[cfg(feature = "washoi")]
+    Remove {
+        id: String,
+        generation: u64,
+    },
 }
 
 #[derive(Serialize)]
@@ -63,8 +74,17 @@ pub fn run(mut reader: impl BufRead + Send + 'static, writer: &mut impl Write) -
         return Err(invalid("lobby ID is empty"));
     }
     #[cfg(not(feature = "washoi"))]
-    if init.pilot.is_some() {
+    if init.pilot.is_some() || init.washoi_endpoint.is_some() {
         return Err(invalid("Washoi support is disabled"));
+    }
+    #[cfg(feature = "washoi")]
+    if let Some(endpoint) = &init.washoi_endpoint {
+        if init.pilot.is_some() {
+            return Err(invalid("select either Washoi session or pilot"));
+        }
+        if !endpoint.starts_with("ws://") || endpoint.len() == 5 {
+            return Err(invalid("expected a plain WebSocket game endpoint"));
+        }
     }
 
     emit(
@@ -79,10 +99,14 @@ pub fn run(mut reader: impl BufRead + Send + 'static, writer: &mut impl Write) -
     if let Some(pilot) = init.pilot {
         return run_pilot(reader, writer, pilot);
     }
+    #[cfg(feature = "washoi")]
+    if let Some(endpoint) = init.washoi_endpoint {
+        return washoi::run(reader, writer, endpoint);
+    }
     await_shutdown(&mut reader, &mut record)
 }
 
-fn emit(writer: &mut impl Write, event: &Event<'_>) -> io::Result<()> {
+fn emit(writer: &mut impl Write, event: &impl Serialize) -> io::Result<()> {
     serde_json::to_writer(&mut *writer, event)?;
     writer.write_all(b"\n")?;
     writer.flush()
@@ -92,6 +116,8 @@ fn await_shutdown(reader: &mut impl BufRead, record: &mut Vec<u8>) -> io::Result
     match read_command(reader, record)? {
         Some(Command::Initialize(_)) => Err(invalid("lobby already initialized")),
         Some(Command::Shutdown) | None => Ok(()),
+        #[cfg(feature = "washoi")]
+        Some(_) => Err(invalid("command requires a Washoi session")),
     }
 }
 

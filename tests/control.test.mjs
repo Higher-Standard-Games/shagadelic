@@ -82,3 +82,42 @@ test("the lobby exits after its host is killed", options, async (t) => {
   assert.deepEqual(await closed, [null, "SIGKILL"]);
   await outputEnded;
 });
+
+const endpoint = process.env.SHAGADELIC_TEST_WASHOI;
+test("a Washoi child admits, removes, and replaces bots in one session", {
+  timeout: 15_000,
+  skip: !endpoint && "requires a local Washoi game server",
+}, async (t) => {
+  const { child, closed, lines } = start(t, executable, [], ["pipe", "pipe", "inherit"]);
+  const records = lines[Symbol.asyncIterator]();
+  async function event(type, id) {
+    for (;;) {
+      const { value, done } = await records.next();
+      if (done) assert.fail(`control channel closed before ${type}`);
+      const received = JSON.parse(value);
+      assert.notEqual(received.type, "bot_request_failed", JSON.stringify(received));
+      if (received.type === "bot_ended" && type !== "bot_ended") {
+        assert.fail(JSON.stringify(received));
+      }
+      if (received.type === type && received.id === id) return received;
+    }
+  }
+  write(child, { ...initialization, washoi_endpoint: endpoint });
+  assert.deepEqual(await event("ready"), ready);
+  write(child, { type: "spawn", id: "one", name: "SHAGADELIC one" });
+  const first = await event("bot_admitted", "one");
+  write(child, { type: "spawn", id: "two", name: "SHAGADELIC two" });
+  const second = await event("bot_admitted", "two");
+  assert.notEqual(first.player_id, second.player_id);
+  write(child, { type: "spawn", id: "one", name: "duplicate" });
+  assert.deepEqual(await event("bot_status", "one"), {
+    type: "bot_status", id: "one", generation: first.generation, status: "active",
+  });
+  write(child, { type: "remove", id: "one", generation: first.generation });
+  assert.equal((await event("bot_ended", "one")).reason, "removed");
+  write(child, { type: "spawn", id: "one", name: "SHAGADELIC replacement" });
+  const replacement = await event("bot_admitted", "one");
+  assert.ok(replacement.generation > first.generation);
+  write(child, { type: "shutdown" });
+  assert.deepEqual(await closed, [0, null]);
+});
