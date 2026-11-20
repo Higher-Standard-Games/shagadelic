@@ -40,3 +40,53 @@ fn rejection_ends_the_attempt_and_invalid_accept_does_not_advance_it() {
     ));
     assert!(admission.receive(PLAYER_ACCEPT, None).unwrap().is_none());
 }
+
+#[tokio::test]
+async fn websocket_admission_handles_success_and_close_between_accepts() {
+    use std::time::Duration;
+
+    use futures_util::{SinkExt, StreamExt};
+    use shagadelic::games::washoi::protocol::{AdmissionError, connect};
+    use tokio::net::TcpListener;
+    use tokio_tungstenite::{accept_async, tungstenite::Message};
+
+    let deadline = Duration::from_secs(5);
+    for finish in [true, false] {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("ws://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut socket = accept_async(tcp).await.unwrap();
+            let join = socket.next().await.unwrap().unwrap().into_data();
+            assert_eq!(&join[..], b"\x81\x03\x00bot\x01\x06\x00ticket");
+            socket
+                .send(Message::binary(SPECTATOR_ACCEPT))
+                .await
+                .unwrap();
+            let join_game = socket.next().await.unwrap().unwrap().into_data();
+            assert_eq!(&join_game[..], b"\x86\x00");
+            if finish {
+                socket.send(Message::binary(PLAYER_ACCEPT)).await.unwrap();
+            } else {
+                socket.close(None).await.unwrap();
+            }
+        });
+        let result = connect(
+            &endpoint,
+            "bot".into(),
+            Some("ticket".into()),
+            None,
+            deadline,
+        )
+        .await;
+        if finish {
+            assert_eq!(result.unwrap().identity.entity_id, "e");
+        } else {
+            assert!(matches!(result, Err(AdmissionError::Disconnected)));
+        }
+        tokio::time::timeout(deadline, server)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+}
