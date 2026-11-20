@@ -3,8 +3,9 @@ use std::time::Duration;
 use futures_util::{SinkExt, StreamExt};
 use shagger_shared::net::{
     DecodeError,
+    command::Command,
     game_state::GameState,
-    message_codec::{JoinAccept, MessageType, Welcome, peek_message_type},
+    message_codec::{JoinAccept, MessageType, Welcome, encode_command, peek_message_type},
     snapshot::EventCodec,
 };
 use tokio::net::TcpStream;
@@ -22,6 +23,17 @@ pub struct Connection<C: EventCodec> {
     pub welcome: Option<Welcome>,
     socket: Socket,
     snapshots: SnapshotReceiver<C>,
+    next_sequence: u32,
+}
+
+/// One Washoi input in world coordinates, produced by the game integration.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PlayerInput {
+    pub direction: [f64; 3],
+    pub pitch: f64,
+    pub yaw: f64,
+    pub buttons: u16,
+    pub weapon_slot: u8,
 }
 
 #[derive(Debug)]
@@ -31,6 +43,7 @@ pub enum AdmissionError {
     Rejected,
     Disconnected,
     TimedOut,
+    AwaitingSnapshot,
 }
 
 impl From<WebSocketError> for AdmissionError {
@@ -40,6 +53,26 @@ impl From<WebSocketError> for AdmissionError {
 }
 
 impl<C: EventCodec> Connection<C> {
+    /// Send input using the last accepted snapshot tick and connection sequence.
+    pub async fn send_input(&mut self, input: PlayerInput) -> Result<(), AdmissionError> {
+        let tick = self
+            .snapshots
+            .latest_tick()
+            .ok_or(AdmissionError::AwaitingSnapshot)?;
+        let command = Command {
+            direction: input.direction,
+            pitch: input.pitch,
+            yaw: input.yaw,
+            buttons: input.buttons,
+            tick,
+            weapon_slot: input.weapon_slot,
+        };
+        let bytes = encode_command(&self.identity.player_id, self.next_sequence, &command);
+        self.next_sequence = self.next_sequence.wrapping_add(1);
+        self.socket.send(Message::binary(bytes)).await?;
+        Ok(())
+    }
+
     /// Read the next reconstructed world state and ACK it on this connection.
     pub async fn next_snapshot(&mut self) -> Result<GameState<C::Event>, AdmissionError> {
         loop {
@@ -98,6 +131,7 @@ async fn admit<C: EventCodec>(
                     welcome,
                     socket,
                     snapshots,
+                    next_sequence: 0,
                 });
             }
             Some(AdmissionEvent::Rejected) => return Err(AdmissionError::Rejected),

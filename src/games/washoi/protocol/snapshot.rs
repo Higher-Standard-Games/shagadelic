@@ -31,6 +31,10 @@ impl<C: EventCodec> SnapshotReceiver<C> {
         }
     }
 
+    pub fn latest_tick(&self) -> Option<u32> {
+        self.history.back().map(|state| state.tick)
+    }
+
     /// Stale ticks and deltas with missing baselines return no state or ACK.
     pub fn receive(
         &mut self,

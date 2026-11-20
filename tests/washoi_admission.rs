@@ -46,8 +46,8 @@ async fn websocket_admission_handles_success_and_close_between_accepts() {
     use std::time::Duration;
 
     use futures_util::{SinkExt, StreamExt};
-    use shagadelic::games::washoi::protocol::{AdmissionError, connect};
-    use shagger_shared::net::snapshot::NoEvents;
+    use shagadelic::games::washoi::protocol::{AdmissionError, PlayerInput, connect};
+    use shagger_shared::net::{message_codec::decode_command, snapshot::NoEvents};
     use tokio::net::TcpListener;
     use tokio_tungstenite::{accept_async, tungstenite::Message};
 
@@ -79,6 +79,14 @@ async fn websocket_admission_handles_success_and_close_between_accepts() {
                 socket.send(Message::binary(delta)).await.unwrap();
                 let ack = socket.next().await.unwrap().unwrap().into_data();
                 assert_eq!(&ack[..], b"\x08\x0b\x00\x00\x00");
+                for expected_sequence in 0..2 {
+                    let input = socket.next().await.unwrap().unwrap().into_data();
+                    let (id, sequence, command) = decode_command(&input).unwrap();
+                    assert_eq!(id, "p");
+                    assert_eq!(sequence, expected_sequence);
+                    assert_eq!(command.tick, 11);
+                    assert_eq!(command.direction, [0.0, 0.0, 1.0]);
+                }
             } else {
                 socket.close(None).await.unwrap();
             }
@@ -103,6 +111,15 @@ async fn websocket_admission_handles_success_and_close_between_accepts() {
                 .unwrap()
                 .unwrap();
             assert_eq!(state.tick, 11);
+            for _ in 0..2 {
+                connection
+                    .send_input(PlayerInput {
+                        direction: [0.0, 0.0, 1.0],
+                        ..PlayerInput::default()
+                    })
+                    .await
+                    .unwrap();
+            }
         } else {
             assert!(matches!(result, Err(AdmissionError::Disconnected)));
         }

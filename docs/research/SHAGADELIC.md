@@ -180,6 +180,8 @@ Run `cargo build` and `node tests/control.test.mjs ./target/debug/shagadelic.exe
 
 **Implemented snapshot baseline tracking and ACKs.** The connection uses SHAGGER's headless decoder with a caller-supplied event codec. It ACKs accepted ticks on the socket, retains 128 baselines, and keeps one-tick events in the returned snapshot. A synthetic fixture verifies duplicates, malformed frames, missing and evicted baselines, and recovery on a full snapshot. The loopback test reconstructs a gameplay delta against a baseline received during admission. Washoi's event catalog, paced movement, process integration, and the live Washoi test remain.
 
+**Implemented typed movement submission.** The connection accepts a Washoi `PlayerInput` in world coordinates and attaches the playing identity, latest accepted snapshot tick, and incrementing command sequence. A loopback server decodes and verifies two movement frames. Tick pacing and action selection belong to the Washoi session and behavior layers.
+
 | Change | Implementation | Acceptance |
 | --- | --- | --- |
 | 1. Host contract and Rust entry point | Trace the current Node runner launch, message ordering, and match teardown. Add the Cargo package and small `control` module with startup, readiness, shutdown, and diagnostics. Use a fake host to exercise the chosen framing. | The child reaches ready, stays alive in an empty lobby, and exits on shutdown or loss of the owner channel. Verify process cleanup on Windows and Linux. |
