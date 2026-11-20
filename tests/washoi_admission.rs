@@ -47,6 +47,7 @@ async fn websocket_admission_handles_success_and_close_between_accepts() {
 
     use futures_util::{SinkExt, StreamExt};
     use shagadelic::games::washoi::protocol::{AdmissionError, connect};
+    use shagger_shared::net::snapshot::NoEvents;
     use tokio::net::TcpListener;
     use tokio_tungstenite::{accept_async, tungstenite::Message};
 
@@ -66,21 +67,42 @@ async fn websocket_admission_handles_success_and_close_between_accepts() {
             let join_game = socket.next().await.unwrap().unwrap().into_data();
             assert_eq!(&join_game[..], b"\x86\x00");
             if finish {
+                let mut full = vec![0; 28];
+                full[0] = 0x0b;
+                full[6] = 10;
+                socket.send(Message::binary(full)).await.unwrap();
+                let ack = socket.next().await.unwrap().unwrap().into_data();
+                assert_eq!(&ack[..], b"\x08\x0a\x00\x00\x00");
                 socket.send(Message::binary(PLAYER_ACCEPT)).await.unwrap();
+                let mut delta = vec![0; 28];
+                delta[..7].copy_from_slice(b"\x0b\x01\x0a\x00\x00\x00\x0b");
+                socket.send(Message::binary(delta)).await.unwrap();
+                let ack = socket.next().await.unwrap().unwrap().into_data();
+                assert_eq!(&ack[..], b"\x08\x0b\x00\x00\x00");
             } else {
                 socket.close(None).await.unwrap();
             }
         });
+        let mut admission_ticks = Vec::new();
         let result = connect(
             &endpoint,
             "bot".into(),
             Some("ticket".into()),
             None,
             deadline,
+            NoEvents,
+            |state| admission_ticks.push(state.tick),
         )
         .await;
         if finish {
-            assert_eq!(result.unwrap().identity.entity_id, "e");
+            let mut connection = result.unwrap();
+            assert_eq!(connection.identity.entity_id, "e");
+            assert_eq!(admission_ticks, [10]);
+            let state = tokio::time::timeout(deadline, connection.next_snapshot())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(state.tick, 11);
         } else {
             assert!(matches!(result, Err(AdmissionError::Disconnected)));
         }
