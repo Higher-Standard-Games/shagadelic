@@ -176,6 +176,8 @@ Run `cargo build` and `node tests/control.test.mjs ./target/debug/shagadelic.exe
 
 **Implemented embedded runtime.** `Runtime<S>` accepts a `GameSession`, caller-supplied elapsed time, and separate event, input, and decision budgets. Active entities have independent deadlines. Generation keys isolate late admission and disconnect events from replacement entities. Tests drive two entity types at different rates with a paused simulation clock and exercise cancellation, duplicate spawns, decision wakeups, and shutdown. The first playable milestone admits one Washoi bot through both join stages and sends movement the game server accepts.
 
+**Implemented Washoi admission framing.** The optional `washoi` feature uses the headless `shagger_shared` codec from a pinned revision. The admission state machine accepts binary frames from its caller and emits the JoinGame packet after spectator admission. Fixtures cover both acceptance stages, the bot flag and ticket on Join, malformed frames, and rejection. Run `cargo test --all-features` to include them. Socket ownership, snapshot decoding, paced movement, and the live Washoi test are the remaining pieces of this milestone.
+
 | Change | Implementation | Acceptance |
 | --- | --- | --- |
 | 1. Host contract and Rust entry point | Trace the current Node runner launch, message ordering, and match teardown. Add the Cargo package and small `control` module with startup, readiness, shutdown, and diagnostics. Use a fake host to exercise the chosen framing. | The child reaches ready, stays alive in an empty lobby, and exits on shutdown or loss of the owner channel. Verify process cleanup on Windows and Linux. |
