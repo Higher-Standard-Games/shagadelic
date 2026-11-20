@@ -4,6 +4,7 @@ use shagger_shared::net::game_state::GameState;
 use tokio::time::Instant;
 
 use super::WashoiNavigation;
+use super::navigation::RouteFollower;
 use super::protocol::{PlayerInput, SnapshotEvent};
 
 pub(crate) const INPUT_PERIOD: Duration = Duration::from_millis(8);
@@ -21,7 +22,7 @@ pub struct BotPlayer {
     started: Option<Instant>,
     sent: u64,
     navigation: Option<Arc<WashoiNavigation>>,
-    route: Option<(usize, usize)>,
+    route: RouteFollower,
     planned_input: PlayerInput,
 }
 
@@ -35,7 +36,7 @@ impl BotPlayer {
             started: None,
             sent: 0,
             navigation: None,
-            route: None,
+            route: RouteFollower::default(),
             planned_input: PlayerInput {
                 direction: [0.0, 0.0, 1.0],
                 ..PlayerInput::default()
@@ -72,7 +73,7 @@ impl BotPlayer {
         self.own_entity_present = own.is_some();
         if self.respawn_at.is_some() || !self.own_entity_present {
             self.started = None;
-            self.route = None;
+            self.route = RouteFollower::default();
         }
         if let Some(navigation) = &self.navigation {
             self.planned_input = PlayerInput::default();
@@ -82,12 +83,7 @@ impl BotPlayer {
                     .into_iter()
                     .all(f64::is_finite)
             {
-                if self.route.is_none() {
-                    self.route = navigation.route_at(position).map(|route| (route, 0));
-                }
-                if let Some((route, next)) = &mut self.route {
-                    self.planned_input = navigation.steer(*route, next, position);
-                }
+                self.planned_input = self.route.steer(navigation, position, now);
             }
         }
     }

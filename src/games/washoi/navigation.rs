@@ -1,9 +1,12 @@
+mod follower;
 mod graph;
 
 use serde::Deserialize;
 use shagger_shared::net::game_state::Vec3;
 
 use super::protocol::PlayerInput;
+
+pub(super) use follower::RouteFollower;
 
 const ENTRY_RADIUS: f64 = 48.0;
 const ARRIVAL_RADIUS: f64 = 16.0;
@@ -65,10 +68,11 @@ impl WashoiNavigation {
         &self.map
     }
 
-    pub(super) fn route_at(&self, position: Vec3) -> Option<usize> {
+    fn route_at(&self, position: Vec3, allowed: impl Fn(&Route) -> bool) -> Option<usize> {
         self.routes
             .iter()
             .enumerate()
+            .filter(|(_, route)| allowed(route))
             .filter(|(_, route)| (route.entry[1] - position.y).abs() <= MAX_HEIGHT_DELTA)
             .map(|(index, route)| (index, horizontal_distance(position, route.entry)))
             .filter(|(_, distance)| *distance <= ENTRY_RADIUS)
@@ -111,7 +115,9 @@ mod tests {
     fn baked_graph_uses_the_detour_instead_of_the_blocked_shortcut() {
         let baked = include_str!("../../../tests/fixtures/washoi_dm2_walk_graph.json");
         let routes: WashoiNavigation = serde_json::from_str(baked).unwrap();
-        let route = routes.route_at(Vec3::new(-184.0, 192.0, 288.0)).unwrap();
+        let route = routes
+            .route_at(Vec3::new(-184.0, 192.0, 288.0), |_| true)
+            .unwrap();
         assert_eq!(
             routes.routes[route].waypoints,
             [[-232.0, 192.0, 192.0], [-88.0, 192.0, 312.0],]
@@ -134,9 +140,9 @@ mod tests {
             ]}"#,
         )
         .unwrap();
-        let route = routes.route_at(Vec3::new(0.0, 0.0, 0.0)).unwrap();
+        let route = routes.route_at(Vec3::new(0.0, 0.0, 0.0), |_| true).unwrap();
         assert_eq!(route, 1);
-        assert_eq!(routes.route_at(Vec3::new(100.0, 0.0, 0.0)), None);
+        assert_eq!(routes.route_at(Vec3::new(100.0, 0.0, 0.0), |_| true), None);
         let mut next = 0;
         assert_eq!(
             routes

@@ -4,6 +4,7 @@ use super::Route;
 
 const MAX_NODES: usize = 256;
 const MAX_ENTRIES: usize = 32;
+const ROUTES_PER_ENTRY: usize = 3;
 
 #[derive(Deserialize)]
 pub(super) struct WalkGraph {
@@ -46,7 +47,7 @@ impl WalkGraph {
         let routes: Vec<_> = self
             .entries
             .iter()
-            .filter_map(|&entry| self.route_from(entry, &neighbors))
+            .flat_map(|&entry| self.routes_from(entry, &neighbors))
             .collect();
         if routes.is_empty() {
             return Err("navigation graph has no reachable goals");
@@ -54,27 +55,31 @@ impl WalkGraph {
         Ok(routes)
     }
 
-    fn route_from(&self, entry: usize, neighbors: &[Vec<usize>]) -> Option<Route> {
+    fn routes_from(&self, entry: usize, neighbors: &[Vec<usize>]) -> Vec<Route> {
+        let mut routes = Vec::new();
         let mut distances = vec![f64::INFINITY; self.nodes.len()];
-        let mut predecessor = vec![None; self.nodes.len()];
+        let mut predecessor: Vec<Option<usize>> = vec![None; self.nodes.len()];
         let mut settled = vec![false; self.nodes.len()];
         distances[entry] = 0.0;
-        loop {
-            let node = (0..self.nodes.len())
-                .filter(|&node| !settled[node] && distances[node].is_finite())
-                .min_by(|&a, &b| distances[a].total_cmp(&distances[b]))?;
+        while let Some(node) = (0..self.nodes.len())
+            .filter(|&node| !settled[node] && distances[node].is_finite())
+            .min_by(|&a, &b| distances[a].total_cmp(&distances[b]))
+        {
             if node != entry && self.goals.contains(&node) {
                 let mut waypoints = vec![self.nodes[node]];
-                let mut previous = predecessor[node]?;
+                let mut previous = predecessor[node].expect("reachable goal has predecessor");
                 while previous != entry {
                     waypoints.push(self.nodes[previous]);
-                    previous = predecessor[previous]?;
+                    previous = predecessor[previous].expect("reachable node has predecessor");
                 }
                 waypoints.reverse();
-                return Some(Route {
+                routes.push(Route {
                     entry: self.nodes[entry],
                     waypoints,
                 });
+                if routes.len() == ROUTES_PER_ENTRY {
+                    break;
+                }
             }
             settled[node] = true;
             for &next in &neighbors[node] {
@@ -85,6 +90,7 @@ impl WalkGraph {
                 }
             }
         }
+        routes
     }
 }
 

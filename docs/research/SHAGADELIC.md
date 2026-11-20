@@ -26,7 +26,7 @@ The current milestone is an **opt-in, playable Washoi bot service**. The bundled
 | Rollout | Ratings and match reports | Planned | Rust bot matches run unrated on the integration branches. Rating identity and match report parity are required before enabling rated play. |
 | Extensibility | Additional games and protocol adapters | Planned | The embeddable session boundary has tests. Washoi is the only real integration, and the generic protocol adapter interface remains a design sketch. |
 
-The next navigation milestone is **recovering from a blocked or displaced route**. Static collision-aware detours work on one map. The bot needs to detect a stall, stop, and select another usable route before it can pursue goals reliably.
+**Initial route recovery is implemented.** A bot stops after 800 ms without enough progress, temporarily avoids the failed segment, and tries an alternative route if it is still near a usable entry. A large displacement discards the active route and allows a fresh attachment. Baked graphs provide up to three reachable goals per entry. Recovery from arbitrary positions and live collision checks remain open.
 
 ## Washoi process ownership
 
