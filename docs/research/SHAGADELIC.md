@@ -194,6 +194,8 @@ The live movement test passed on Windows against the TypeScript Washoi server on
 
 **Implemented dynamic Washoi control.** Use `"washoi_endpoint":"ws://127.0.0.1:7777"` in the initialization record to start an empty session. A `spawn` record carries `id`, `name`, and optional `ticket` and `team`. The child reports `bot_status` with the generation and pending or active status, then `bot_admitted` with the playing ID or `bot_ended` with a reason. A `remove` record addresses an ID and generation. Invalid requests receive `bot_request_failed`. A repeated spawn for a live ID returns its current status. A replacement gets a new generation. The Node control suite exercised two simultaneous bots, removal, and replacement against the live server. Set `SHAGADELIC_TEST_WASHOI` to include this case when running the control suite with the Washoi-enabled binary.
 
+The bot suppresses movement on death and waits 2.5 seconds before sending a respawn request. It retries at the same interval while fresh snapshots still show it as dead and resets pacing on confirmed respawn. A clock-controlled test covers the dead, stale, and revived states.
+
 | Change | Implementation | Acceptance |
 | --- | --- | --- |
 | 1. Host contract and Rust entry point | Trace the current Node runner launch, message ordering, and match teardown. Add the Cargo package and small `control` module with startup, readiness, shutdown, and diagnostics. Use a fake host to exercise the chosen framing. | The child reaches ready, stays alive in an empty lobby, and exits on shutdown or loss of the owner channel. Verify process cleanup on Windows and Linux. |

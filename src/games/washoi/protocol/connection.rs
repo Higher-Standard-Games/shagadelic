@@ -5,7 +5,9 @@ use shagger_shared::net::{
     DecodeError,
     command::Command,
     game_state::GameState,
-    message_codec::{JoinAccept, MessageType, Welcome, encode_command, peek_message_type},
+    message_codec::{
+        JoinAccept, MessageType, Welcome, encode_command, encode_request_spawn, peek_message_type,
+    },
     snapshot::EventCodec,
 };
 use tokio::net::TcpStream;
@@ -131,7 +133,11 @@ impl Connection<WashoiEvents> {
                     if pulse.is_none() {
                         return Ok(());
                     }
-                    for input in bot.inputs(Instant::now()) {
+                    let now = Instant::now();
+                    if bot.request_respawn(now) {
+                        self.socket.send(Message::binary(encode_request_spawn())).await?;
+                    }
+                    for input in bot.inputs(now) {
                         self.send_input(input).await?;
                     }
                 }

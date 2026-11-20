@@ -9,12 +9,14 @@ pub(crate) const INPUT_PERIOD: Duration = Duration::from_millis(8);
 const MAX_BURST: u64 = 4;
 const MAX_DEBT: u64 = 25;
 const MAX_OBSERVATION_AGE: Duration = Duration::from_millis(500);
+const RESPAWN_DELAY: Duration = Duration::from_millis(2500);
 
 /// The first Washoi behavior walks forward while its own entity is alive.
 pub struct BotPlayer {
     entity_id: String,
-    dead: bool,
-    last_visible: Option<Instant>,
+    respawn_at: Option<Instant>,
+    own_entity_present: bool,
+    last_snapshot: Option<Instant>,
     started: Option<Instant>,
     sent: u64,
 }
@@ -23,8 +25,9 @@ impl BotPlayer {
     pub fn new(entity_id: String) -> Self {
         Self {
             entity_id,
-            dead: false,
-            last_visible: None,
+            respawn_at: None,
+            own_entity_present: false,
+            last_snapshot: None,
             started: None,
             sent: 0,
         }
@@ -36,31 +39,47 @@ impl BotPlayer {
                 SnapshotEvent::CombatState {
                     entity_id, dead, ..
                 } if *entity_id == self.entity_id => {
-                    self.dead = *dead;
+                    if *dead {
+                        self.respawn_at.get_or_insert(now + RESPAWN_DELAY);
+                    } else {
+                        self.respawn_at = None;
+                    }
                 }
                 SnapshotEvent::Death { entity_id, .. } if *entity_id == self.entity_id => {
-                    self.dead = true;
+                    self.respawn_at.get_or_insert(now + RESPAWN_DELAY);
                 }
                 _ => {}
             }
         }
-        self.last_visible =
-            (!self.dead && world.entities.get(&self.entity_id).is_some()).then_some(now);
-        if self.last_visible.is_none() {
+        self.last_snapshot = Some(now);
+        self.own_entity_present = world.entities.get(&self.entity_id).is_some();
+        if self.respawn_at.is_some() || !self.own_entity_present {
             self.started = None;
         }
     }
 
-    pub(crate) fn inputs(&mut self, now: Instant) -> impl Iterator<Item = PlayerInput> {
-        let count = if self
-            .last_visible
+    pub(crate) fn request_respawn(&mut self, now: Instant) -> bool {
+        if self.has_fresh_snapshot(now) && self.respawn_at.is_some_and(|at| now >= at) {
+            self.respawn_at = Some(now + RESPAWN_DELAY);
+            return true;
+        }
+        false
+    }
+
+    fn has_fresh_snapshot(&self, now: Instant) -> bool {
+        self.last_snapshot
             .is_some_and(|at| now - at <= MAX_OBSERVATION_AGE)
-        {
-            self.commands_due(now)
-        } else {
-            self.started = None;
-            0
-        };
+    }
+
+    pub(crate) fn inputs(&mut self, now: Instant) -> impl Iterator<Item = PlayerInput> {
+        let count =
+            if self.respawn_at.is_none() && self.own_entity_present && self.has_fresh_snapshot(now)
+            {
+                self.commands_due(now)
+            } else {
+                self.started = None;
+                0
+            };
         (0..count).map(|_| PlayerInput {
             direction: [0.0, 0.0, 1.0],
             ..PlayerInput::default()
@@ -93,12 +112,42 @@ mod tests {
         let start = Instant::now();
         let mut bot = BotPlayer::new("bot".into());
         assert_eq!(bot.inputs(start).count(), 0);
-        bot.last_visible = Some(start);
+        bot.last_snapshot = Some(start);
+        bot.own_entity_present = true;
         assert_eq!(bot.inputs(start).count(), 1);
         assert_eq!(bot.inputs(start + Duration::from_millis(4)).count(), 0);
         assert_eq!(bot.inputs(start + Duration::from_millis(40)).count(), 4);
         assert_eq!(bot.inputs(start + Duration::from_millis(48)).count(), 2);
         assert_eq!(bot.inputs(start + Duration::from_millis(300)).count(), 1);
         assert_eq!(bot.inputs(start + Duration::from_millis(501)).count(), 0);
+    }
+
+    #[test]
+    fn dead_bots_wait_for_a_fresh_snapshot_before_requesting_respawn() {
+        let start = Instant::now();
+        let mut bot = BotPlayer::new("bot".into());
+        let mut world = GameState::default();
+        world.entities.get_or_insert_with("bot", Default::default);
+        world.events.push(SnapshotEvent::CombatState {
+            entity_id: "bot".into(),
+            health: 0,
+            armor: 0,
+            dead: true,
+        });
+        bot.observe(&world, start);
+        assert_eq!(bot.inputs(start).count(), 0);
+        let due = start + RESPAWN_DELAY;
+        assert!(!bot.request_respawn(due));
+        bot.observe(&world, due);
+        assert!(bot.request_respawn(due));
+        assert!(!bot.request_respawn(due));
+        world.events[0] = SnapshotEvent::CombatState {
+            entity_id: "bot".into(),
+            health: 100,
+            armor: 0,
+            dead: false,
+        };
+        bot.observe(&world, due);
+        assert_eq!(bot.inputs(due).count(), 1);
     }
 }
