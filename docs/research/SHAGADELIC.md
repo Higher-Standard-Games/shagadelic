@@ -20,13 +20,13 @@ The current milestone is an **opt-in, playable Washoi bot service**. The bundled
 | Protocol | Washoi join, snapshots, and input | Live verified on Windows | Two-stage local WebSocket admission, snapshot decoding and ACKs, and paced movement work. Fixtures cover missing baselines, appearance fields, and event order. |
 | Gameplay | Movement, death, and respawn | Partial | The bot can walk or steer to authored waypoints. A live Washoi fixture confirmed the respawn request and waypoint arrival after respawn. Advanced movement remains open. |
 | Gameplay | Team and difficulty settings | Partial | The join path accepts a team preference and a seat ticket. Difficulty profiles and team decision behavior have yet to be ported. |
-| Gameplay | Map loading, navigation, and traversal | Partial | Shared authored routes and waypoint steering work on `washoi_dm2`. Indexed PK3 loading, collision-aware pathfinding, and traversal sequences remain. |
+| Gameplay | Map loading, navigation, and traversal | Partial | The offline baker uses indexed PK3 collision and Washoi's walk checks. Rust finds routes on the resulting graph, and a live bot followed a detour after respawn on `washoi_dm2`. Runtime collision checks, broader map coverage, and advanced traversal remain. |
 | Gameplay | Perception, combat, and skills | Planned | Port visibility, target memory, aiming, weapon and item decisions, and team tactics. Add goal and skill scoring with replayable decision traces. |
 | Gameplay | Game-mode parity | Planned | Duel covers basic live admission. Full Duel, Amphi, FFA, and S&D behavior needs scenario coverage. |
 | Rollout | Ratings and match reports | Planned | Rust bot matches run unrated on the integration branches. Rating identity and match report parity are required before enabling rated play. |
 | Extensibility | Additional games and protocol adapters | Planned | The embeddable session boundary has tests. Washoi is the only real integration, and the generic protocol adapter interface remains a design sketch. |
 
-The next gameplay milestone is **collision-aware navigation on one Washoi map**. The pilot can already respawn and reach an authored waypoint through normal movement inputs.
+The next navigation milestone is **recovering from a blocked or displaced route**. Static collision-aware detours work on one map. The bot needs to detect a stall, stop, and select another usable route before it can pursue goals reliably.
 
 ## Washoi process ownership
 
@@ -220,7 +220,17 @@ The bot suppresses movement on death and waits 2.5 seconds before sending a resp
 
 **Implemented authored waypoint navigation.** A Washoi session accepts a `navigation` object in its initialization record with a `map` and a list of `routes`. Each route contains an `entry` and ordered `waypoints` in Washoi world-space XYZ. The session shares the parsed data across bots and checks the map against the server's Welcome. A bot selects a nearby entry on its current floor, steers through its waypoints, and resets its route on death. It sends neutral input after arrival or when no same-floor route is available. Requests without navigation data use the forward-walk pilot.
 
-The fixture at `tests/fixtures/washoi_dm2_navigation.json` defines short walking routes from the map's spawn points. The live waypoint test verifies arrival in server snapshots. Set `SHAGADELIC_TEST_WASHOI_NAVIGATION` to the fixture path to exercise shared route loading in the Node control suite. Collision checks and automatic pathfinding remain future work. SHAGGER's current BSP loader lives in the full engine crate, so this slice consumes authored coordinates through the headless integration.
+The fixture at `tests/fixtures/washoi_dm2_navigation.json` defines short walking routes from the map's spawn points. The live waypoint test verifies arrival in server snapshots. Set `SHAGADELIC_TEST_WASHOI_NAVIGATION` to the fixture path to exercise shared route loading in the Node control suite.
+
+**Implemented baked collision-aware walking.** The baker loads indexed PK3 geometry through Washoi's `HeadlessMapLoader`, checks floor support at both ends, and uses `BotVision.isWalkable` for each candidate edge. The Rust session accepts the resulting `navigation.graph` and derives shortest routes to reachable goals once at startup. Bots share these routes. The graph stores the BSP hash for provenance. The child checks the map name in Welcome, which carries no BSP hash. Rebake when the map package changes.
+
+From the assembled SHAG checkout, run the baker under its existing `vite-node`. Supply absolute paths for the script, input, and output.
+
+```text
+node node_modules/vite-node/vite-node.mjs <SHAGADELIC>/tools/bake-washoi-walk-graph.mjs -- <authored-routes.json> <walk-graph.json>
+```
+
+The checked-in `tests/fixtures/washoi_dm2_walk_graph.json` captures a real blocked shortcut. A live Windows test forced the relevant spawn, killed the bot once, and verified arrival by the two-edge route after respawn. Set `SHAGADELIC_TEST_WASHOI_WALK_GRAPH` to run the waypoint test with a baked graph. This slice uses authored candidate nodes and static walkability. Dynamic blockers, ledges requiring maneuvers, off-route recovery, and the native BSP loader remain outside the current path.
 
 The Windows live test also passed with an indexed `washoi_dm2` collision world and a fixture that killed the joined bot once through Washoi's combat system. The server logged the bot's `RequestSpawn`, and the test observed the dead-to-alive transition and subsequent waypoint arrival. To require that sequence, set `SHAGADELIC_TEST_WASHOI_RESPAWN` and run the ignored `washoi_bot_reaches_an_authored_waypoint` test against a local server that kills the bot once.
 

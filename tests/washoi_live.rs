@@ -22,7 +22,10 @@ async fn washoi_bot_reaches_an_authored_waypoint() {
 
     let endpoint = std::env::var("SHAGADELIC_TEST_WASHOI").expect("local Washoi endpoint");
     let fixture = include_str!("fixtures/washoi_dm2_navigation.json");
-    let navigation: WashoiNavigation = serde_json::from_str(fixture).unwrap();
+    let baked = std::env::var_os("SHAGADELIC_TEST_WASHOI_WALK_GRAPH")
+        .map(|path| std::fs::read_to_string(path).expect("baked navigation graph"));
+    let navigation: WashoiNavigation =
+        serde_json::from_str(baked.as_deref().unwrap_or(fixture)).unwrap();
     let routes = serde_json::from_str::<RouteFixture>(fixture)
         .unwrap()
         .routes;
@@ -84,7 +87,7 @@ async fn washoi_bot_reaches_an_authored_waypoint() {
                                 distance(a.entry).total_cmp(&distance(b.entry))
                             })
                             .unwrap();
-                        route.waypoints[0]
+                        *route.waypoints.last().unwrap()
                     });
                     let [x, y, z] = target.unwrap();
                     reached = state.acked_input_seq >= 3

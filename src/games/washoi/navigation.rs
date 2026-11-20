@@ -1,3 +1,5 @@
+mod graph;
+
 use serde::Deserialize;
 use shagger_shared::net::game_state::Vec3;
 
@@ -18,7 +20,9 @@ pub struct WashoiNavigation {
 #[derive(Deserialize)]
 struct RouteFile {
     map: String,
+    #[serde(default)]
     routes: Vec<Route>,
+    graph: Option<graph::WalkGraph>,
 }
 
 #[derive(Deserialize)]
@@ -31,10 +35,15 @@ impl TryFrom<RouteFile> for WashoiNavigation {
     type Error = &'static str;
 
     fn try_from(file: RouteFile) -> Result<Self, Self::Error> {
-        if file.map.trim().is_empty() || file.routes.is_empty() {
+        let routes = match file.graph {
+            Some(graph) if file.routes.is_empty() => graph.routes()?,
+            Some(_) => return Err("configure authored routes or a graph"),
+            None => file.routes,
+        };
+        if file.map.trim().is_empty() || routes.is_empty() {
             return Err("navigation needs a map and at least one route");
         }
-        for route in &file.routes {
+        for route in &routes {
             if route.waypoints.is_empty()
                 || !std::iter::once(&route.entry)
                     .chain(&route.waypoints)
@@ -46,7 +55,7 @@ impl TryFrom<RouteFile> for WashoiNavigation {
         }
         Ok(Self {
             map: file.map,
-            routes: file.routes,
+            routes,
         })
     }
 }
@@ -97,6 +106,24 @@ fn horizontal_distance(position: Vec3, target: [f64; 3]) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn baked_graph_uses_the_detour_instead_of_the_blocked_shortcut() {
+        let baked = include_str!("../../../tests/fixtures/washoi_dm2_walk_graph.json");
+        let routes: WashoiNavigation = serde_json::from_str(baked).unwrap();
+        let route = routes.route_at(Vec3::new(-184.0, 192.0, 288.0)).unwrap();
+        assert_eq!(
+            routes.routes[route].waypoints,
+            [[-232.0, 192.0, 192.0], [-88.0, 192.0, 312.0],]
+        );
+        let config: serde_json::Value = serde_json::from_str(baked).unwrap();
+        let mut invalid = config.clone();
+        invalid["graph"]["edges"][0] = serde_json::json!([0, 999]);
+        assert!(serde_json::from_value::<WashoiNavigation>(invalid).is_err());
+        let mut disconnected = config;
+        disconnected["graph"]["edges"] = serde_json::json!([]);
+        assert!(serde_json::from_value::<WashoiNavigation>(disconnected).is_err());
+    }
 
     #[test]
     fn selects_a_nearby_route_on_the_same_floor_and_advances_waypoints() {
