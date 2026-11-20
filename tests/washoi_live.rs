@@ -11,11 +11,12 @@ use shagadelic::games::washoi::{
 #[ignore = "requires a local standalone Washoi game server"]
 async fn washoi_applies_paced_pilot_movement() {
     let endpoint = std::env::var("SHAGADELIC_TEST_WASHOI").expect("local Washoi endpoint");
+    let ticket = std::env::var("SHAGADELIC_TEST_WASHOI_TICKET").ok();
     let deadline = Duration::from_secs(10);
     let mut connection = connect(
         &endpoint,
         "SHAGADELIC test".into(),
-        None,
+        ticket,
         None,
         deadline,
         WashoiEvents,

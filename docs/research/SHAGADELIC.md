@@ -196,6 +196,8 @@ The live movement test passed on Windows against the TypeScript Washoi server on
 
 The bot suppresses movement on death and waits 2.5 seconds before sending a respawn request. It retries at the same interval while fresh snapshots still show it as dead and resets pacing on confirmed respawn. A clock-controlled test covers the dead, stale, and revived states.
 
+The live movement test also passed against a server configured with a match admission manifest containing a bot seat. Set `SHAGADELIC_TEST_WASHOI_TICKET` for that test when the local server requires a ticket. The test hands it to the join encoder without printing it. This verifies the game-server side of ticket admission. The Washoi lobby still needs a supervisor that starts the Rust child after game-server readiness, retains the match ID through game-server exit, and forwards each seat's existing ticket in its spawn request.
+
 | Change | Implementation | Acceptance |
 | --- | --- | --- |
 | 1. Host contract and Rust entry point | Trace the current Node runner launch, message ordering, and match teardown. Add the Cargo package and small `control` module with startup, readiness, shutdown, and diagnostics. Use a fake host to exercise the chosen framing. | The child reaches ready, stays alive in an empty lobby, and exits on shutdown or loss of the owner channel. Verify process cleanup on Windows and Linux. |
