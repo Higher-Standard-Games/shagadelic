@@ -2,11 +2,11 @@
 
 Draft architecture for a Rust service. The first integration is Washoi AI players.
 
-SHAGADELIC runs the AI entities for one game lobby. Washoi is the first integration. Each Washoi bot joins as a headless client and plays through the same input protocol as a human client. The existing TypeScript bots establish the compatibility and feature baseline. Their behavior and code are candidates for reuse where they help reach that baseline.
+SHAGADELIC runs the AI entities for one game session. A host can run it as a supervised child process or embed its Rust library in the game. Washoi is the first integration and uses the child process. Each Washoi bot joins as a headless client and plays through the same input protocol as a human client. The existing TypeScript bots establish the compatibility and feature baseline. Their behavior and code are candidates for reuse where they help reach that baseline.
 
 The first release aims for predictable runtime cost and bots that make better decisions. Future integrations may run several entity types in the same lobby, such as soldiers and imps, or entities with entirely different controls, such as drones and fish. The first release implements Washoi only.
 
-## Process ownership
+## Washoi process ownership
 
 The host starts one SHAGADELIC child process per game lobby and supervises it for the life of that lobby. Here, a lobby is the playable session assigned to a game-server instance. A lobby service that coordinates several sessions starts a child for each session. The document uses “host” for the component that owns the child, even if the lobby service and game server are separate processes.
 
@@ -27,6 +27,14 @@ In the first integration, keep Washoi's existing host-side seat assignment, admi
 | Protocol adapter | Connections, handshakes, wire encoding, incoming message order, and translation to and from the integration's typed game data. |
 | Entity behavior | Per-entity perception and memory, goal selection, skill selection, and action execution. |
 
+### Embedded games
+
+Keep the scheduler and entity lifecycle in a library target in the same Cargo package. The Washoi binary owns host control, process lifetime, and driving the library with a monotonic clock. An embedded game owns the library instance and advances it from its simulation loop. The library scheduler accepts time and work budgets from the caller. It does not sleep or start a timer, executor, or worker thread implicitly.
+
+An embedded game such as ice hockey can provide typed observations directly and consume typed actions for the same simulation. The game remains authoritative over physics, rules, and entity lifetimes. For each fixed simulation tick, it can supply the current world view, run due AI work, apply the returned actions, and advance physics. Use simulation time so pausing freezes AI deadlines and replays can advance one tick at a time. Start with bounded inline updates. If embedded games later need expensive background jobs, let the host opt into workers and apply their results at simulation tick boundaries.
+
+Use the game-session boundary for both forms of hosting. Washoi implements network admission and wire transport through `GameProtocol`. An embedded integration registers entities against the local simulation and exchanges observations and actions by direct calls. Keep game-specific types in the integration and let the first real embedded game inform the public API.
+
 The runtime calls into one selected game integration per lobby. The integration registers its supported entity types and supplies its protocol adapter. Many entity types can share an adapter. Washoi uses one connection per bot. An adapter for another game could multiplex several entities over one link and route game updates by entity ID. The adapter interface should express entity admission, observation delivery, action submission, and session loss without exposing sockets or assuming a connection count.
 
 The adapter plugin boundary is a Rust interface with statically linked implementations in the first release. The selected integration owns the concrete types for world updates, entity observations, and actions. Where types differ within a game, the integration can route them internally. Keep the runtime's interface at the game-session boundary so a Washoi player action never becomes the common action type. Replacing a wire protocol for the same game can then preserve behavior code if the new adapter supplies equivalent observations and accepts equivalent actions. Dynamic loading and a stable plugin ABI are future design decisions.
@@ -39,7 +47,7 @@ These sketches define ownership and data flow. Names and payload fields can chan
 
 ### Runtime and game session
 
-Use a statically linked integration selected at startup. The runtime owns entity lifetimes and scheduling. It calls the integration for each due update and passes a monotonic timestamp. The integration owns game data and selects the concrete behavior for each entity. Keep the runtime generic over the selected game session so its scheduler can use a fake game in tests.
+Use a statically linked integration selected when the runtime is created. The runtime owns AI entity lifetimes and scheduling. It calls the integration for each due update and passes a caller-supplied timestamp that increases within the session. The integration owns game data and selects the concrete behavior for each entity. Keep the runtime generic over the selected game session so the scheduler can use an in-process fake game in tests.
 
 The session boundary covers four operations.
 
@@ -166,24 +174,25 @@ The TypeScript checkout has two hosting paths. The default lobby seats bots and 
 
 Run `cargo build` and `node tests/control.test.mjs ./target/debug/shagadelic.exe` on Windows. On Linux, use `./target/debug/shagadelic` as the executable path. The tests cover an idle lobby and explicit shutdown, an unsupported version, and abrupt host termination. They passed on Windows. Linux validation is pending.
 
-The next change adds the entity lifecycle and scheduler. The first playable milestone then admits one Washoi bot through both join stages and sends movement the game server accepts.
+**Implemented embedded runtime.** `Runtime<S>` accepts a `GameSession`, caller-supplied elapsed time, and separate event, input, and decision budgets. Active entities have independent deadlines. Generation keys isolate late admission and disconnect events from replacement entities. Tests drive two entity types at different rates with a paused simulation clock and exercise cancellation, duplicate spawns, decision wakeups, and shutdown. The first playable milestone admits one Washoi bot through both join stages and sends movement the game server accepts.
 
 | Change | Implementation | Acceptance |
 | --- | --- | --- |
 | 1. Host contract and Rust entry point | Trace the current Node runner launch, message ordering, and match teardown. Add the Cargo package and small `control` module with startup, readiness, shutdown, and diagnostics. Use a fake host to exercise the chosen framing. | The child reaches ready, stays alive in an empty lobby, and exits on shutdown or loss of the owner channel. Verify process cleanup on Windows and Linux. |
-| 2. Entity lifecycle and scheduler | Add an entity table, generation tracking, cancellation, and a clock-driven scheduler. Exercise them through a fake integration with different input and decision rates and a fixture adapter. | Duplicate spawn, remove during admission, late admission after cancellation, and two entity types with different rates behave predictably in clock-controlled tests. |
+| 2. Entity lifecycle and scheduler | Add a library target with an entity table, generation tracking, cancellation, and a caller-driven scheduler. Exercise it through an embedded fake game with different input and decision rates and use a fixture adapter for asynchronous admission. | Duplicate spawn, remove during admission, and late admission after cancellation behave predictably. The embedded test advances simulation ticks explicitly, including a pause, and verifies separate rates for two entity types. |
 | 3. First Washoi client | Implement the Washoi adapter and a minimal `BotPlayer`. Reuse compatible codec pieces after checking join, snapshot acknowledgment, and input-encoding fixtures. Wire the child into the Washoi host behind an explicit runner selection. | A real Washoi server admits one bot using the host's ticket, accepts its paced inputs, and the child exits when the lobby or game server ends. A replay verifies that an interrupted input sequence stops cleanly. |
 | 4. Several Washoi bots | Add per-bot observation and memory, shared map data, phased decision updates, and the admission and reporting events needed by the host. Capture a TypeScript baseline under representative load. | Several bots keep separate client identities and state, share map data, and remain independently removable. The host can compare input timing and resource use with the current runner. |
 | 5. Skills and jobs | Port feature groups in small slices. Introduce goal and skill scoring traces and add the first worker job when profiling identifies it. Route search is a candidate. | Replay checks cover skill gates, commitment and interruption, and stale results. A saturation test shows that input pacing and shutdown remain responsive while workers are busy. |
 
 ## Repository conventions
 
-Use a Cargo-first repository and a headless `shagadelic` executable. Start with a single package and explicit module boundaries. Use the neighboring Rust repositories' stable toolchain convention with `rustfmt` and `clippy`, Rust 2024 edition, snake_case module names, `tests/` for integration and cross-language fixtures, and `tools/` for development scripts when needed. Research and design notes live in `docs/research/`. Add `docs/manual/` and the familiar `docs:dev`, `docs:build`, and `docs:preview` scripts if the project gets a browsable manual.
+Use a Cargo-first repository with a `shagadelic` library and headless executable in one package. Use the neighboring Rust repositories' stable toolchain convention with `rustfmt` and `clippy`, Rust 2024 edition, snake_case module names, `tests/` for integration and cross-language fixtures, and `tools/` for development scripts when needed. Research and design notes live in `docs/research/`. Add `docs/manual/` and the familiar `docs:dev`, `docs:build`, and `docs:preview` scripts if the project gets a browsable manual.
 
 ```text
 docs/research/SHAGADELIC.md
 src/
-  main.rs
+  lib.rs                   Embeddable session runtime and scheduler
+  main.rs                  Standalone Washoi host
   control/                 Host IPC, framing, and process lifecycle
   runtime/
     mod.rs                 Lobby session, lifecycle events, and entity keys
