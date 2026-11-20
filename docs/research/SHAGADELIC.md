@@ -6,6 +6,28 @@ SHAGADELIC runs the AI entities for one game session. A host can run it as a sup
 
 The first release aims for predictable runtime cost and bots that make better decisions. Future integrations may run several entity types in the same lobby, such as soldiers and imps, or entities with entirely different controls, such as drones and fish. The first release implements Washoi only.
 
+## Implementation status and feature matrix
+
+The current milestone is an **opt-in, playable Washoi bot service**. The bundled Washoi lobby started a Rust child and admitted a ticketed bot in a private Duel on Windows. Separately, live tests confirmed movement and multiple bots in one child. Gameplay parity and production rollout remain open.
+
+| Area | Feature | Status | Evidence or remaining work |
+| --- | --- | --- | --- |
+| Runtime | Embeddable Rust library | Tested | A fake embedded game drives two entity types at different rates with caller-supplied time. Pause, budgets, and generation-safe cancellation have automated coverage. |
+| Runtime | Shared scheduler for Washoi | Tested | Hosted bots share a scheduler and use bounded per-socket input mailboxes. A live test covered simultaneous bots, removal, and replacement. |
+| Runtime | CPU worker pool and throughput | Planned | Choose the first background job using profiles. Take the TypeScript baseline and compare CPU, memory, and per-bot input gaps. |
+| Lifecycle | Child ownership and host IPC | Tested on Windows | Readiness, idle sessions, shutdown, owner loss, and reaping are covered. Linux has yet to run the process tests. |
+| Lobby | Opt-in Rust supervisor and seat tickets | Live verified on Windows | Integrated on the SHAG and Washoi `shagadelic-lobby` branches. A private Duel passed from invite to admission through the bundled lobby. The game-server exit hook and child reaping passed separate tests. |
+| Protocol | Washoi join, snapshots, and input | Live verified on Windows | Two-stage local WebSocket admission, snapshot decoding and ACKs, and paced movement work. Fixtures cover missing baselines, appearance fields, and event order. |
+| Gameplay | Movement, death, and respawn | Partial | The bot walks forward. Live snapshots confirm movement. Clock-controlled tests cover death, respawn request timing, and resuming movement after confirmed respawn. Live respawn verification remains open. |
+| Gameplay | Team and difficulty settings | Partial | The join path accepts a team preference and a seat ticket. Difficulty profiles and team decision behavior have yet to be ported. |
+| Gameplay | Map loading, navigation, and traversal | Planned | Reuse indexed PK3 loading and headless collision, then port route finding and movement sequences. |
+| Gameplay | Perception, combat, and skills | Planned | Port visibility, target memory, aiming, weapon and item decisions, and team tactics. Add goal and skill scoring with replayable decision traces. |
+| Gameplay | Game-mode parity | Planned | Duel covers basic live admission. Full Duel, Amphi, FFA, and S&D behavior needs scenario coverage. |
+| Rollout | Ratings and match reports | Planned | Rust bot matches run unrated on the integration branches. Rating identity and match report parity are required before enabling rated play. |
+| Extensibility | Additional games and protocol adapters | Planned | The embeddable session boundary has tests. Washoi is the only real integration, and the generic protocol adapter interface remains a design sketch. |
+
+The next gameplay milestone is **spawn and navigation parity on one Washoi map**. Verify that a bot can respawn, use shared map data, and reach a waypoint through the server's normal movement inputs. That gives combat, item goals, and skill evaluation a usable movement foundation.
+
 ## Washoi process ownership
 
 The host starts one SHAGADELIC child process per game lobby and supervises it for the life of that lobby. Here, a lobby is the playable session assigned to a game-server instance. A lobby service that coordinates several sessions starts a child for each session. The document uses “host” for the component that owns the child, even if the lobby service and game server are separate processes.
@@ -184,7 +206,7 @@ Run `cargo build` and `node tests/control.test.mjs ./target/debug/shagadelic.exe
 
 **Implemented the Washoi event codec.** The decoder comes from `wash-fps-rust/src/shared/net/snapshot_events.rs` and uses the headless SHAGGER codec APIs. A snapshot fixture checks that a combat update and a match update survive decoding in wire order.
 
-**Implemented pilot input pacing.** The first Washoi behavior walks forward while its own entity is present and alive. The single-bot socket loop observes snapshots and wakes at the 8 ms input cadence. It caps ordinary catch-up at four commands, discards debt above 25 ticks, and pauses movement after 500 ms without a usable observation. A clock-controlled test covers those limits. The pilot temporarily paces input in the connection loop. Multi-bot integration will use the shared scheduler.
+**Implemented pilot input pacing.** The first Washoi behavior walks forward while its own entity is present and alive. The standalone pilot uses an 8 ms timer, and the hosted Washoi session gets input opportunities from the shared scheduler. Both cap ordinary catch-up at four commands, discard debt above 25 ticks, and pause movement after 500 ms without a usable observation. A clock-controlled test covers those limits.
 
 **Verified the first live bot.** Build with `cargo build --features washoi`. A test host can include `"pilot":{"endpoint":"ws://127.0.0.1:7777","name":"SHAGADELIC"}` in its version 1 initialization record. The pilot accepts optional `ticket` and `team` fields. It reports `pilot_admitted` after entering play and `pilot_ended` on disconnect or error. Host shutdown or owner pipe closure cancels the connection.
 
