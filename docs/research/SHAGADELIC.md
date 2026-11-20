@@ -162,9 +162,11 @@ The TypeScript checkout has two hosting paths. The default lobby seats bots and 
 
 ### First implementation sequence
 
-**Proposed first change: an empty lobby with a real Rust child.** Build the smallest Cargo executable and a Node test host that launches it over the proposed pipes. Have the host send a versioned initialization record with the lobby ID, wait for a matching ready record, leave the child idle with zero bots, then request shutdown and observe its exit. Run the same executable with a host that exits abruptly after readiness. An outer test process must observe the child exit within a bounded deadline in both cases. An unsupported control version must fail startup before readiness. Record which operating systems have actually passed.
+**Implemented first milestone.** The Rust executable starts with a Node test host and keeps an empty lobby alive until shutdown or loss of its owner pipe. Control version 1 uses newline-delimited UTF-8 JSON with a 64 KiB input record limit, including the newline. The host sends `{"type":"initialize","version":1,"lobby_id":"test-lobby"}`. The child replies with `{"type":"ready","version":1,"lobby_id":"test-lobby"}`. The host sends `{"type":"shutdown"}` for a clean exit. Unsupported versions fail before readiness. Diagnostics go to stderr.
 
-This gives the first change an observable result and tests the Node-to-Rust ownership boundary before gameplay introduces other failure modes. The next playable milestone builds on it by admitting one Washoi bot through both join stages and sending movement the game server accepts.
+Run `cargo build` and `node tests/control.test.mjs ./target/debug/shagadelic.exe` on Windows. On Linux, use `./target/debug/shagadelic` as the executable path. The tests cover an idle lobby and explicit shutdown, an unsupported version, and abrupt host termination. They passed on Windows. Linux validation is pending.
+
+The next change adds the entity lifecycle and scheduler. The first playable milestone then admits one Washoi bot through both join stages and sends movement the game server accepts.
 
 | Change | Implementation | Acceptance |
 | --- | --- | --- |
