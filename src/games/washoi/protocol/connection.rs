@@ -14,7 +14,7 @@ use tokio_tungstenite::{
     tungstenite::{Error as WebSocketError, Message},
 };
 
-use super::{Admission, AdmissionEvent, SnapshotReceiver, WashoiEvents};
+use super::{Admission, AdmissionEvent, SnapshotEvent, SnapshotReceiver, WashoiEvents};
 
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
@@ -85,8 +85,12 @@ impl<C: EventCodec> Connection<C> {
 }
 
 impl Connection<WashoiEvents> {
-    /// Drive the pilot behavior until this connection closes or the task is cancelled.
-    pub async fn play(&mut self, mut bot: super::super::BotPlayer) -> Result<(), AdmissionError> {
+    /// Drive the pilot behavior. Return false from the observer to stop.
+    pub async fn play(
+        &mut self,
+        mut bot: super::super::BotPlayer,
+        mut observe: impl FnMut(&GameState<SnapshotEvent>) -> bool,
+    ) -> Result<(), AdmissionError> {
         use super::super::behavior::INPUT_PERIOD;
         use tokio::time::{Instant, MissedTickBehavior, interval};
 
@@ -101,6 +105,9 @@ impl Connection<WashoiEvents> {
                         Some(Message::Binary(frame)) => {
                             if let Some(state) = acknowledge(&mut self.socket, &mut self.snapshots, &frame).await? {
                                 bot.observe(&state, Instant::now());
+                                if !observe(&state) {
+                                    return Ok(());
+                                }
                             }
                         }
                         Some(Message::Ping(_)) => self.socket.flush().await?,
