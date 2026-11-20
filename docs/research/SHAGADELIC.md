@@ -18,7 +18,7 @@ The current milestone is an **opt-in, playable Washoi bot service**. The bundled
 | Lifecycle | Child ownership and host IPC | Tested on Windows | Readiness, idle sessions, shutdown, owner loss, and reaping are covered. Linux has yet to run the process tests. |
 | Lobby | Opt-in Rust supervisor and seat tickets | Live verified on Windows | Integrated on the SHAG and Washoi `shagadelic-lobby` branches. A private Duel passed from invite to admission through the bundled lobby. The game-server exit hook and child reaping passed separate tests. |
 | Protocol | Washoi join, snapshots, and input | Live verified on Windows | Two-stage local WebSocket admission, snapshot decoding and ACKs, and paced movement work. Fixtures cover missing baselines, appearance fields, and event order. |
-| Gameplay | Movement, death, and respawn | Partial | The bot walks forward. Live snapshots confirm movement. Clock-controlled tests cover death, respawn request timing, and resuming movement after confirmed respawn. Live respawn verification remains open. |
+| Gameplay | Movement, death, and respawn | Partial | The bot can walk or steer to authored waypoints. A live Washoi fixture confirmed the respawn request and waypoint arrival after respawn. Advanced movement remains open. |
 | Gameplay | Team and difficulty settings | Partial | The join path accepts a team preference and a seat ticket. Difficulty profiles and team decision behavior have yet to be ported. |
 | Gameplay | Map loading, navigation, and traversal | Partial | Shared authored routes and waypoint steering work on `washoi_dm2`. Indexed PK3 loading, collision-aware pathfinding, and traversal sequences remain. |
 | Gameplay | Perception, combat, and skills | Planned | Port visibility, target memory, aiming, weapon and item decisions, and team tactics. Add goal and skill scoring with replayable decision traces. |
@@ -26,7 +26,7 @@ The current milestone is an **opt-in, playable Washoi bot service**. The bundled
 | Rollout | Ratings and match reports | Planned | Rust bot matches run unrated on the integration branches. Rating identity and match report parity are required before enabling rated play. |
 | Extensibility | Additional games and protocol adapters | Planned | The embeddable session boundary has tests. Washoi is the only real integration, and the generic protocol adapter interface remains a design sketch. |
 
-The next gameplay milestone is **spawn and navigation parity on one Washoi map**. The first live waypoint is complete. The remaining work is live respawn verification and collision-aware route selection.
+The next gameplay milestone is **collision-aware navigation on one Washoi map**. The pilot can already respawn and reach an authored waypoint through normal movement inputs.
 
 ## Washoi process ownership
 
@@ -221,6 +221,8 @@ The bot suppresses movement on death and waits 2.5 seconds before sending a resp
 **Implemented authored waypoint navigation.** A Washoi session accepts a `navigation` object in its initialization record with a `map` and a list of `routes`. Each route contains an `entry` and ordered `waypoints` in Washoi world-space XYZ. The session shares the parsed data across bots and checks the map against the server's Welcome. A bot selects a nearby entry on its current floor, steers through its waypoints, and resets its route on death. It sends neutral input after arrival or when no same-floor route is available. Requests without navigation data use the forward-walk pilot.
 
 The fixture at `tests/fixtures/washoi_dm2_navigation.json` defines short walking routes from the map's spawn points. The live waypoint test verifies arrival in server snapshots. Set `SHAGADELIC_TEST_WASHOI_NAVIGATION` to the fixture path to exercise shared route loading in the Node control suite. Collision checks and automatic pathfinding remain future work. SHAGGER's current BSP loader lives in the full engine crate, so this slice consumes authored coordinates through the headless integration.
+
+The Windows live test also passed with an indexed `washoi_dm2` collision world and a fixture that killed the joined bot once through Washoi's combat system. The server logged the bot's `RequestSpawn`, and the test observed the dead-to-alive transition and subsequent waypoint arrival. To require that sequence, set `SHAGADELIC_TEST_WASHOI_RESPAWN` and run the ignored `washoi_bot_reaches_an_authored_waypoint` test against a local server that kills the bot once.
 
 The live movement test also passed against a server configured with a match admission manifest containing a bot seat. Set `SHAGADELIC_TEST_WASHOI_TICKET` for that test when the local server requires a ticket. The test hands it to the join encoder without printing it.
 

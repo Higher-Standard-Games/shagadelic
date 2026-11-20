@@ -4,7 +4,7 @@ use std::{sync::Arc, time::Duration};
 
 use shagadelic::games::washoi::{
     BotPlayer, WashoiNavigation,
-    protocol::{WashoiEvents, connect},
+    protocol::{SnapshotEvent, WashoiEvents, connect},
 };
 
 #[tokio::test]
@@ -40,6 +40,9 @@ async fn washoi_bot_reaches_an_authored_waypoint() {
     .expect("Washoi admission");
     assert_eq!(connection.welcome.as_ref().unwrap().map, navigation.map());
     let entity = connection.identity.entity_id.clone();
+    let require_respawn = std::env::var_os("SHAGADELIC_TEST_WASHOI_RESPAWN").is_some();
+    let mut saw_death = false;
+    let mut saw_respawn = false;
     let mut start = None;
     let mut target = None;
     let mut reached = false;
@@ -49,6 +52,19 @@ async fn washoi_bot_reaches_an_authored_waypoint() {
         connection.play(
             BotPlayer::new(entity.clone()).with_navigation(Arc::new(navigation)),
             |state| {
+                for event in &state.events {
+                    if let SnapshotEvent::CombatState {
+                        entity_id, dead, ..
+                    } = event
+                        && *entity_id == entity
+                    {
+                        saw_death |= *dead;
+                        saw_respawn |= saw_death && !dead;
+                    }
+                }
+                if require_respawn && !saw_respawn {
+                    return true;
+                }
                 if let Some(position) = state
                     .entities
                     .get(&entity)
