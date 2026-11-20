@@ -182,6 +182,8 @@ Run `cargo build` and `node tests/control.test.mjs ./target/debug/shagadelic.exe
 
 **Implemented typed movement submission.** The connection accepts a Washoi `PlayerInput` in world coordinates and attaches the playing identity, latest accepted snapshot tick, and incrementing command sequence. A loopback server decodes and verifies two movement frames. Tick pacing and action selection belong to the Washoi session and behavior layers.
 
+**Implemented the Washoi event codec.** The decoder comes from `wash-fps-rust/src/shared/net/snapshot_events.rs` and uses the headless SHAGGER codec APIs. A snapshot fixture checks that a combat update and a match update survive decoding in wire order.
+
 | Change | Implementation | Acceptance |
 | --- | --- | --- |
 | 1. Host contract and Rust entry point | Trace the current Node runner launch, message ordering, and match teardown. Add the Cargo package and small `control` module with startup, readiness, shutdown, and diagnostics. Use a fake host to exercise the chosen framing. | The child reaches ready, stays alive in an empty lobby, and exits on shutdown or loss of the owner channel. Verify process cleanup on Windows and Linux. |

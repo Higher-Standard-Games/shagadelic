@@ -1,6 +1,6 @@
 #![cfg(feature = "washoi")]
 
-use shagadelic::games::washoi::protocol::SnapshotReceiver;
+use shagadelic::games::washoi::protocol::{SnapshotEvent, SnapshotReceiver, WashoiEvents};
 use shagger_shared::net::snapshot::NoEvents;
 
 fn empty_snapshot(tick: u32, baseline: Option<u32>) -> Vec<u8> {
@@ -10,6 +10,22 @@ fn empty_snapshot(tick: u32, baseline: Option<u32>) -> Vec<u8> {
     // Zero timestamp, input sequence, entity count, player count and event count.
     bytes.extend_from_slice(&[0; 18]);
     bytes
+}
+
+#[test]
+fn washoi_events_survive_snapshot_decoding_in_wire_order() {
+    let mut bytes = empty_snapshot(1, None);
+    bytes.truncate(bytes.len() - 2);
+    bytes.extend_from_slice(b"\x02\x00\x01\x01\x00e\x64\x00\x00\x00\x00\x02\x02\x00{}");
+    let snapshot = SnapshotReceiver::new(WashoiEvents)
+        .receive(&bytes)
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        &snapshot.state.events[..],
+        [SnapshotEvent::CombatState { entity_id, health: 100, dead: false, .. }, SnapshotEvent::MatchState(_)]
+            if entity_id == "e"
+    ));
 }
 
 #[test]
