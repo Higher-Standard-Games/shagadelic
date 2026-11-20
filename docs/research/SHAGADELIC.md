@@ -188,7 +188,9 @@ Run `cargo build` and `node tests/control.test.mjs ./target/debug/shagadelic.exe
 
 **Verified the first live bot.** Build with `cargo build --features washoi`. A test host can include `"pilot":{"endpoint":"ws://127.0.0.1:7777","name":"SHAGADELIC"}` in its version 1 initialization record. The pilot accepts optional `ticket` and `team` fields. It reports `pilot_admitted` after entering play and `pilot_ended` on disconnect or error. Host shutdown or owner pipe closure cancels the connection.
 
-The live movement test passed on Windows against the TypeScript Washoi server on `washoi_dm2`. With a local standalone server running, set `SHAGADELIC_TEST_WASHOI` to its WebSocket endpoint and run `cargo test --features washoi --test washoi_live -- --ignored`. The test requires input acknowledgments and horizontal displacement in server snapshots. The standalone pilot also passed admission and explicit host shutdown against that server. The pilot covers one bot at startup. Dynamic spawns, the Washoi lobby supervisor and ticket flow, and shared runtime scheduling are the next integration work.
+The live movement test passed on Windows against the TypeScript Washoi server on `washoi_dm2`. With a local standalone server running, set `SHAGADELIC_TEST_WASHOI` to its WebSocket endpoint and run `cargo test --features washoi --test washoi_live -- --ignored`. The test requires input acknowledgments and horizontal displacement in server snapshots. The standalone pilot also passed admission and explicit host shutdown against that server.
+
+**Implemented the shared Washoi session.** `WashoiSession` implements `GameSession` and links each admission attempt and socket task to a runtime entity generation. The scheduler sends input opportunities through one-slot mailboxes. A slow socket won't accumulate an unbounded input queue. Socket tasks retain their own snapshot histories and complete each ACK before resuming their event loop.
 
 | Change | Implementation | Acceptance |
 | --- | --- | --- |

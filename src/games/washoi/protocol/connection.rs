@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{SinkExt, Stream, StreamExt};
 use shagger_shared::net::{
     DecodeError,
     command::Command,
@@ -88,14 +88,26 @@ impl Connection<WashoiEvents> {
     /// Drive the pilot behavior. Return false from the observer to stop.
     pub async fn play(
         &mut self,
-        mut bot: super::super::BotPlayer,
-        mut observe: impl FnMut(&GameState<SnapshotEvent>) -> bool,
+        bot: super::super::BotPlayer,
+        observe: impl FnMut(&GameState<SnapshotEvent>) -> bool,
     ) -> Result<(), AdmissionError> {
         use super::super::behavior::INPUT_PERIOD;
-        use tokio::time::{Instant, MissedTickBehavior, interval};
+        use tokio::time::{MissedTickBehavior, interval};
 
         let mut updates = interval(INPUT_PERIOD);
         updates.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        let pulses = futures_util::stream::poll_fn(|cx| updates.poll_tick(cx).map(|_| Some(())));
+        self.play_on(bot, observe, pulses).await
+    }
+
+    pub(crate) async fn play_on(
+        &mut self,
+        mut bot: super::super::BotPlayer,
+        mut observe: impl FnMut(&GameState<SnapshotEvent>) -> bool,
+        mut pulses: impl Stream<Item = ()> + Unpin,
+    ) -> Result<(), AdmissionError> {
+        use tokio::time::Instant;
+
         loop {
             tokio::select! {
                 // Process a selected frame to completion before polling either
@@ -115,7 +127,10 @@ impl Connection<WashoiEvents> {
                         Some(_) => {}
                     }
                 }
-                _ = updates.tick() => {
+                pulse = pulses.next() => {
+                    if pulse.is_none() {
+                        return Ok(());
+                    }
                     for input in bot.inputs(Instant::now()) {
                         self.send_input(input).await?;
                     }
