@@ -9,7 +9,7 @@ use tokio::{sync::mpsc, task::JoinHandle};
 use crate::runtime::{Deadlines, EntityKey, GameSession, SessionEvent, Update};
 
 use super::{
-    BotPlayer, WashoiNavigation,
+    BotPlayer, LearnedRoutes, WashoiNavigation,
     behavior::INPUT_PERIOD,
     protocol::{AdmissionError, WashoiEvents, connect},
 };
@@ -43,6 +43,7 @@ struct BotTask {
 pub struct WashoiSession {
     endpoint: String,
     navigation: Option<Arc<WashoiNavigation>>,
+    learned: Option<Arc<LearnedRoutes>>,
     bots: BTreeMap<EntityKey, BotTask>,
     send_event: mpsc::Sender<BotReport>,
     events: mpsc::Receiver<BotReport>,
@@ -55,6 +56,7 @@ impl WashoiSession {
         Self {
             endpoint,
             navigation: None,
+            learned: None,
             bots: BTreeMap::new(),
             send_event,
             events,
@@ -64,6 +66,11 @@ impl WashoiSession {
 
     pub fn with_navigation(mut self, navigation: WashoiNavigation) -> Self {
         self.navigation = Some(Arc::new(navigation));
+        self
+    }
+
+    pub fn with_learned_routes(mut self, learned: LearnedRoutes) -> Self {
+        self.learned = Some(Arc::new(learned));
         self
     }
 
@@ -92,6 +99,7 @@ impl GameSession for WashoiSession {
             pulses,
             self.send_event.clone(),
             self.navigation.clone(),
+            self.learned.clone(),
         ));
         self.bots.insert(key.clone(), BotTask { task, pulse });
         Ok(())
@@ -159,6 +167,7 @@ async fn run_bot(
     mut pulses: mpsc::Receiver<()>,
     events: mpsc::Sender<BotReport>,
     navigation: Option<Arc<WashoiNavigation>>,
+    learned: Option<Arc<LearnedRoutes>>,
 ) {
     let connection = connect(
         &endpoint,
@@ -172,12 +181,16 @@ async fn run_bot(
     .await;
     let reason = match connection {
         Ok(mut connection) => {
-            if let Some(navigation) = &navigation
-                && connection
-                    .welcome
+            let server_map = connection
+                .welcome
+                .as_ref()
+                .map(|welcome| welcome.map.as_str());
+            if navigation
+                .as_ref()
+                .is_some_and(|navigation| Some(navigation.map()) != server_map)
+                || learned
                     .as_ref()
-                    .map(|welcome| welcome.map.as_str())
-                    != Some(navigation.map())
+                    .is_some_and(|library| Some(library.map()) != server_map)
             {
                 let _ = events
                     .send(BotReport::Ended {
@@ -197,6 +210,9 @@ async fn run_bot(
             let mut bot = BotPlayer::new(connection.identity.entity_id.clone());
             if let Some(navigation) = navigation {
                 bot = bot.with_navigation(navigation);
+            }
+            if let Some(learned) = learned {
+                bot = bot.with_learned_routes(learned);
             }
             let pulses = futures_util::stream::poll_fn(|cx| pulses.poll_recv(cx));
             match connection.play_on(bot, |_| true, pulses).await {

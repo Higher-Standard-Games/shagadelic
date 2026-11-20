@@ -5,7 +5,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use shagadelic::{
-    games::washoi::{BotReport, SpawnBot, WashoiNavigation, WashoiSession},
+    games::washoi::{BotReport, LearnedRoutes, SpawnBot, WashoiNavigation, WashoiSession},
     runtime::{Budget, EntityKey, EntityStatus, Runtime, SpawnError},
 };
 use tokio::{
@@ -60,6 +60,7 @@ pub(super) fn run(
     writer: &mut impl Write,
     endpoint: String,
     navigation: Option<WashoiNavigation>,
+    learned: Option<LearnedRoutes>,
 ) -> io::Result<()> {
     let (send, receive) = mpsc::channel(32);
     let executor = tokio::runtime::Builder::new_current_thread()
@@ -81,6 +82,9 @@ pub(super) fn run(
     let mut session = WashoiSession::new(endpoint);
     if let Some(navigation) = navigation {
         session = session.with_navigation(navigation);
+    }
+    if let Some(learned) = learned {
+        session = session.with_learned_routes(learned);
     }
     executor.block_on(drive(receive, writer, session))
 }

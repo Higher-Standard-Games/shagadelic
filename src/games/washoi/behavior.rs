@@ -3,9 +3,9 @@ use std::{sync::Arc, time::Duration};
 use shagger_shared::net::game_state::GameState;
 use tokio::time::Instant;
 
-use super::WashoiNavigation;
 use super::navigation::RouteFollower;
 use super::protocol::{PlayerInput, SnapshotEvent};
+use super::{LearnedRoutes, WashoiNavigation, learned::Traversal};
 
 pub(crate) const INPUT_PERIOD: Duration = Duration::from_millis(8);
 const MAX_BURST: u64 = 4;
@@ -24,6 +24,8 @@ pub struct BotPlayer {
     navigation: Option<Arc<WashoiNavigation>>,
     route: RouteFollower,
     planned_input: PlayerInput,
+    learned: Option<Arc<LearnedRoutes>>,
+    traversal: Traversal,
 }
 
 impl BotPlayer {
@@ -37,11 +39,25 @@ impl BotPlayer {
             sent: 0,
             navigation: None,
             route: RouteFollower::default(),
+            learned: None,
+            traversal: Traversal::default(),
             planned_input: PlayerInput {
                 direction: [0.0, 0.0, 1.0],
                 ..PlayerInput::default()
             },
         }
+    }
+
+    pub fn with_learned_routes(mut self, library: Arc<LearnedRoutes>) -> Self {
+        self.learned = Some(library);
+        if self.navigation.is_none() {
+            self.planned_input = PlayerInput::default();
+        }
+        self
+    }
+
+    pub fn learned_landing_result(&self) -> Option<bool> {
+        self.traversal.landing_result()
     }
 
     pub fn with_navigation(mut self, navigation: Arc<WashoiNavigation>) -> Self {
@@ -74,6 +90,16 @@ impl BotPlayer {
         if self.respawn_at.is_some() || !self.own_entity_present {
             self.started = None;
             self.route = RouteFollower::default();
+            self.traversal = Traversal::default();
+        } else if let Some(library) = &self.learned
+            && let Some(entity) = own
+        {
+            self.traversal.observe(library, entity, now);
+            if self.traversal.active() {
+                self.planned_input = PlayerInput::default();
+                self.route = RouteFollower::default();
+                return;
+            }
         }
         if let Some(navigation) = &self.navigation {
             self.planned_input = PlayerInput::default();
@@ -102,15 +128,27 @@ impl BotPlayer {
     }
 
     pub(crate) fn inputs(&mut self, now: Instant) -> impl Iterator<Item = PlayerInput> {
-        let count =
-            if self.respawn_at.is_none() && self.own_entity_present && self.has_fresh_snapshot(now)
-            {
-                self.commands_due(now)
-            } else {
+        let ready =
+            self.respawn_at.is_none() && self.own_entity_present && self.has_fresh_snapshot(now);
+        let mut learned = None;
+        let mut count = 0;
+        if ready {
+            if let Some(library) = &self.learned {
+                learned = self.traversal.drive(library, now);
+            }
+            if learned.is_some() {
                 self.started = None;
-                0
-            };
-        std::iter::repeat_n(self.planned_input, count as usize)
+            } else {
+                count = self.commands_due(now);
+            }
+        } else {
+            self.started = None;
+            self.traversal.abort_if_active();
+        }
+        learned
+            .into_iter()
+            .flatten()
+            .chain(std::iter::repeat_n(self.planned_input, count as usize))
     }
 
     fn commands_due(&mut self, now: Instant) -> u64 {

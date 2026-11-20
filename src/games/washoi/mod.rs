@@ -1,7 +1,9 @@
 mod behavior;
+mod learned;
 mod navigation;
 pub mod protocol;
 mod session;
 pub use behavior::BotPlayer;
+pub use learned::LearnedRoutes;
 pub use navigation::WashoiNavigation;
 pub use session::{BotReport, SpawnBot, WashoiSession};

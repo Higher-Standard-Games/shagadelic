@@ -15,6 +15,7 @@ struct Initialization {
     pilot: Option<Pilot>,
     washoi_endpoint: Option<String>,
     navigation: Option<Navigation>,
+    learned_routes_file: Option<std::path::PathBuf>,
 }
 
 #[cfg(feature = "washoi")]
@@ -80,11 +81,17 @@ pub fn run(mut reader: impl BufRead + Send + 'static, writer: &mut impl Write) -
         return Err(invalid("lobby ID is empty"));
     }
     #[cfg(not(feature = "washoi"))]
-    if init.pilot.is_some() || init.washoi_endpoint.is_some() || init.navigation.is_some() {
+    if init.pilot.is_some()
+        || init.washoi_endpoint.is_some()
+        || init.navigation.is_some()
+        || init.learned_routes_file.is_some()
+    {
         return Err(invalid("Washoi support is disabled"));
     }
     #[cfg(feature = "washoi")]
-    if init.navigation.is_some() && init.washoi_endpoint.is_none() {
+    if (init.navigation.is_some() || init.learned_routes_file.is_some())
+        && init.washoi_endpoint.is_none()
+    {
         return Err(invalid("navigation requires a Washoi session"));
     }
     #[cfg(feature = "washoi")]
@@ -95,6 +102,21 @@ pub fn run(mut reader: impl BufRead + Send + 'static, writer: &mut impl Write) -
         if !endpoint.starts_with("ws://") || endpoint.len() == 5 {
             return Err(invalid("expected a plain WebSocket game endpoint"));
         }
+    }
+
+    #[cfg(feature = "washoi")]
+    let learned = init
+        .learned_routes_file
+        .as_ref()
+        .map(shagadelic::games::washoi::LearnedRoutes::load)
+        .transpose()?;
+    #[cfg(feature = "washoi")]
+    if let (Some(navigation), Some(learned)) = (&init.navigation, &learned)
+        && navigation.map() != learned.map()
+    {
+        return Err(invalid(
+            "navigation and learned routes refer to different maps",
+        ));
     }
 
     emit(
@@ -111,7 +133,7 @@ pub fn run(mut reader: impl BufRead + Send + 'static, writer: &mut impl Write) -
     }
     #[cfg(feature = "washoi")]
     if let Some(endpoint) = init.washoi_endpoint {
-        return washoi::run(reader, writer, endpoint, init.navigation);
+        return washoi::run(reader, writer, endpoint, init.navigation, learned);
     }
     await_shutdown(&mut reader, &mut record)
 }

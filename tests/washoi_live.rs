@@ -3,9 +3,65 @@
 use std::{sync::Arc, time::Duration};
 
 use shagadelic::games::washoi::{
-    BotPlayer, WashoiNavigation,
+    BotPlayer, LearnedRoutes, WashoiNavigation,
     protocol::{SnapshotEvent, WashoiEvents, connect},
 };
+
+#[tokio::test]
+#[ignore = "requires a Washoi fixture that spawns the bot at the first learned route"]
+async fn washoi_replays_the_existing_learned_route() {
+    let endpoint = std::env::var("SHAGADELIC_TEST_WASHOI").expect("local Washoi endpoint");
+    let path =
+        std::env::var("SHAGADELIC_TEST_WASHOI_LEARNED").expect("original learned routes file");
+    let library = Arc::new(LearnedRoutes::load(&path).unwrap());
+    let raw: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let route = &raw["routes"][0];
+    let landing = &route["landing"];
+    let coordinate = |axis| landing[axis].as_f64().unwrap();
+    let [x, y, z] = [coordinate("x"), coordinate("y"), coordinate("z")];
+    let ticks = route["ticks"].as_u64().unwrap();
+    let deadline = Duration::from_secs(8);
+    let mut connection = connect(
+        &endpoint,
+        "SHAGADELIC learned".into(),
+        None,
+        None,
+        deadline,
+        WashoiEvents,
+        |_| {},
+    )
+    .await
+    .unwrap();
+    assert_eq!(connection.welcome.as_ref().unwrap().map, library.map());
+    let entity = connection.identity.entity_id.clone();
+    let mut landed = false;
+    let mut last = None;
+    let result = tokio::time::timeout(
+        deadline,
+        connection.play(
+            BotPlayer::new(entity.clone()).with_learned_routes(library),
+            |state| {
+                if let Some(entity) = state.entities.get(&entity)
+                    && let (Some(position), Some(velocity)) = (entity.position, entity.velocity)
+                {
+                    last = Some((position, state.acked_input_seq));
+                    landed = u64::from(state.acked_input_seq) + 1 >= ticks
+                        && velocity.grounded
+                        && (position.x - x).hypot(position.z - z) <= 64.0
+                        && (position.y - y).abs() <= 48.0;
+                }
+                !landed
+            },
+        ),
+    )
+    .await;
+    assert!(
+        landed,
+        "no learned landing near {:?}, last {last:?}: {result:?}",
+        [x, y, z]
+    );
+}
 
 #[tokio::test]
 #[ignore = "requires a local standalone Washoi game server on washoi_dm2"]
