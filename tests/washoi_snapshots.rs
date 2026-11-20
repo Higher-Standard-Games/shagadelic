@@ -29,6 +29,23 @@ fn washoi_events_survive_snapshot_decoding_in_wire_order() {
 }
 
 #[test]
+fn player_look_is_consumed_before_events_and_retained_by_deltas() {
+    let mut receiver = SnapshotReceiver::new(WashoiEvents);
+    let mut first = empty_snapshot(1, None);
+    first.truncate(24);
+    first.extend_from_slice(b"\x01\x00\x01\x00p\x40\x03\x01\x00\x02\x02\x00{}");
+    let state = receiver.receive(&first).unwrap().unwrap().state;
+    assert_eq!(state.players.get("p").unwrap().look, Some(3));
+    assert!(matches!(&state.events[..], [SnapshotEvent::MatchState(_)]));
+
+    let mut delta = empty_snapshot(2, Some(1));
+    delta.truncate(24);
+    delta.extend_from_slice(b"\x01\x00\x01\x00p\x00\x00\x00");
+    let state = receiver.receive(&delta).unwrap().unwrap().state;
+    assert_eq!(state.players.get("p").unwrap().look, Some(3));
+}
+
+#[test]
 fn snapshots_ack_only_reconstructed_new_ticks_and_recover_after_baseline_loss() {
     let mut receiver = SnapshotReceiver::new(NoEvents);
     let first = empty_snapshot(10, None);
