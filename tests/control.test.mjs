@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
+import { readFile } from "node:fs/promises";
 import { createInterface } from "node:readline";
 import { setTimeout as delay } from "node:timers/promises";
 import { test } from "node:test";
@@ -84,6 +85,7 @@ test("the lobby exits after its host is killed", options, async (t) => {
 });
 
 const endpoint = process.env.SHAGADELIC_TEST_WASHOI;
+const navigationPath = process.env.SHAGADELIC_TEST_WASHOI_NAVIGATION;
 test("a Washoi child admits, removes, and replaces bots in one session", {
   timeout: 15_000,
   skip: !endpoint && "requires a local Washoi game server",
@@ -102,7 +104,8 @@ test("a Washoi child admits, removes, and replaces bots in one session", {
       if (received.type === type && received.id === id) return received;
     }
   }
-  write(child, { ...initialization, washoi_endpoint: endpoint });
+  const navigation = navigationPath ? JSON.parse(await readFile(navigationPath, "utf8")) : undefined;
+  write(child, { ...initialization, washoi_endpoint: endpoint, navigation });
   assert.deepEqual(await event("ready"), ready);
   write(child, { type: "spawn", id: "one", name: "SHAGADELIC one" });
   const first = await event("bot_admitted", "one");

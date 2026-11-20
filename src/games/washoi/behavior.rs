@@ -1,8 +1,9 @@
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use shagger_shared::net::game_state::GameState;
 use tokio::time::Instant;
 
+use super::WashoiNavigation;
 use super::protocol::{PlayerInput, SnapshotEvent};
 
 pub(crate) const INPUT_PERIOD: Duration = Duration::from_millis(8);
@@ -11,7 +12,7 @@ const MAX_DEBT: u64 = 25;
 const MAX_OBSERVATION_AGE: Duration = Duration::from_millis(500);
 const RESPAWN_DELAY: Duration = Duration::from_millis(2500);
 
-/// The first Washoi behavior walks forward while its own entity is alive.
+/// The pilot walks forward or follows an authored route while alive.
 pub struct BotPlayer {
     entity_id: String,
     respawn_at: Option<Instant>,
@@ -19,6 +20,9 @@ pub struct BotPlayer {
     last_snapshot: Option<Instant>,
     started: Option<Instant>,
     sent: u64,
+    navigation: Option<Arc<WashoiNavigation>>,
+    route: Option<(usize, usize)>,
+    planned_input: PlayerInput,
 }
 
 impl BotPlayer {
@@ -30,7 +34,19 @@ impl BotPlayer {
             last_snapshot: None,
             started: None,
             sent: 0,
+            navigation: None,
+            route: None,
+            planned_input: PlayerInput {
+                direction: [0.0, 0.0, 1.0],
+                ..PlayerInput::default()
+            },
         }
+    }
+
+    pub fn with_navigation(mut self, navigation: Arc<WashoiNavigation>) -> Self {
+        self.navigation = Some(navigation);
+        self.planned_input = PlayerInput::default();
+        self
     }
 
     pub(crate) fn observe(&mut self, world: &GameState<SnapshotEvent>, now: Instant) {
@@ -52,9 +68,27 @@ impl BotPlayer {
             }
         }
         self.last_snapshot = Some(now);
-        self.own_entity_present = world.entities.get(&self.entity_id).is_some();
+        let own = world.entities.get(&self.entity_id);
+        self.own_entity_present = own.is_some();
         if self.respawn_at.is_some() || !self.own_entity_present {
             self.started = None;
+            self.route = None;
+        }
+        if let Some(navigation) = &self.navigation {
+            self.planned_input = PlayerInput::default();
+            if self.respawn_at.is_none()
+                && let Some(position) = own.and_then(|entity| entity.position)
+                && [position.x, position.y, position.z]
+                    .into_iter()
+                    .all(f64::is_finite)
+            {
+                if self.route.is_none() {
+                    self.route = navigation.route_at(position).map(|route| (route, 0));
+                }
+                if let Some((route, next)) = &mut self.route {
+                    self.planned_input = navigation.steer(*route, next, position);
+                }
+            }
         }
     }
 
@@ -80,10 +114,7 @@ impl BotPlayer {
                 self.started = None;
                 0
             };
-        (0..count).map(|_| PlayerInput {
-            direction: [0.0, 0.0, 1.0],
-            ..PlayerInput::default()
-        })
+        std::iter::repeat_n(self.planned_input, count as usize)
     }
 
     fn commands_due(&mut self, now: Instant) -> u64 {

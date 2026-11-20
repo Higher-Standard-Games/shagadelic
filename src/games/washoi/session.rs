@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, VecDeque},
+    sync::Arc,
     time::Duration,
 };
 
@@ -8,7 +9,7 @@ use tokio::{sync::mpsc, task::JoinHandle};
 use crate::runtime::{Deadlines, EntityKey, GameSession, SessionEvent, Update};
 
 use super::{
-    BotPlayer,
+    BotPlayer, WashoiNavigation,
     behavior::INPUT_PERIOD,
     protocol::{AdmissionError, WashoiEvents, connect},
 };
@@ -41,6 +42,7 @@ struct BotTask {
 /// the caller-driven scheduler. Each task has room for one pending pulse.
 pub struct WashoiSession {
     endpoint: String,
+    navigation: Option<Arc<WashoiNavigation>>,
     bots: BTreeMap<EntityKey, BotTask>,
     send_event: mpsc::Sender<BotReport>,
     events: mpsc::Receiver<BotReport>,
@@ -52,11 +54,17 @@ impl WashoiSession {
         let (send_event, events) = mpsc::channel(2 * MAX_BOTS);
         Self {
             endpoint,
+            navigation: None,
             bots: BTreeMap::new(),
             send_event,
             events,
             reports: VecDeque::new(),
         }
+    }
+
+    pub fn with_navigation(mut self, navigation: WashoiNavigation) -> Self {
+        self.navigation = Some(Arc::new(navigation));
+        self
     }
 
     pub fn take_report(&mut self) -> Option<BotReport> {
@@ -83,6 +91,7 @@ impl GameSession for WashoiSession {
             bot,
             pulses,
             self.send_event.clone(),
+            self.navigation.clone(),
         ));
         self.bots.insert(key.clone(), BotTask { task, pulse });
         Ok(())
@@ -149,6 +158,7 @@ async fn run_bot(
     bot: SpawnBot,
     mut pulses: mpsc::Receiver<()>,
     events: mpsc::Sender<BotReport>,
+    navigation: Option<Arc<WashoiNavigation>>,
 ) {
     let connection = connect(
         &endpoint,
@@ -162,6 +172,21 @@ async fn run_bot(
     .await;
     let reason = match connection {
         Ok(mut connection) => {
+            if let Some(navigation) = &navigation
+                && connection
+                    .welcome
+                    .as_ref()
+                    .map(|welcome| welcome.map.as_str())
+                    != Some(navigation.map())
+            {
+                let _ = events
+                    .send(BotReport::Ended {
+                        key,
+                        reason: "navigation_map_mismatch",
+                    })
+                    .await;
+                return;
+            }
             let report = BotReport::Admitted {
                 key: key.clone(),
                 player_id: connection.identity.player_id.clone(),
@@ -169,7 +194,10 @@ async fn run_bot(
             if events.send(report).await.is_err() {
                 return;
             }
-            let bot = BotPlayer::new(connection.identity.entity_id.clone());
+            let mut bot = BotPlayer::new(connection.identity.entity_id.clone());
+            if let Some(navigation) = navigation {
+                bot = bot.with_navigation(navigation);
+            }
             let pulses = futures_util::stream::poll_fn(|cx| pulses.poll_recv(cx));
             match connection.play_on(bot, |_| true, pulses).await {
                 Ok(()) | Err(AdmissionError::Disconnected) => "disconnected",

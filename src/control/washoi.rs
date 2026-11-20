@@ -5,7 +5,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use shagadelic::{
-    games::washoi::{BotReport, SpawnBot, WashoiSession},
+    games::washoi::{BotReport, SpawnBot, WashoiNavigation, WashoiSession},
     runtime::{Budget, EntityKey, EntityStatus, Runtime, SpawnError},
 };
 use tokio::{
@@ -59,6 +59,7 @@ pub(super) fn run(
     mut reader: impl BufRead + Send + 'static,
     writer: &mut impl Write,
     endpoint: String,
+    navigation: Option<WashoiNavigation>,
 ) -> io::Result<()> {
     let (send, receive) = mpsc::channel(32);
     let executor = tokio::runtime::Builder::new_current_thread()
@@ -77,15 +78,19 @@ pub(super) fn run(
                 }
             }
         })?;
-    executor.block_on(drive(receive, writer, endpoint))
+    let mut session = WashoiSession::new(endpoint);
+    if let Some(navigation) = navigation {
+        session = session.with_navigation(navigation);
+    }
+    executor.block_on(drive(receive, writer, session))
 }
 
 async fn drive(
     mut receive: mpsc::Receiver<io::Result<Command>>,
     writer: &mut impl Write,
-    endpoint: String,
+    session: WashoiSession,
 ) -> io::Result<()> {
-    let mut runtime = Runtime::new(WashoiSession::new(endpoint));
+    let mut runtime = Runtime::new(session);
     let start = Instant::now();
     let mut ticks = interval_at(start, PERIOD);
     ticks.set_missed_tick_behavior(MissedTickBehavior::Skip);

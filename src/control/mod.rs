@@ -14,7 +14,13 @@ struct Initialization {
     lobby_id: String,
     pilot: Option<Pilot>,
     washoi_endpoint: Option<String>,
+    navigation: Option<Navigation>,
 }
+
+#[cfg(feature = "washoi")]
+type Navigation = shagadelic::games::washoi::WashoiNavigation;
+#[cfg(not(feature = "washoi"))]
+type Navigation = serde_json::Value;
 
 #[cfg(feature = "washoi")]
 #[derive(Deserialize)]
@@ -74,8 +80,12 @@ pub fn run(mut reader: impl BufRead + Send + 'static, writer: &mut impl Write) -
         return Err(invalid("lobby ID is empty"));
     }
     #[cfg(not(feature = "washoi"))]
-    if init.pilot.is_some() || init.washoi_endpoint.is_some() {
+    if init.pilot.is_some() || init.washoi_endpoint.is_some() || init.navigation.is_some() {
         return Err(invalid("Washoi support is disabled"));
+    }
+    #[cfg(feature = "washoi")]
+    if init.navigation.is_some() && init.washoi_endpoint.is_none() {
+        return Err(invalid("navigation requires a Washoi session"));
     }
     #[cfg(feature = "washoi")]
     if let Some(endpoint) = &init.washoi_endpoint {
@@ -101,7 +111,7 @@ pub fn run(mut reader: impl BufRead + Send + 'static, writer: &mut impl Write) -
     }
     #[cfg(feature = "washoi")]
     if let Some(endpoint) = init.washoi_endpoint {
-        return washoi::run(reader, writer, endpoint);
+        return washoi::run(reader, writer, endpoint, init.navigation);
     }
     await_shutdown(&mut reader, &mut record)
 }
