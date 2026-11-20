@@ -232,6 +232,18 @@ node node_modules/vite-node/vite-node.mjs <SHAGADELIC>/tools/bake-washoi-walk-gr
 
 The checked-in `tests/fixtures/washoi_dm2_walk_graph.json` captures a real blocked shortcut. A live Windows test forced the relevant spawn, killed the bot once, and verified arrival by the two-edge route after respawn. Set `SHAGADELIC_TEST_WASHOI_WALK_GRAPH` to run the waypoint test with a baked graph. This slice uses authored candidate nodes and static walkability. Dynamic blockers, ledges requiring maneuvers, off-route recovery, and the native BSP loader remain outside the current path.
 
+### Reuse Washoi navigation assets
+
+The TypeScript runner reads its static graph from `.cache/bots/maps/<map>.json` or `BOT_NAV_CACHE_DIR`. SHAGADELIC's baker can import that existing cache through Washoi's `BotNavCacheStore`. The loader checks the cache schema, map name, BSP fingerprint, and movement versions against the indexed map. The importer extracts straight walk edges between spawn, floor, and item nodes. It uses spawns as entries and item positions as candidate destinations. The Rust planner currently weights those edges by distance. The compact output fits the Rust initialization record, which is limited to 64 KiB.
+
+```text
+node node_modules/vite-node/vite-node.mjs <SHAGADELIC>/tools/bake-washoi-walk-graph.mjs -- --shag-cache washoi_dm2 <walk-graph.json>
+```
+
+This mode reused the existing `washoi_dm2` cache to generate 84 nodes and 188 walking edges. Use its output as the `navigation` object. Corner and traversal edges will need support for their intermediate waypoints and execution rules.
+
+The demo workflow is a separate source. `training_demo` recordings processed by `bot:learn` produce `config/bot-routes/<map>.json`. Those records carry a start pose, landing, and run-length-encoded commands for deterministic maneuvers. Reuse the files when the Rust bot can approach the takeoff pose, replay one command per logical tick, and verify the landing. `config/bot-lanes/<map>.json`, written by `bot:lanes`, can feed S&D tactics when that layer is implemented.
+
 The Windows live test also passed with an indexed `washoi_dm2` collision world and a fixture that killed the joined bot once through Washoi's combat system. The server logged the bot's `RequestSpawn`, and the test observed the dead-to-alive transition and subsequent waypoint arrival. To require that sequence, set `SHAGADELIC_TEST_WASHOI_RESPAWN` and run the ignored `washoi_bot_reaches_an_authored_waypoint` test against a local server that kills the bot once.
 
 The live movement test also passed against a server configured with a match admission manifest containing a bot seat. Set `SHAGADELIC_TEST_WASHOI_TICKET` for that test when the local server requires a ticket. The test hands it to the join encoder without printing it.
