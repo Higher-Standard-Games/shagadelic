@@ -20,4 +20,8 @@ pub trait NetworkedPlayer: Agent {
     fn request_respawn_at(&mut self, now: SimTime) -> bool;
     /// The controls due by `now`, paced at `INPUT_PERIOD`.
     fn inputs_at(&mut self, now: SimTime) -> Vec<Controls>;
+    /// Chat lines to send now, `/say_team` ones to the team.
+    fn chat_at(&mut self, _now: SimTime) -> Vec<String> {
+        Vec::new()
+    }
 }

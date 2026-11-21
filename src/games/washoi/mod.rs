@@ -9,6 +9,7 @@ mod observation;
 mod perception;
 mod random;
 pub use agents::player::BotPlayer;
+pub use agents::player::callouts::Locations;
 pub use agents::player::navigation::WashoiNavigation;
 pub use agents::player::navigation::learned::LearnedRoutes;
 pub use difficulty::Difficulty;

@@ -1,5 +1,8 @@
 //! The player bot: a Washoi agent that plays as a networked player.
 
+pub(in crate::games::washoi) mod callouts;
+pub(in crate::games::washoi) mod chat;
+pub(in crate::games::washoi) mod chat_lines;
 pub(in crate::games::washoi) mod combat;
 pub(in crate::games::washoi) mod look;
 pub(in crate::games::washoi) mod movement;
@@ -15,6 +18,8 @@ use crate::games::washoi::{
     observation::INPUT_PERIOD,
 };
 
+use crate::games::washoi::agents::player::callouts::{Callouts, Kind as CallKind, Locations};
+use crate::games::washoi::agents::player::chat::{Chat, Frag};
 use crate::games::washoi::agents::player::combat::aim::{AimController, View};
 use crate::games::washoi::agents::player::combat::lunge::{self, Lunge, Mark, Runner};
 use crate::games::washoi::agents::player::combat::mood::{BotMood, Mistake};
@@ -112,6 +117,16 @@ pub struct BotPlayer {
     /// What to go for, the match it is chosen in, and the server ticks the
     /// bot was hurt at lately.
     planner: Planner,
+    /// Chat and team callouts, the map's location names they use, the
+    /// lines waiting to be sent, the directive calls already made, and the
+    /// last enemy sighting a teammate called.
+    chat: Chat,
+    callouts: Callouts,
+    locations: Option<Arc<Locations>>,
+    outgoing: Vec<String>,
+    said_calls: Vec<String>,
+    team_sighting: Option<(super::super::Vec3, u32)>,
+    hunt_walk: Chase,
     /// The match as read so far, and the strategy that answers it.
     match_read: MatchRead,
     strategist: Strategist,
@@ -155,6 +170,8 @@ pub struct BotPlayer {
 impl BotPlayer {
     pub fn new(entity_id: String) -> Self {
         let combat = Combat::seeded(Random::for_bot(&format!("{entity_id}/combos")));
+        let chat = Chat::new(&entity_id, Random::for_bot(&format!("{entity_id}/chat")));
+        let callouts = Callouts::new(Random::for_bot(&format!("{entity_id}/callouts")));
         let strategist = Strategist::new(
             Difficulty::default().match_sense(),
             Random::for_bot(&format!("{entity_id}/strategy")),
@@ -191,6 +208,13 @@ impl BotPlayer {
             fighting: false,
             unstick: Unstick::default(),
             planner: Planner::new(Difficulty::default().mistake_rate()),
+            chat,
+            callouts,
+            locations: None,
+            outgoing: Vec::new(),
+            said_calls: Vec::new(),
+            team_sighting: None,
+            hunt_walk: Chase::default(),
             match_read: MatchRead::default(),
             strategist,
             territory: Territory::default(),
@@ -222,6 +246,23 @@ impl BotPlayer {
                 ..PlayerInput::default()
             },
         }
+    }
+
+    /// The name the bot plays under, which sets its chat personality.
+    pub fn with_name(mut self, name: &str) -> Self {
+        self.chat = Chat::new(name, Random::for_bot(&format!("{}/chat", self.entity_id)));
+        self
+    }
+
+    /// The map's location names, for team callouts.
+    pub fn with_locations(mut self, locations: Arc<Locations>) -> Self {
+        self.locations = Some(locations);
+        self
+    }
+
+    /// Chat lines ready to send.
+    pub fn chat_at(&mut self, _now: SimTime) -> Vec<String> {
+        std::mem::take(&mut self.outgoing)
     }
 
     /// Keep a `DecisionTrace` of each decision, for tools.
@@ -323,6 +364,7 @@ impl BotPlayer {
         self.exact_view = self.plan(world, now);
         self.read_opponents(world);
         self.read_match(world);
+        self.talk(world, now);
         self.mood.update(
             &self.entity_id,
             &world.events,
@@ -1033,11 +1075,12 @@ impl BotPlayer {
         }
     }
 
-    /// `RoamChoice` in a mode that keeps a territory: holding ground is
-    /// worth `0.5 x mapControl`, and when that beats the arbiter's best item
-    /// (an item wins ties), a roaming bot healthy and armed enough walks to
-    /// the high ground `BotTerritory` picks. Hunting a fresh sighting is the
-    /// chase, which comes first.
+    /// `RoamChoice`: a roaming bot takes the arbiter's best item, hunts the
+    /// place a teammate just called enemies at, or in a mode that keeps a
+    /// territory holds high ground, whichever is worth most; an item wins
+    /// ties. Hunting is worth `(0.2 + 0.25 x aggression) x seekScale x
+    /// freshness`, holding `0.5 x mapControl` when healthy and armed. The bot's
+    /// own fresh sightings are the chase, which comes first.
     fn hold_ground(
         &mut self,
         world: &Observation,
@@ -1045,6 +1088,9 @@ impl BotPlayer {
         now: SimTime,
     ) {
         const HOLD_DESIRE_PER_CONTROL: f64 = 0.5;
+        const HUNT_DESIRE_BASE: f64 = 0.2;
+        const HUNT_DESIRE_PER_AGGRESSION: f64 = 0.25;
+        const TEAM_SIGHTING_TICKS: f64 = 6.0 * 125.0;
         const HOLD_HEALTH: u16 = 60;
         let roaming = self.engagement.is_none()
             && self.chasing.is_none()
@@ -1052,25 +1098,58 @@ impl BotPlayer {
             && !self.ordered
             && self.respawn_at.is_none()
             && !self.lunge.active();
-        let context = self
-            .match_context
-            .as_ref()
-            .filter(|context| context.keeps_territory());
-        let (Some(_), Some(position), Some(navigation), Some(sight), true) = (
-            context,
+        let (Some(position), Some(navigation), Some(sight), true) = (
             position,
             self.navigation.clone(),
             self.sight.clone(),
             roaming,
         ) else {
             self.territory_walk.reset();
+            self.hunt_walk.reset();
             return;
         };
-        let hold = HOLD_DESIRE_PER_CONTROL * self.weights(world).map_control;
-        if self.vitals.health.is_none_or(|health| health < HOLD_HEALTH)
-            || !self.combat.armed()
-            || self.planner.desire() >= hold
+        let weights = self.weights(world);
+        let item = self.planner.desire();
+        let hunt = self.team_sighting.map_or(0.0, |(_, at)| {
+            let fresh = 1.0 - f64::from(world.tick.saturating_sub(at)) / TEAM_SIGHTING_TICKS;
+            (HUNT_DESIRE_BASE + HUNT_DESIRE_PER_AGGRESSION * weights.aggression)
+                * self.strategist.stance().seek_scale
+                * fresh.max(0.0)
+        });
+        let keeps = self
+            .match_context
+            .as_ref()
+            .is_some_and(|context| context.keeps_territory());
+        let hold = if keeps
+            && self
+                .vitals
+                .health
+                .is_some_and(|health| health >= HOLD_HEALTH)
+            && self.combat.armed()
         {
+            HOLD_DESIRE_PER_CONTROL * weights.map_control
+        } else {
+            0.0
+        };
+        let velocity = world.body(&self.entity_id).and_then(|body| body.velocity);
+        if let Some((called, _)) = self.team_sighting
+            && hunt > item
+            && hunt >= hold
+        {
+            self.territory_walk.reset();
+            if let Some(input) =
+                self.hunt_walk
+                    .steer(&navigation, &sight, position, velocity, called, now)
+            {
+                self.planned_input = PlayerInput {
+                    weapon_slot: self.planned_input.weapon_slot,
+                    ..input
+                };
+            }
+            return;
+        }
+        self.hunt_walk.reset();
+        if hold <= 0.0 || item >= hold {
             self.territory_walk.reset();
             return;
         }
@@ -1091,7 +1170,6 @@ impl BotPlayer {
             self.territory_walk.reset();
             return;
         };
-        let velocity = world.body(&self.entity_id).and_then(|body| body.velocity);
         if let Some(input) =
             self.territory_walk
                 .steer(&navigation, &sight, position, velocity, point, now)
@@ -1168,6 +1246,153 @@ impl BotPlayer {
         self.combat
             .enemy_estimate(enemy, world.tick)
             .is_none_or(|(stack, uncertainty)| uncertainty > 0.5 || own <= stack)
+    }
+
+    /// `BotClient._callout` and `_chatter`: read teammates' calls, call what
+    /// the bot sees, say each directive's team call once, and let chat
+    /// react to the match.
+    fn talk(&mut self, world: &Observation, now: SimTime) {
+        const TEAM_SIGHTING_TICKS: u32 = 6 * 125;
+        let tick = world.tick;
+        let own_team = world
+            .player(&self.entity_id)
+            .map_or("", |player| player.team.as_str());
+        let on_team = !matches!(own_team, "" | "ffa" | "spectator");
+        for event in &world.events {
+            if let SnapshotEvent::Chat {
+                sender_id,
+                team,
+                text,
+                ..
+            } = event
+                && on_team
+                && text.starts_with("[TEAM]")
+                && *sender_id != self.entity_id
+                && team == own_team
+                && let Some(call) = self.callouts.heard(text, now)
+                && matches!(call.kind, CallKind::Enemies | CallKind::Carrier)
+                && let Some(at) = self
+                    .locations
+                    .as_ref()
+                    .and_then(|locations| locations.position_of(&call.place))
+            {
+                self.team_sighting = Some((at, tick));
+            }
+        }
+        self.team_sighting = self
+            .team_sighting
+            .filter(|(_, at)| tick.saturating_sub(*at) < TEAM_SIGHTING_TICKS);
+        let alive = self.respawn_at.is_none() && self.own_entity_present;
+        let roles = self
+            .match_context
+            .as_ref()
+            .is_some_and(|context| !context.team_roles.is_empty());
+        if alive && let Some(locations) = self.locations.clone() {
+            let seen: Vec<(&str, super::super::Vec3)> = self
+                .engagement
+                .filter(|fight| fight.in_sight)
+                .and_then(|fight| Some((self.combat.tracked()?, fight.target)))
+                .into_iter()
+                .collect();
+            let objective = self
+                .match_context
+                .as_ref()
+                .and_then(|context| context.objective.as_ref());
+            let line = self.callouts.observe(
+                &callouts::View {
+                    now,
+                    team: (on_team && roles).then_some(own_team),
+                    enemies: &seen,
+                    objective,
+                },
+                &locations,
+            );
+            self.outgoing.extend(line);
+        }
+        // The team's call the gametype gave this bot: said once.
+        for event in &world.events {
+            let SnapshotEvent::AgentDirectives {
+                entity_id,
+                directives,
+            } = event
+            else {
+                continue;
+            };
+            if *entity_id != self.entity_id {
+                continue;
+            }
+            for directive in directives.as_array().unwrap_or_default() {
+                let Some(call) = directive.get("call") else {
+                    continue;
+                };
+                let (Some(id), Some(text)) = (
+                    call.get("id").and_then(|id| id.as_str()),
+                    call.get("text").and_then(|text| text.as_str()),
+                ) else {
+                    continue;
+                };
+                if self.said_calls.iter().any(|said| said == id) {
+                    continue;
+                }
+                if self.said_calls.len() > 200 {
+                    self.said_calls.clear();
+                }
+                self.said_calls.push(id.to_owned());
+                self.outgoing.push(format!("/say_team {text}"));
+            }
+        }
+        let frags: Vec<Frag> = world
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                SnapshotEvent::Death {
+                    entity_id,
+                    killer_id,
+                    kill_weapon,
+                    weapon_id,
+                    ..
+                } if *killer_id == self.entity_id && *entity_id != self.entity_id => {
+                    Some(Frag::Kill {
+                        victim: entity_id.clone(),
+                        weapon: kill_weapon.clone().unwrap_or_else(|| weapon_id.clone()),
+                    })
+                }
+                SnapshotEvent::Death {
+                    entity_id,
+                    killer_id,
+                    ..
+                } if *entity_id == self.entity_id && *killer_id != self.entity_id => {
+                    Some(Frag::Death {
+                        killer: killer_id.clone(),
+                    })
+                }
+                _ => None,
+            })
+            .collect();
+        let names: Vec<(&str, &str)> = world
+            .players
+            .iter()
+            .filter(|player| player.entity_id != self.entity_id && !player.name.is_empty())
+            .map(|player| (player.entity_id.as_str(), player.name.as_str()))
+            .collect();
+        let (kill_streak, death_streak, tilted) = self.mood.streaks();
+        self.chat.observe(&chat::View {
+            now,
+            phase: self
+                .match_context
+                .as_ref()
+                .map_or(0, |context| context.phase),
+            time_remaining: self
+                .match_context
+                .as_ref()
+                .and_then(|context| context.time_remaining),
+            names: &names,
+            tilted,
+            kill_streak,
+            death_streak,
+            frags: &frags,
+        });
+        self.outgoing.extend(self.chat.poll(now));
     }
 
     /// `BotRoam.retreat` while the enemy is in sight: walk to the escape
@@ -1615,6 +1840,10 @@ impl NetworkedPlayer for BotPlayer {
 
     fn inputs_at(&mut self, now: SimTime) -> Vec<Controls> {
         BotPlayer::inputs_at(self, now)
+    }
+
+    fn chat_at(&mut self, now: SimTime) -> Vec<String> {
+        BotPlayer::chat_at(self, now)
     }
 }
 

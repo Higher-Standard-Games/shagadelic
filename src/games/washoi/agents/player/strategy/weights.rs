@@ -5,6 +5,8 @@
 
 use shagger_shared::json::Value;
 
+use crate::games::washoi::{Vec3, agents::player::callouts::Objective};
+
 /// `BotWeightProfile`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(in crate::games::washoi) struct Weights {
@@ -153,6 +155,8 @@ pub(in crate::games::washoi) struct MatchContext {
     pub(in crate::games::washoi) team_roles: Vec<(String, String)>,
     pub(in crate::games::washoi) round_state: Option<String>,
     pub(in crate::games::washoi) time_remaining: Option<f64>,
+    /// The S&D bomb, when the mode has one.
+    pub(in crate::games::washoi) objective: Option<Objective>,
 }
 
 impl MatchContext {
@@ -182,6 +186,7 @@ impl MatchContext {
                 .and_then(Value::as_str)
                 .map(str::to_owned),
             time_remaining: event.get("timeRemaining").and_then(Value::as_f64),
+            objective: event.get("objective").and_then(objective),
         }
     }
 
@@ -227,6 +232,36 @@ impl MatchContext {
             })
             .unwrap_or(DEFAULT)
     }
+}
+
+/// The bomb in `match_state`, as `BotGameState` reads it.
+fn objective(value: &Value) -> Option<Objective> {
+    let phase = value.get("phase")?.as_str()?.to_owned();
+    let coordinate = |key| value.get(key).and_then(Value::as_f64);
+    let position = match (coordinate("x"), coordinate("y"), coordinate("z")) {
+        (Some(x), Some(y), Some(z)) => Some(Vec3::new(x, y, z)),
+        _ => None,
+    };
+    let site_id = value.get("siteId").and_then(Value::as_f64);
+    let site = value
+        .get("sites")
+        .and_then(Value::as_array)
+        .and_then(|sites| {
+            sites
+                .iter()
+                .find(|site| site_id.is_some() && site.get("id").and_then(Value::as_f64) == site_id)
+        })
+        .and_then(|site| site.get("label")?.as_str())
+        .map(str::to_owned);
+    Some(Objective {
+        phase,
+        position,
+        carrier: value
+            .get("carrier")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        site,
+    })
 }
 
 /// `weightProfileKey`: lower case, with runs of other characters as one `_`.

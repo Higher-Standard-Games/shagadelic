@@ -13,7 +13,7 @@ use shagger_shared::net::{
     DecodeError,
     command::Command,
     game_state::GameState,
-    message_codec::{JoinAccept, Welcome, encode_request_spawn},
+    message_codec::{JoinAccept, Welcome, encode_chat, encode_request_spawn},
     snapshot::EventCodec,
 };
 use tokio_tungstenite::tungstenite::Message;
@@ -51,18 +51,28 @@ impl PlayerInput {
     }
 }
 
+/// `NetworkGameHost.sendChat` trims a line to this many characters, plus
+/// the `/say_team ` prefix.
+const CHAT_LIMIT: usize = 138;
+
 /// One input opportunity: an optional respawn request, then the paced
 /// commands in order.
 pub(crate) struct InputBatch {
     controls: Vec<Controls>,
     respawn: bool,
+    chat: Vec<String>,
 }
 
 impl InputBatch {
     pub(crate) fn from_player(bot: &mut dyn NetworkedPlayer, now: SimTime) -> Self {
         let respawn = bot.request_respawn_at(now);
         let controls = bot.inputs_at(now);
-        Self { controls, respawn }
+        let chat = bot.chat_at(now);
+        Self {
+            controls,
+            respawn,
+            chat,
+        }
     }
 }
 
@@ -123,6 +133,11 @@ impl WireAgent for PlayerWire {
     fn encode(&mut self, identity: &JoinAccept, batch: InputBatch, out: &mut Vec<Wire>) {
         if batch.respawn {
             out.push(Wire::Frame(encode_request_spawn()));
+        }
+        // The server caps a line at 128 characters.
+        for line in batch.chat {
+            let line: String = line.chars().take(CHAT_LIMIT).collect();
+            out.push(Wire::Frame(encode_chat(&line)));
         }
         for controls in batch.controls {
             out.push(Wire::Command {
@@ -249,4 +264,38 @@ pub async fn connect<C: EventCodec>(
         link,
         wire,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use shagger_shared::net::message_codec::decode_chat;
+
+    #[test]
+    fn sends_chat_lines_as_chat_messages_before_the_commands() {
+        let mut wire = PlayerWire::new("Ramen".into(), None, None);
+        let identity = JoinAccept {
+            player_id: "p1".into(),
+            entity_id: "player_1".into(),
+            ..JoinAccept::default()
+        };
+        let long = "x".repeat(200);
+        let batch = InputBatch {
+            controls: vec![Controls::default()],
+            respawn: false,
+            chat: vec!["/say_team Enemy at Warehouse A".into(), long],
+        };
+        let mut out = Vec::new();
+        wire.encode(&identity, batch, &mut out);
+        let lines: Vec<String> = out
+            .iter()
+            .filter_map(|wire| match wire {
+                Wire::Frame(bytes) => decode_chat(bytes).ok(),
+                Wire::Command { .. } => None,
+            })
+            .collect();
+        assert_eq!(lines[0], "/say_team Enemy at Warehouse A");
+        assert_eq!(lines[1].len(), CHAT_LIMIT);
+        assert!(matches!(out.last(), Some(Wire::Command { .. })));
+    }
 }

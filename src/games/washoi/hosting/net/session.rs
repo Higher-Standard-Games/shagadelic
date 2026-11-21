@@ -10,7 +10,7 @@ use tokio::{sync::mpsc, task::JoinHandle};
 use crate::runtime::{Deadlines, EntityKey, GameSession, SessionEvent, Update};
 
 use crate::games::washoi::{
-    BotPlayer, Difficulty, LearnedRoutes, Sight, SimTime, WashoiNavigation,
+    BotPlayer, Difficulty, LearnedRoutes, Locations, Sight, SimTime, WashoiNavigation,
     agents::NetworkedPlayer,
     hosting::net::protocol::{
         self, AdmissionError, InputBatch, SnapshotEvent, WashoiEvents, connect,
@@ -44,6 +44,7 @@ struct MapAssets {
     navigation: Option<Arc<WashoiNavigation>>,
     learned: Option<Arc<LearnedRoutes>>,
     sight: Option<Arc<Sight>>,
+    locations: Option<Arc<Locations>>,
 }
 
 impl MapAssets {
@@ -52,6 +53,7 @@ impl MapAssets {
             self.navigation.as_ref().map(|navigation| navigation.map()),
             self.learned.as_ref().map(|learned| learned.map()),
             self.sight.as_ref().map(|sight| sight.map()),
+            self.locations.as_ref().map(|locations| locations.map()),
         ]
         .into_iter()
         .flatten()
@@ -72,6 +74,7 @@ struct BotTask {
     task: JoinHandle<()>,
     actions: mpsc::Sender<InputBatch>,
     difficulty: Difficulty,
+    name: String,
     /// Built as a `BotPlayer`, driven only as a `NetworkedPlayer`.
     player: Option<Box<dyn NetworkedPlayer>>,
 }
@@ -117,6 +120,11 @@ impl WashoiSession {
         self
     }
 
+    pub fn with_locations(mut self, locations: Locations) -> Self {
+        self.assets.locations = Some(Arc::new(locations));
+        self
+    }
+
     pub fn take_report(&mut self) -> Option<BotReport> {
         self.reports.pop_front()
     }
@@ -136,6 +144,7 @@ impl GameSession for WashoiSession {
         let executor = tokio::runtime::Handle::try_current().map_err(|_| "executor_unavailable")?;
         let (actions, outgoing) = mpsc::channel(1);
         let difficulty = bot.difficulty;
+        let name = bot.name.clone();
         let task = executor.spawn(run_bot(
             self.endpoint.clone(),
             key.clone(),
@@ -150,6 +159,7 @@ impl GameSession for WashoiSession {
                 task,
                 actions,
                 difficulty,
+                name,
                 player: None,
             },
         );
@@ -173,7 +183,9 @@ impl GameSession for WashoiSession {
                 player_id,
             } => {
                 if let Some(bot) = self.bots.get_mut(&key) {
-                    let mut player = BotPlayer::new(entity_id).with_difficulty(bot.difficulty);
+                    let mut player = BotPlayer::new(entity_id)
+                        .with_difficulty(bot.difficulty)
+                        .with_name(&bot.name);
                     if let Some(nav) = &self.assets.navigation {
                         player = player.with_navigation(nav.clone());
                     }
@@ -182,6 +194,9 @@ impl GameSession for WashoiSession {
                     }
                     if let Some(sight) = &self.assets.sight {
                         player = player.with_sight(sight.clone());
+                    }
+                    if let Some(locations) = &self.assets.locations {
+                        player = player.with_locations(locations.clone());
                     }
                     bot.player = Some(Box::new(player));
                     self.reports.push_back(BotReport::Admitted {

@@ -225,13 +225,15 @@ async function mapAssets(map, { navigationDir, learnedRoutesDir }) {
     await access(path);
     return path;
   };
-  const [navigation_file, learned_routes_file, sight_file] = await Promise.all([
+  const [navigation_file, learned_routes_file, sight_file, locations_file] = await Promise.all([
     navigationDir ? optionalFile(resolve(navigationDir, name), existing) : undefined,
     learnedRoutesDir ? optionalFile(resolve(learnedRoutesDir, name), existing) : undefined,
     // Baked by tools/bake-washoi-sight.mjs. The child checks its map.
     navigationDir ? optionalFile(resolve(navigationDir, map + ".sight"), existing) : undefined,
+    // Baked by tools/bake-washoi-locations.mjs, for team callouts.
+    navigationDir ? optionalFile(resolve(navigationDir, map + ".locations.json"), existing) : undefined,
   ]);
-  return { washoi_map: map, navigation_file, learned_routes_file, sight_file };
+  return { washoi_map: map, navigation_file, learned_routes_file, sight_file, locations_file };
 }
 
 async function optionalFile(path, use) {

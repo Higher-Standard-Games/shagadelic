@@ -24,6 +24,7 @@ pub fn observe(state: &GameState<SnapshotEvent>) -> Observation {
             .values()
             .map(|player| PlayerView {
                 entity_id: player.entity_id.clone(),
+                name: player.name.clone(),
                 team: player.team.clone(),
                 score: player.score,
                 deaths: player.deaths,

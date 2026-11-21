@@ -121,6 +121,11 @@ impl BotMood {
         };
     }
 
+    /// Kills and deaths in a row, while fresh, and whether tilted.
+    pub(in crate::games::washoi) fn streaks(&self) -> (u32, u32, bool) {
+        (self.kills, self.deaths, self.mood == Mood::Tilted)
+    }
+
     /// `retreatHealth`: the health below which the bot backs off.
     pub(in crate::games::washoi) fn retreat_health(&self, base: f64) -> f64 {
         match self.mood {

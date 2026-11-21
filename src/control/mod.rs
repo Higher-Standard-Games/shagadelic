@@ -19,6 +19,8 @@ struct Initialization {
     navigation_file: Option<std::path::PathBuf>,
     learned_routes_file: Option<std::path::PathBuf>,
     sight_file: Option<std::path::PathBuf>,
+    /// The map's location names, for team callouts.
+    locations_file: Option<std::path::PathBuf>,
 }
 
 #[cfg(feature = "washoi")]
@@ -92,6 +94,7 @@ pub fn run(mut reader: impl BufRead + Send + 'static, writer: &mut impl Write) -
         || init.navigation_file.is_some()
         || init.learned_routes_file.is_some()
         || init.sight_file.is_some()
+        || init.locations_file.is_some()
     {
         return Err(invalid("Washoi support is disabled"));
     }
@@ -100,7 +103,8 @@ pub fn run(mut reader: impl BufRead + Send + 'static, writer: &mut impl Write) -
         || init.navigation.is_some()
         || init.navigation_file.is_some()
         || init.learned_routes_file.is_some()
-        || init.sight_file.is_some())
+        || init.sight_file.is_some()
+        || init.locations_file.is_some())
         && init.washoi_endpoint.is_none()
     {
         return Err(invalid("navigation requires a Washoi session"));
@@ -134,12 +138,19 @@ pub fn run(mut reader: impl BufRead + Send + 'static, writer: &mut impl Write) -
         .map(shagadelic::games::washoi::Sight::load)
         .transpose()?;
     #[cfg(feature = "washoi")]
+    let locations = init
+        .locations_file
+        .as_ref()
+        .map(shagadelic::games::washoi::Locations::load)
+        .transpose()?;
+    #[cfg(feature = "washoi")]
     {
         let maps = [
             init.washoi_map.as_deref(),
             navigation.as_ref().map(|navigation| navigation.map()),
             learned.as_ref().map(|learned| learned.map()),
             sight.as_ref().map(|sight| sight.map()),
+            locations.as_ref().map(|locations| locations.map()),
         ];
         let mut maps = maps.into_iter().flatten();
         if let Some(first) = maps.next()
@@ -178,6 +189,7 @@ pub fn run(mut reader: impl BufRead + Send + 'static, writer: &mut impl Write) -
                 navigation,
                 learned,
                 sight,
+                locations,
             },
         );
     }

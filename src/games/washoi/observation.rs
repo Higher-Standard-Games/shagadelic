@@ -63,6 +63,8 @@ impl Sub for SimTime {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PlayerView {
     pub entity_id: String,
+    /// The name the player joined with.
+    pub name: String,
     pub team: String,
     /// The scoreboard row: frags, or the mode's points, and deaths.
     pub score: i32,
