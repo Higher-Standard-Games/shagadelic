@@ -9,8 +9,8 @@ use serde::Deserialize;
 use shagger_shared::net::game_state::Vec3;
 
 use crate::games::washoi::agents::player::navigation::{
-    ANCHOR_RADIUS, ARRIVAL_RADIUS, ENTRY_RADIUS, MAX_HEIGHT_DELTA, ObjectiveEdge,
-    ObjectiveRecovery, PickupGoal, Route, horizontal_distance,
+    ANCHOR_RADIUS, ARRIVAL_RADIUS, ENTRY_RADIUS, LOCAL_WALK_RADIUS, MAX_HEIGHT_DELTA,
+    ObjectiveEdge, ObjectiveRecovery, PickupGoal, Route, horizontal_distance,
 };
 
 /// Nodes tried in turn when recovery walks straight back to the graph.
@@ -358,8 +358,16 @@ impl Planner {
         {
             return Some(route);
         }
+        // Partway along a walk, finish it, as an objective walk does.
+        if let Some((start, lead)) = self.on_edge(position)
+            && let Some(route) = self.best_route(position, start, lead, &accept, &score)
+        {
+            return Some(route);
+        }
+        // Spawns and ledges on sparse cache graphs can sit farther than the
+        // anchor radius from any node at their height.
         let mut near: Vec<_> = (0..self.nodes.len())
-            .filter(|&node| here(self.nodes[node], ANCHOR_RADIUS))
+            .filter(|&node| here(self.nodes[node], LOCAL_WALK_RADIUS))
             .map(|node| (horizontal_distance(position, self.nodes[node]), node))
             .collect();
         near.sort_by(|a, b| a.0.total_cmp(&b.0));

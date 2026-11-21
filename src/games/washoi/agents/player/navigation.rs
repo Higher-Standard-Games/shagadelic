@@ -26,7 +26,7 @@ const ANCHOR_RADIUS: f64 = 128.0;
 // Sparse cache graphs leave open floor more than 128 units from any node, as on
 // `washoi_snd1`, where a fight can strand a bot. The walk is sampled every 16
 // units, so a longer straight connector stays as safe as a short one.
-const LOCAL_WALK_RADIUS: f64 = 256.0;
+pub(in crate::games::washoi) const LOCAL_WALK_RADIUS: f64 = 256.0;
 const SPRINT_LEG_DISTANCE: f64 = 128.0;
 const SPRINT_HEIGHT_DELTA: f64 = 16.0;
 // Washoi engine/network/components/InputComponent.ts.
@@ -656,6 +656,28 @@ mod tests {
     }
 
     #[test]
+    fn a_roaming_bot_walks_to_a_node_up_to_256_units_away() {
+        // A `washoi_dm2` spawn sits 195 to 234 units from every node at its
+        // height. Roaming attached only within 128 units, so live bots
+        // spawned there stood still for the rest of the match.
+        let graph: WashoiNavigation = serde_json::from_str(
+            r#"{"map":"test","graph":{
+                "bsp_sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                "nodes":[[0,0,0],[100,0,0]],"edges":[[0,1],[1,0]],"entries":[0],"goals":[1]
+            }}"#,
+        )
+        .unwrap();
+        let planner = graph.planner.as_ref().unwrap();
+        let plan =
+            |x: f64| planner.plan(Vec3::new(x, 0.0, 0.0), None, |_| true, |_| 0.0, |_, _| true);
+        assert_eq!(
+            plan(-200.0).unwrap().waypoints,
+            [[0.0; 3], [100.0, 0.0, 0.0]]
+        );
+        assert!(plan(-300.0).is_none());
+    }
+
+    #[test]
     fn walks_only_to_goals_the_bot_can_walk_back_from() {
         // Node 2 is a pocket: walkable into, but its exit is a drop the
         // cache importer leaves out. Its pickup would score higher.
@@ -736,7 +758,8 @@ mod tests {
             ]
         );
         assert_eq!(back.entry, [200.0, 0.0, 0.0]);
-        // A node anchor still leads straight back to it, and an unknown point not at all.
+        // A node anchor still leads straight back to it, and an unknown
+        // point away from every walk not at all.
         let node = graph
             .plan(
                 Vec3::new(60.0, 0.0, 30.0),
@@ -749,7 +772,13 @@ mod tests {
         assert_eq!(node.waypoints[0], [0.0; 3]);
         assert!(
             graph
-                .plan(off, Some([1.0; 3]), None, |_| true, |_| 0.0)
+                .plan(
+                    Vec3::new(260.0, 0.0, 160.0),
+                    Some([1.0; 3]),
+                    None,
+                    |_| true,
+                    |_| 0.0
+                )
                 .is_none()
         );
     }
@@ -782,8 +811,11 @@ mod tests {
         let plan = |anchor, sight, accept: &dyn Fn(&Route) -> bool| {
             graph.plan(off, anchor, sight, accept, |_| 0.0)
         };
-        // Without sight there is no way back, as before.
-        assert!(plan(None, None, &|_| true).is_none());
+        // Without sight, the bot on the baked walk from 0 to 1 finishes it.
+        assert_eq!(
+            plan(None, None, &|_| true).unwrap().entry,
+            [180.0, 24.0, 0.0]
+        );
         let open = plan(None, Some(&sight), &|_| true).unwrap();
         assert_eq!(open.entry, [180.0, 24.0, 0.0]);
         // An anchor comes first, unless its walk was blocked.
