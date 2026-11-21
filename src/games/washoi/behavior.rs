@@ -219,11 +219,12 @@ impl BotPlayer {
             _ => {
                 self.combat.disengage();
                 self.moves.reset();
-                if !self.exact_view
-                    && self.respawn_at.is_none()
-                    && self.combat.carry_charge(world.tick)
-                {
-                    self.planned_input.buttons |= ALT_FIRE;
+                if !self.exact_view && self.respawn_at.is_none() {
+                    if self.combat.carry_charge(world.tick) {
+                        self.planned_input.buttons |= ALT_FIRE;
+                    }
+                    self.planned_input.weapon_slot =
+                        self.combat.ready_slot(world.tick, self.difficulty.aim());
                 }
             }
         }

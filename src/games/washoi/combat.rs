@@ -37,6 +37,10 @@ const MELEE_RANGE: f64 = 150.0;
 const CHARGE_RELEASE_CONE: f64 = 12.0 * std::f64::consts::PI / 180.0;
 const CHARGE_AIM_GRACE_TICKS: u32 = 63;
 const CHARGE_CARRY_TICKS: u32 = 250;
+/// `READY_RANGE`, `READY_TICKS`, and `HOLSTER_RANGE` of `readyForHeard`.
+const READY_RANGE: f64 = 1500.0;
+const READY_TICKS: u32 = 250;
+const HOLSTER_RANGE: f64 = 800.0;
 /// `COVER_MIN_RANGE`: closer fights are fought in the open.
 const COVER_MIN_RANGE: f64 = 350.0;
 /// `BotVision.ts` enemy memory, in server ticks at 125 Hz: a visual track
@@ -71,6 +75,11 @@ pub(super) struct Combat {
     cover: CoverPeek,
     /// A charge being held for a blast.
     charge: Option<Charge>,
+    /// The nearest enemy heard but not seen this decision, and the gun got
+    /// out for it until a tick.
+    heard_nearest: Option<f64>,
+    ready: Option<(String, u32)>,
+    ready_roll_at: u32,
     /// When the bot last fired, for peeking between shots.
     fired_tick: Option<u32>,
     /// Combo rolls, seeded per bot.
@@ -251,8 +260,14 @@ impl Combat {
             sight,
         };
         let noticed = self.perception.perceive(senses, &world.events, &enemies);
+        self.heard_nearest = None;
         for (entity, at, source) in &noticed.heard {
             self.heard(entity, *at, *source, world.tick);
+            let heard_at = distance(position, *at);
+            self.heard_nearest = Some(
+                self.heard_nearest
+                    .map_or(heard_at, |near: f64| near.min(heard_at)),
+            );
         }
         let grounded = world
             .body(own)
@@ -510,6 +525,69 @@ impl Combat {
         true
     }
 
+    /// `readyForHeard`: out of a fight, the weapon slot to switch to, or 0.
+    /// An enemy heard within 1,500 units but not seen gets the gun for that
+    /// distance, rolled every two seconds at `predictionSkill` odds and kept
+    /// for two seconds. Otherwise the blade goes away for the gun a fight at
+    /// 800 units would pick: whoever comes round the next corner is more
+    /// likely at mid range than in swing reach.
+    pub(super) fn ready_slot(&mut self, tick: u32, skill: AimSkill) -> u8 {
+        let ammo = |id: &str| {
+            self.ammo
+                .iter()
+                .find(|(weapon, _)| weapon == id)
+                .map(|(_, ammo)| *ammo)
+        };
+        let has =
+            |id: &str| self.weapons.iter().any(|w| w == id) && ammo(id).is_none_or(|a| a > 0.0);
+        if self
+            .ready
+            .as_ref()
+            .is_some_and(|(weapon, until)| tick >= *until || !has(weapon))
+        {
+            self.ready = None;
+        }
+        if self.ready.is_none()
+            && let Some(heard) = self.heard_nearest.filter(|&heard| heard <= READY_RANGE)
+            && tick >= self.ready_roll_at
+        {
+            self.ready_roll_at = tick + READY_TICKS;
+            if self.random.next() < skill.prediction {
+                let (slot, _) = weapons::select(&self.weapons, ammo, &self.weapon, heard);
+                let weapon = match slot {
+                    0 => self.weapon.clone(),
+                    slot => self.weapons[usize::from(slot) - 1].clone(),
+                };
+                if !weapon.is_empty() {
+                    self.ready = Some((weapon, tick + READY_TICKS));
+                }
+            }
+        }
+        let slot_for = |weapon: &str| {
+            if weapon == self.weapon {
+                return 0;
+            }
+            self.weapons
+                .iter()
+                .position(|w| w == weapon)
+                .and_then(|index| u8::try_from(index + 1).ok())
+                .unwrap_or(0)
+        };
+        if let Some((weapon, _)) = &self.ready {
+            let slot = slot_for(weapon);
+            if slot != 0 {
+                return slot;
+            }
+        }
+        if self.weapon == "blade" && self.charge.is_none() {
+            let (slot, profile) = weapons::select(&self.weapons, ammo, &self.weapon, HOLSTER_RANGE);
+            if slot != 0 && !profile.melee {
+                return slot;
+            }
+        }
+        0
+    }
+
     /// `carryCharge`: out of a fight, a charge is still held for up to two
     /// seconds while its weapon stays out, to let go when the enemy is back.
     pub(super) fn carry_charge(&mut self, tick: u32) -> bool {
@@ -630,6 +708,8 @@ impl Combat {
         self.cover.reset();
         self.fired_tick = None;
         self.charge = None;
+        self.ready = None;
+        self.heard_nearest = None;
     }
 }
 
@@ -917,6 +997,41 @@ mod tests {
                 .engage(&world, "me", me(-112.0), toward(facing), &sight, skill)
                 .is_none()
         );
+    }
+
+    #[test]
+    fn holsters_the_blade_and_readies_the_gun_for_a_heard_enemy() {
+        let skill = AimSkill {
+            prediction: 1.0,
+            ..Difficulty::Medium.aim()
+        };
+        let loadout = ["blade", "machinegun", "riotgun"];
+        let full = [
+            ("machinegun", rounds(30.0, 0.0)),
+            ("riotgun", rounds(10.0, 0.0)),
+        ];
+        // Nobody about: the blade goes away for the 800-unit gun.
+        let mut combat = Combat::default();
+        combat.observe(&[armed("blade", &loadout, &full)], "me", 0);
+        assert_eq!(combat.ready_slot(0, skill), 2);
+        // Heard at 300 units: the riotgun, held for two seconds.
+        combat.observe(&[armed("machinegun", &loadout, &full)], "me", 0);
+        combat.heard_nearest = Some(300.0);
+        assert_eq!(combat.ready_slot(10, skill), 3);
+        combat.heard_nearest = None;
+        assert_eq!(combat.ready_slot(200, skill), 3);
+        assert_eq!(combat.ready_slot(260, skill), 0);
+        // Too far to matter, or no prediction skill: nothing readied.
+        combat.heard_nearest = Some(2000.0);
+        assert_eq!(combat.ready_slot(600, skill), 0);
+        let mut unskilled = Combat::default();
+        unskilled.observe(&[armed("machinegun", &loadout, &full)], "me", 0);
+        unskilled.heard_nearest = Some(300.0);
+        let blind = AimSkill {
+            prediction: 0.0,
+            ..skill
+        };
+        assert_eq!(unskilled.ready_slot(0, blind), 0);
     }
 
     #[test]
