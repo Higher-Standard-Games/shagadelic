@@ -386,7 +386,7 @@ impl Route {
 
 /// A short connector on the present floor. The sight geometry supplies
 /// clearance and support samples, while the game server runs player physics.
-fn local_walk(sight: &Sight, from: Vec3, to: Vec3) -> bool {
+pub(super) fn local_walk(sight: &Sight, from: Vec3, to: Vec3) -> bool {
     let (dx, dz) = (to.x - from.x, to.z - from.z);
     let distance = dx.hypot(dz);
     if !(1.0..=LOCAL_WALK_RADIUS).contains(&distance) || (from.y - to.y).abs() > MAX_HEIGHT_DELTA {

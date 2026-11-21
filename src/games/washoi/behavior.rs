@@ -324,7 +324,14 @@ impl BotPlayer {
             moves.strafe,
         ));
         let [x, _, z] = self.planned_input.direction;
-        let (x, z) = (x + side * yaw.cos(), z - side * yaw.sin());
+        // Peeking from cover, the bot keeps its spot: only the side step.
+        let (x, z) = match fight.peek {
+            Some(peek) if !self.moves.dodging(world.tick) => {
+                let peek = f64::from(peek);
+                (peek * yaw.cos(), -peek * yaw.sin())
+            }
+            _ => (x + side * yaw.cos(), z - side * yaw.sin()),
+        };
         let length = x.hypot(z);
         self.planned_input.direction = if length > 1e-6 {
             [x / length, 0.0, z / length]

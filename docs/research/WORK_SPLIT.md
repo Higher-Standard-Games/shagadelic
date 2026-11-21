@@ -55,11 +55,11 @@ Suggested path:
 
 ## Session A plan (combat)
 
-Done: strafing and hit dodges (`b83927c`), rocket and grenade sidesteps (`37eef1d`), chasing an enemy out of sight (`efe5de9`), perception (`17db763`), the brain's side of the separation (`7ead674` to `cefd2cf`), and weapon combos (this commit). Hunting turned out to be mostly covered by chase and roaming, and the design records why. The rest needs the strategy layer's weight profiles.
+Done: strafing and hit dodges (`b83927c`), rocket and grenade sidesteps (`37eef1d`), chasing an enemy out of sight (`efe5de9`), perception (`17db763`), the brain's side of the separation (`7ead674` to `cefd2cf`), weapon combos (`e8b1990`), and cover peeking (this commit). Hunting turned out to be mostly covered by chase and roaming, and the design records why. The rest needs the strategy layer's weight profiles.
 
 Next:
-1. Charged blade shots, after `BotFight.updateChargedFire`.
-2. Cover peeking and high ground, after `BotCoverPeek.ts` and `findHighGround`.
+1. High ground for splash weapons, after `findHighGround` and `BotFight.highGround`.
+2. Charged blade shots, after `BotFight.updateChargedFire`.
 3. The finishing switch, once an enemy health estimate (`strategy/MatchRead.ts`) exists.
 
 ## Notes between sessions

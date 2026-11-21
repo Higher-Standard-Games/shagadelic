@@ -46,6 +46,7 @@ impl Difficulty {
             reaction_ms,
             tracking,
             prediction,
+            dodge: self.dodge_skill(),
         }
     }
 
@@ -88,6 +89,8 @@ pub(super) struct AimSkill {
     pub(super) reaction_ms: f64,
     pub(super) tracking: f64,
     pub(super) prediction: f64,
+    /// `dodgeSkill`, which also rolls cover use in `BotFight`.
+    pub(super) dodge: f64,
 }
 
 #[cfg(test)]

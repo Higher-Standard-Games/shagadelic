@@ -15,7 +15,9 @@ use super::{
     Observation, Sight,
     aim::View,
     combos::{Combos, Situation},
+    cover::{self, CoverPeek},
     difficulty::AimSkill,
+    navigation::local_walk,
     perception::{Enemy, Perception, Senses, Source},
     protocol::SnapshotEvent,
     random::Random,
@@ -30,6 +32,8 @@ const PREDICTED_SHOT_SPEED: f64 = 1400.0;
 const SPLASH_DROP: f64 = 20.0;
 /// `states/BotFight.ts` `MELEE_RANGE`.
 const MELEE_RANGE: f64 = 150.0;
+/// `COVER_MIN_RANGE`: closer fights are fought in the open.
+const COVER_MIN_RANGE: f64 = 350.0;
 /// `BotVision.ts` enemy memory, in server ticks at 125 Hz: a visual track
 /// fades from full confidence to none over 4 s, its position is
 /// extrapolated for up to 3 s, and it is chased above 0.3.
@@ -58,6 +62,9 @@ pub(super) struct Combat {
     track: Option<Track>,
     perception: Perception,
     combos: Combos,
+    cover: CoverPeek,
+    /// When the bot last fired, for peeking between shots.
+    fired_tick: Option<u32>,
     /// Combo rolls, seeded per bot.
     random: Random,
     /// The weapon and server tick since which aim has been held with it out.
@@ -98,6 +105,10 @@ pub(super) struct Engagement {
     /// Melee fire must be pressed afresh for each swing.
     pub(super) melee: bool,
     pub(super) weapon_slot: u8,
+    /// A strafe that peeks from cover, `BotCoverPeek`: −1, 1, or 0 to stand.
+    pub(super) peek: Option<i8>,
+    /// False while ducked in cover with the enemy out of sight.
+    pub(super) in_sight: bool,
 }
 
 impl Combat {
@@ -123,7 +134,10 @@ impl Combat {
                     entity_id,
                     weapon_id,
                     ..
-                } if entity_id == own => self.combos.shot(weapon_id, tick),
+                } if entity_id == own => {
+                    self.combos.shot(weapon_id, tick);
+                    self.fired_tick = Some(tick);
+                }
                 SnapshotEvent::CombatState {
                     entity_id, dead, ..
                 } => {
@@ -214,8 +228,15 @@ impl Combat {
         for (entity, at, source) in &noticed.heard {
             self.heard(entity, *at, *source, world.tick);
         }
+        let grounded = world
+            .body(own)
+            .and_then(|body| body.velocity)
+            .is_none_or(|velocity| velocity.grounded);
         // `seen` is nearest first.
-        let enemy = enemies[*noticed.seen.first()?];
+        let Some(&seen) = noticed.seen.first() else {
+            return self.hold_cover(world.tick, position, sight, skill, grounded);
+        };
+        let enemy = enemies[seen];
         let (distance, at, velocity) =
             (distance(position, enemy.at), enemy.at, Some(enemy.velocity));
         self.track = Some(Track {
@@ -294,13 +315,93 @@ impl Combat {
             yaw: delta[0].atan2(delta[2]),
             pitch: -delta[1].atan2(horizontal),
         };
-        let buttons = self.buttons(profile, has_ammo, selected_out, distance, world.tick);
+        let mut buttons = self.buttons(profile, has_ammo, selected_out, distance, world.tick);
+        // `peekFromCover`: ranged fights on the ground with the weapon out.
+        let peek = if !profile.melee && distance >= COVER_MIN_RANGE && grounded && selected_out {
+            self.peek(
+                world.tick, position, enemy.at, view.yaw, sight, profile, skill, true,
+            )
+        } else {
+            self.cover.reset();
+            None
+        };
+        if peek.is_some() && !has_ammo {
+            buttons = 0;
+        }
         Some(Engagement {
             view,
             buttons,
             melee: profile.melee,
             weapon_slot,
+            peek,
+            in_sight: true,
         })
+    }
+
+    /// Ducked in cover, the fight goes on out of sight for a while: watch
+    /// where the enemy was last seen, hold fire, and keep peeking.
+    fn hold_cover(
+        &mut self,
+        tick: u32,
+        position: Vec3,
+        sight: &Sight,
+        skill: AimSkill,
+        grounded: bool,
+    ) -> Option<Engagement> {
+        if !grounded || !self.cover.holding(tick) {
+            return None;
+        }
+        let at = self.track.as_ref()?.at;
+        let delta = [at.x - position.x, at.y - position.y, at.z - position.z];
+        let horizontal = delta[0].hypot(delta[2]);
+        if horizontal <= 0.01 {
+            return None;
+        }
+        let view = View {
+            yaw: delta[0].atan2(delta[2]),
+            pitch: -delta[1].atan2(horizontal),
+        };
+        let profile = weapons::profile_of(&self.weapon);
+        let peek = self.peek(tick, position, at, view.yaw, sight, profile, skill, false);
+        Some(Engagement {
+            view,
+            buttons: 0,
+            melee: false,
+            weapon_slot: 0,
+            peek,
+            in_sight: false,
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn peek(
+        &mut self,
+        tick: u32,
+        position: Vec3,
+        enemy: Vec3,
+        yaw: f64,
+        sight: &Sight,
+        profile: Profile,
+        skill: AimSkill,
+        visible: bool,
+    ) -> Option<i8> {
+        let enemy_eye = [enemy.x, enemy.y + FIRE_HEIGHT, enemy.z];
+        let hidden = |at: [f64; 3]| !sight.clear([at[0], at[1] + FIRE_HEIGHT, at[2]], enemy_eye);
+        let walkable = |to: [f64; 3]| local_walk(sight, position, Vec3::new(to[0], to[1], to[2]));
+        self.cover.step(
+            &cover::Query {
+                tick,
+                position: [position.x, position.y, position.z],
+                yaw,
+                hidden: &hidden,
+                walkable: &walkable,
+                refire_ticks: profile.fire_interval_ticks,
+                fired_tick: self.fired_tick,
+                visible,
+            },
+            skill.dodge,
+            &mut self.random,
+        )
     }
 
     /// `fight`'s buttons. Aiming down sights tightens the shot, and a weapon
@@ -408,6 +509,8 @@ impl Combat {
         self.ads_since = None;
         self.track = None;
         self.combos.reset();
+        self.cover.reset();
+        self.fired_tick = None;
     }
 }
 
@@ -619,6 +722,78 @@ mod tests {
         // At 800 units the distance keeps the rocket launcher out. The combo
         // takes the bolt in slot 2 while the foe hangs in the air.
         assert_eq!(fight.weapon_slot, 2);
+    }
+
+    #[test]
+    fn peeks_from_a_pillar_and_holds_the_fight_while_ducked() {
+        use crate::games::washoi::protocol::Point;
+        // A floor, and a wall that hides the spot 112 units to the bot's
+        // right (−x, facing the foe down −z) but not the spot at 64.
+        let sight = Sight::parse(&encode(
+            "test",
+            &[
+                cube([-1000.0, -10.0, -1000.0], [1000.0, 0.0, 1000.0]),
+                cube([-200.0, 0.0, -60.0], [-80.0, 200.0, -40.0]),
+            ],
+            &[],
+        ))
+        .unwrap();
+        let mut world = world(&[
+            ("me", "", [0.0, 24.0, 0.0]),
+            ("foe", "", [0.0, 24.0, -600.0]),
+        ]);
+        let skill = Difficulty::Insane.aim();
+        let mut combat = Combat::seeded(Random::new(3));
+        let me = |x: f64| Vec3::new(x, 24.0, 0.0);
+        let bolt = armed(
+            "electrobolt",
+            &["electrobolt"],
+            &[("electrobolt", rounds(5.0, 0.0))],
+        );
+        combat.observe(&[bolt], "me", 0);
+        let facing = std::f64::consts::PI;
+        for tick in [0, 10] {
+            world.tick = tick;
+            combat.engage(&world, "me", me(0.0), facing, &sight, skill);
+        }
+        // Just fired the bolt: step right into cover.
+        let shot = SnapshotEvent::WeaponFire {
+            entity_id: "me".into(),
+            weapon_id: "electrobolt".into(),
+            origin: Point {
+                x: 0.0,
+                y: 58.0,
+                z: 0.0,
+            },
+            dir: Point {
+                x: 0.0,
+                y: 0.0,
+                z: -1.0,
+            },
+            pellet: None,
+        };
+        combat.observe(&[shot], "me", 40);
+        world.tick = 40;
+        let out = combat
+            .engage(&world, "me", me(0.0), facing, &sight, skill)
+            .unwrap();
+        assert_eq!((out.peek, out.in_sight), (Some(1), true));
+        // Behind the wall the foe is out of sight, but the fight goes on:
+        // no fire, still watching the foe's last spot.
+        world.tick = 48;
+        world.body_or_insert("me").position = Some(me(-112.0));
+        let ducked = combat
+            .engage(&world, "me", me(-112.0), facing, &sight, skill)
+            .unwrap();
+        assert_eq!((ducked.in_sight, ducked.buttons), (false, 0));
+        assert!(ducked.peek.is_some());
+        // Long out of sight, the hold ends and the chase takes over.
+        world.tick = 400;
+        assert!(
+            combat
+                .engage(&world, "me", me(-112.0), facing, &sight, skill)
+                .is_none()
+        );
     }
 
     #[test]

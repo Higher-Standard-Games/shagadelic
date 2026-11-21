@@ -210,7 +210,7 @@ impl CombatMovement {
         }
     }
 
-    fn dodging(&self, tick: u32) -> bool {
+    pub(super) fn dodging(&self, tick: u32) -> bool {
         tick < self.dodge_until
     }
 

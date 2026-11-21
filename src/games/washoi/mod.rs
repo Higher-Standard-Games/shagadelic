@@ -3,6 +3,7 @@ mod behavior;
 mod chase;
 mod combat;
 mod combos;
+mod cover;
 mod difficulty;
 mod goals;
 mod learned;
