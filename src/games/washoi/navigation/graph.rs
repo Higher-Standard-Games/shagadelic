@@ -173,48 +173,31 @@ impl Planner {
                     .map(|(node, _)| node)
             })?;
         let mut search = Search::new(self.nodes.len(), start);
+        let mut finish: Option<(usize, f64, Option<[f64; 3]>)> = None;
         while let Some(node) = search.next() {
+            let travelled = search.distances[node];
+            if finish.is_some_and(|(_, total, _)| travelled >= total) {
+                break;
+            }
             let [x, y, z] = self.nodes[node];
             let distance = (x - target.x).hypot(z - target.z);
-            let same_floor = (y - target.y).abs() <= MAX_HEIGHT_DELTA;
-            let close = same_floor && distance <= radius;
-            // Aim inside the requested radius without steering all the
-            // way to a target that may sit near the edge of the room.
-            let tail = if same_floor && !close {
-                let t = 1.0 - radius / (2.0 * distance);
-                let end = Vec3::new(x + (target.x - x) * t, y, z + (target.z - z) * t);
-                local_walk(Vec3::new(x, y, z), end).then_some([end.x, end.y, end.z])
-            } else {
-                None
-            };
-            if close || tail.is_some() {
-                let mut path = vec![node];
-                let mut current = node;
-                while let Some(previous) = search.predecessor[current] {
-                    path.push(previous);
-                    current = previous;
+            if (y - target.y).abs() <= MAX_HEIGHT_DELTA {
+                if distance <= radius {
+                    finish = Some((node, travelled, None));
+                    break;
                 }
-                path.reverse();
-                let mut waypoints = vec![self.nodes[start]];
-                let mut edges = Vec::with_capacity(path.len() - 1);
-                for pair in path.windows(2) {
-                    walk_edge(&mut waypoints, &self.nodes, &self.corners, pair[0], pair[1]);
-                    edges.push(ObjectiveEdge {
-                        nodes: (pair[0], pair[1]),
-                        end: waypoints.len() - 1,
-                    });
+                // Connect to the inside edge of the arrival area. Include
+                // this leg in the cost so a shorter graph path cannot win
+                // with a longer overall walk.
+                let tail = (distance - radius).max(1.0);
+                let total = travelled + tail;
+                if finish.is_none_or(|(_, best, _)| total < best) {
+                    let t = tail / distance;
+                    let end = Vec3::new(x + (target.x - x) * t, y, z + (target.z - z) * t);
+                    if local_walk(Vec3::new(x, y, z), end) {
+                        finish = Some((node, total, Some([end.x, end.y, end.z])));
+                    }
                 }
-                waypoints.extend(tail);
-                return Some((
-                    Route {
-                        entry: self.nodes[start],
-                        waypoints,
-                        learned_route: None,
-                        resumed_from: None,
-                        pickup: None,
-                    },
-                    edges,
-                ));
             }
             for &next in &self.neighbors[node] {
                 if recovery.and_then(|edge| edge.avoid) == Some((node, next)) {
@@ -227,7 +210,34 @@ impl Planner {
                 );
             }
         }
-        None
+        let (node, _, tail) = finish?;
+        let mut path = vec![node];
+        let mut current = node;
+        while let Some(previous) = search.predecessor[current] {
+            path.push(previous);
+            current = previous;
+        }
+        path.reverse();
+        let mut waypoints = vec![self.nodes[start]];
+        let mut edges = Vec::with_capacity(path.len() - 1);
+        for pair in path.windows(2) {
+            walk_edge(&mut waypoints, &self.nodes, &self.corners, pair[0], pair[1]);
+            edges.push(ObjectiveEdge {
+                nodes: (pair[0], pair[1]),
+                end: waypoints.len() - 1,
+            });
+        }
+        waypoints.extend(tail);
+        Some((
+            Route {
+                entry: self.nodes[start],
+                waypoints,
+                learned_route: None,
+                resumed_from: None,
+                pickup: None,
+            },
+            edges,
+        ))
     }
 
     /// The best accepted walk from the node nearest `position` to a goal

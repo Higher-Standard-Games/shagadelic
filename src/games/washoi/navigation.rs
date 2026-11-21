@@ -439,7 +439,8 @@ mod tests {
         let map: WashoiNavigation = serde_json::from_str(
             r#"{"map":"test","graph":{
                 "bsp_sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-                "nodes":[[0,0,0],[64,0,0]],"edges":[[0,1]],"entries":[0],"goals":[1]
+                "nodes":[[0,0,0],[64,0,0],[0,0,30]],
+                "edges":[[0,1],[0,2]],"entries":[0],"goals":[1]
             }}"#,
         )
         .unwrap();
@@ -454,13 +455,14 @@ mod tests {
 
         let (route, _) = planner
             .plan_to(start, target, 12.0, None, |a, b| {
-                // Only the entry and final node have a clear, supported connection.
-                (a.x, b.x) == (-64.0, 0.0) || (a.x, b.x) == (64.0, 118.0)
+                // The closer graph node can also reach the target, but its
+                // connector makes the complete route longer.
+                (a.x, b.x) == (-64.0, 0.0) || (a.x, b.x) == (64.0, 112.0) || a.z == 30.0
             })
             .unwrap();
         assert_eq!(
             route.waypoints,
-            [[0.0, 0.0, 0.0], [64.0, 0.0, 0.0], [118.0, 0.0, 0.0]]
+            [[0.0, 0.0, 0.0], [64.0, 0.0, 0.0], [112.0, 0.0, 0.0]]
         );
     }
 
