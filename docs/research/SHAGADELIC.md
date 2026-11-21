@@ -136,6 +136,8 @@ hosting/net/
 
 This is a behavior-preserving refactor. Verify it with both replays (the hosted replay exercises real WebSocket acknowledgments and inputs), the hosted live fights, and the lobby smoke.
 
+Implemented. `hosting/net/connection.rs` holds the generic `Link`: the socket, pings and close, snapshot reconstruction with ACKs, and command ticks and sequence numbers. It runs any `WireAgent`'s handshake, whose `admit` answers each server frame with a frame to send, admission, rejection, or a pass to the snapshot path. `snapshot.rs` and `events.rs` sit beside it. `hosting/net/player/` is `PlayerWire`: admission, the `Observation` mapping, and the movement keys that turn `Controls` and respawn requests into commands and frames. In the code, the trait's join input is the codec's constructor, and actions encode into a list of `Wire` frames. The player's `Connection`, `connect`, `play`, and `exchange` keep their signatures, and `protocol` re-exports the same items, so `control/` and the tests are unchanged. Both replays pass unchanged, three hosted live fights and a direct one reached kills, and the lobby smoke passed three runs in a row. Two earlier runs, one of them with an older binary, failed in the lobby at the map vote, before any child started.
+
 ### Verification for this milestone
 
 This is a move plus the two traits, with no gameplay change. It is confirmed with the player over WebSocket:
