@@ -22,6 +22,9 @@ pub(super) struct Profile {
     /// `chargeMinTicks` and `chargeMaxTicks` of an alt-fire charged
     /// projectile, in server ticks.
     pub(super) charge: Option<(u32, u32)>,
+    /// `damagePerHit`, all pellets together, and `pelletCount`.
+    pub(super) damage_per_hit: f64,
+    pub(super) pellets: u32,
 }
 
 impl Profile {
@@ -30,6 +33,23 @@ impl Profile {
             fire_interval_ticks,
             ..self
         }
+    }
+
+    const fn hits(self, damage_per_hit: f64, pellets: u32) -> Self {
+        Self {
+            damage_per_hit,
+            pellets,
+            ..self
+        }
+    }
+
+    /// `isHitscan`: no projectile to fly.
+    pub(super) fn hitscan(&self) -> bool {
+        self.projectile_speed == 0.0
+    }
+
+    pub(super) fn max_range(&self) -> f64 {
+        self.max_range
     }
 
     pub(super) fn dps(&self) -> f64 {
@@ -65,6 +85,8 @@ const fn profile(
         },
         fire_interval_ticks: 100,
         charge: None,
+        damage_per_hit: 10.0,
+        pellets: 1,
     }
 }
 
@@ -72,18 +94,34 @@ const fn profile(
 const BLADE: Profile = Profile {
     melee: true,
     charge: Some((63, 125)),
-    ..profile("blade", 2500.0, false, 160.0, (0.0, 100.0), None).every(63)
+    ..profile("blade", 2500.0, false, 160.0, (0.0, 100.0), None)
+        .every(63)
+        .hits(80.0, 1)
 };
 
 const PROFILES: [Profile; 8] = [
     BLADE,
-    profile("machinegun", 0.0, false, 100.0, (100.0, 3000.0), Some(0)).every(13),
-    profile("riotgun", 0.0, false, 112.5, (50.0, 500.0), Some(0)).every(100),
-    profile("plasmagun", 1750.0, true, 150.0, (200.0, 1200.0), Some(0)).every(13),
-    profile("electrobolt", 0.0, false, 60.0, (400.0, 5000.0), Some(47)).every(156),
-    profile("voltaic", 0.0, false, 140.0, (50.0, 850.0), Some(0)).every(6),
-    profile("rlauncher", 1814.0, true, 100.0, (200.0, 1200.0), Some(20)).every(100),
-    profile("glauncher", 1080.0, true, 100.0, (200.0, 1200.0), Some(20)).every(100),
+    profile("machinegun", 0.0, false, 100.0, (100.0, 3000.0), Some(0))
+        .every(13)
+        .hits(10.0, 1),
+    profile("riotgun", 0.0, false, 112.5, (50.0, 500.0), Some(0))
+        .every(100)
+        .hits(90.0, 18),
+    profile("plasmagun", 1750.0, true, 150.0, (200.0, 1200.0), Some(0))
+        .every(13)
+        .hits(15.0, 1),
+    profile("electrobolt", 0.0, false, 60.0, (400.0, 5000.0), Some(47))
+        .every(156)
+        .hits(75.0, 1),
+    profile("voltaic", 0.0, false, 140.0, (50.0, 850.0), Some(0))
+        .every(6)
+        .hits(7.0, 1),
+    profile("rlauncher", 1814.0, true, 100.0, (200.0, 1200.0), Some(20))
+        .every(100)
+        .hits(80.0, 1),
+    profile("glauncher", 1080.0, true, 100.0, (200.0, 1200.0), Some(20))
+        .every(100)
+        .hits(80.0, 1),
 ];
 
 /// `DEFAULT_PROFILE`, for weapons the table doesn't know.

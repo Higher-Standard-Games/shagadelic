@@ -17,6 +17,7 @@ use super::{
     combos::{Combos, Situation},
     cover::{self, CoverPeek},
     difficulty::AimSkill,
+    estimate::Estimates,
     navigation::local_walk,
     perception::{Enemy, Perception, Senses, Source},
     protocol::SnapshotEvent,
@@ -66,6 +67,7 @@ pub(super) struct Combat {
     track: Option<Track>,
     perception: Perception,
     combos: Combos,
+    estimates: Estimates,
     cover: CoverPeek,
     /// A charge being held for a blast.
     charge: Option<Charge>,
@@ -143,9 +145,13 @@ impl Combat {
                     entity_id,
                     attacker_id,
                     weapon_id,
+                    damage,
+                    pain_tier,
                     ..
                 } if attacker_id == own && entity_id != own => {
                     self.combos.hit(weapon_id, entity_id, tick);
+                    self.estimates
+                        .hit(entity_id, f64::from(*damage), *pain_tier, tick);
                 }
                 SnapshotEvent::WeaponFire {
                     entity_id,
@@ -159,12 +165,14 @@ impl Combat {
                     entity_id, dead, ..
                 } => {
                     if *dead {
+                        self.estimates.died(entity_id);
                         self.dead.insert(entity_id.clone());
                     } else {
                         self.dead.remove(entity_id);
                     }
                 }
                 SnapshotEvent::Death { entity_id, .. } => {
+                    self.estimates.died(entity_id);
                     self.dead.insert(entity_id.clone());
                 }
                 SnapshotEvent::WeaponState {
@@ -254,6 +262,9 @@ impl Combat {
         let Some(&seen) = noticed.seen.first() else {
             return self.hold_cover(world.tick, position, sight, skill, grounded);
         };
+        for &index in &noticed.seen {
+            self.estimates.seen(enemies[index].entity, world.tick);
+        }
         let enemy = enemies[seen];
         let (distance, at, velocity) =
             (distance(position, enemy.at), enemy.at, Some(enemy.velocity));
@@ -289,6 +300,7 @@ impl Combat {
                 picked: &picked,
                 has: &has,
                 weapons: &self.weapons,
+                estimate: self.estimates.of(enemy.entity, world.tick),
             },
             skill.prediction,
             &mut self.random,

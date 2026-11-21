@@ -55,12 +55,12 @@ Suggested path:
 
 ## Session A plan (combat)
 
-Done: strafing and hit dodges (`b83927c`), rocket and grenade sidesteps (`37eef1d`), chasing an enemy out of sight (`efe5de9`), perception (`17db763`), the brain's side of the separation (`7ead674` to `cefd2cf`), weapon combos (`e8b1990`), cover peeking (`565fb7a`), high ground (`a189c5f`), and charged blade blasts (this commit). Hunting turned out to be mostly covered by chase and roaming, and the design records why. The rest needs the strategy layer's weight profiles.
+Done: strafing and hit dodges (`b83927c`), rocket and grenade sidesteps (`37eef1d`), chasing an enemy out of sight (`efe5de9`), perception (`17db763`), the brain's side of the separation (`7ead674` to `cefd2cf`), weapon combos (`e8b1990`), cover peeking (`565fb7a`), high ground (`a189c5f`), charged blade blasts (`b604ac2`), and the enemy estimate with the finishing switch (this commit). Hunting turned out to be mostly covered by chase and roaming, and the design records why. The rest needs the strategy layer's weight profiles.
 
 Next:
 1. `keepUpperGround`: stay on a ledge above the enemy.
-2. An enemy health estimate after `strategy/MatchRead.ts`, then the finishing switch.
-3. Getting the gun ready for a heard enemy, after `BotFight.readyForHeard`.
+2. Getting the gun ready for a heard enemy, after `BotFight.readyForHeard`.
+3. Major item pickups heard by item, to credit enemy takes in the estimate.
 
 ## Notes between sessions
 

@@ -5,6 +5,7 @@ mod combat;
 mod combos;
 mod cover;
 mod difficulty;
+mod estimate;
 mod goals;
 mod highground;
 mod learned;

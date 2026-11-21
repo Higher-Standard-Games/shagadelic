@@ -9,11 +9,16 @@
 //!   reloads, when that one fits the distance and can shoot well before the
 //!   slow one could again. The server keeps one refire clock across a switch.
 //!
-//! Each chance is rolled once, at `predictionSkill` odds. Finishing an enemy
-//! with the gun whose one hit kills needs TypeScript's `MatchRead` health
-//! estimate and is not ported.
+//! - An enemy the bot's fresh estimate says one hit would kill is finished
+//!   with the hitscan gun that does it at this distance.
+//!
+//! Each chance is rolled once, at `predictionSkill` odds.
 
-use super::{random::Random, weapons};
+use super::{
+    estimate::{ARMOR_ABSORPTION, Estimate},
+    random::Random,
+    weapons,
+};
 
 /// Server ticks per second.
 #[cfg(test)]
@@ -35,6 +40,11 @@ const SWAP_RANGE_SLACK: f64 = 0.25;
 const LAUNCH_HOLD: u32 = 100;
 const BLADE_HOLD: u32 = 75;
 const RAIL_HOLD: u32 = 88;
+const FINISH_HOLD: u32 = 100;
+/// `FINISH_MAX_UNCERTAINTY`: an estimate this unsure is not acted on.
+const FINISH_MAX_UNCERTAINTY: f64 = 0.3;
+/// `PELLETS_LANDING`: the share of a multi-pellet shot counted on to land.
+const PELLETS_LANDING: f64 = 0.5;
 
 /// What the bot knows this tick, for choosing a combo.
 pub(super) struct Situation<'a> {
@@ -48,6 +58,8 @@ pub(super) struct Situation<'a> {
     /// Whether the bot carries a weapon with ammo for it.
     pub(super) has: &'a dyn Fn(&str) -> bool,
     pub(super) weapons: &'a [String],
+    /// What the bot believes of the target's health and armor.
+    pub(super) estimate: Option<Estimate>,
 }
 
 #[derive(Default)]
@@ -59,6 +71,8 @@ pub(super) struct Combos {
     /// The bot's own latest hit (weapon, victim, tick) and shot (weapon, tick).
     hit: Option<(String, String, u32)>,
     shot: Option<(String, u32)>,
+    /// The estimate the finish was last rolled for.
+    finish_rolled: Option<(String, i64, i64)>,
 }
 
 struct Held {
@@ -93,6 +107,9 @@ impl Combos {
         }) {
             self.held = None;
         }
+        if let Some(estimate) = now.estimate {
+            self.finish(now, estimate, skill, random);
+        }
         if self.held.is_none() {
             self.rocket_combo(now, skill, random);
         }
@@ -111,6 +128,50 @@ impl Combos {
             target: now.target.to_owned(),
             until: now.tick + ticks,
         });
+    }
+
+    /// `_finish`, rolled once per change in the estimate: the hitscan gun
+    /// with the smallest hit that still kills, so the big gun stays for the
+    /// next fight.
+    fn finish(&mut self, now: &Situation<'_>, estimate: Estimate, skill: f64, random: &mut Random) {
+        if estimate.uncertainty > FINISH_MAX_UNCERTAINTY {
+            return;
+        }
+        let key = (
+            now.target.to_owned(),
+            estimate.health.round() as i64,
+            estimate.armor.round() as i64,
+        );
+        if self.finish_rolled.as_ref() == Some(&key) {
+            return;
+        }
+        self.finish_rolled = Some(key);
+        let best = now
+            .weapons
+            .iter()
+            .filter(|weapon| (now.has)(weapon))
+            .map(|weapon| (weapon, weapons::profile_of(weapon)))
+            .filter(|(_, profile)| {
+                // Only too far counts against a gun here, as in TypeScript.
+                profile.hitscan()
+                    && !profile.melee
+                    && now.distance <= profile.max_range() * (1.0 + SWAP_RANGE_SLACK)
+            })
+            .map(|(weapon, profile)| {
+                let share = if profile.pellets > 1 {
+                    PELLETS_LANDING
+                } else {
+                    1.0
+                };
+                (weapon, profile.damage_per_hit * share)
+            })
+            .filter(|(_, hit)| hit - estimate.armor.min(hit * ARMOR_ABSORPTION) >= estimate.health)
+            .min_by(|a, b| a.1.total_cmp(&b.1));
+        if let Some((weapon, _)) = best
+            && random.next() < skill
+        {
+            self.hold(now, &weapon.clone(), FINISH_HOLD);
+        }
     }
 
     /// `_rocketCombo`, rolled once per hit.
@@ -232,6 +293,7 @@ mod tests {
             picked,
             has,
             weapons,
+            estimate: None,
         }
     }
 
@@ -331,5 +393,50 @@ mod tests {
         );
         let now = situation(656, 800.0, 0.0, "machinegun", "electrobolt", &all, weapons);
         assert_eq!(swap.choose(&now, 1.0, &mut random), None);
+    }
+
+    #[test]
+    fn finishes_with_the_smallest_hit_that_kills_on_a_fresh_estimate() {
+        let weapons: Vec<String> = ["machinegun", "riotgun", "electrobolt", "rlauncher"]
+            .map(String::from)
+            .into();
+        let all = |_: &str| true;
+        let mut random = Random::new(3);
+        let at = |health: f64, armor: f64, uncertainty: f64| {
+            let mut now = situation(10, 300.0, 0.0, "rlauncher", "rlauncher", &all, &weapons);
+            now.estimate = Some(Estimate {
+                health,
+                armor,
+                uncertainty,
+            });
+            now
+        };
+        // 40 left: half the riotgun's 90 lands, less than the bolt's 75.
+        let mut combos = Combos::default();
+        assert_eq!(
+            combos
+                .choose(&at(40.0, 0.0, 0.0), 1.0, &mut random)
+                .as_deref(),
+            Some("riotgun")
+        );
+        // With 50 armor neither kills; an unsure estimate is not acted on.
+        assert_eq!(
+            Combos::default().choose(&at(40.0, 50.0, 0.0), 1.0, &mut random),
+            None
+        );
+        assert_eq!(
+            Combos::default().choose(&at(40.0, 0.0, 0.5), 1.0, &mut random),
+            None
+        );
+        // Rolled once per estimate: a failed roll is not retried until it changes.
+        let mut unlucky = Combos::default();
+        assert_eq!(unlucky.choose(&at(40.0, 0.0, 0.0), 0.0, &mut random), None);
+        assert_eq!(unlucky.choose(&at(40.0, 0.0, 0.0), 1.0, &mut random), None);
+        assert_eq!(
+            unlucky
+                .choose(&at(30.0, 0.0, 0.0), 1.0, &mut random)
+                .as_deref(),
+            Some("riotgun")
+        );
     }
 }
