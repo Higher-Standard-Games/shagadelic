@@ -30,7 +30,72 @@ The current milestone is an **opt-in, playable Washoi bot service**. The bundled
 
 **Initial route recovery is implemented.** A bot stops after 800 ms without enough progress, temporarily avoids the failed segment, and tries an alternative route if it is still near a usable entry. A large displacement discards the active route and allows a fresh attachment. Baked graphs provide up to three reachable goals per entry. When no precomputed route attaches, a bot within 48 units of any graph node plans from that node, using next hops toward each goal that the lobby computes once and shares. The same pickup gates, scores, and blocked-leg memory apply. A bot moves on 400 ms after reaching a plain goal. A bot that momentum carries off the graph plans from the last waypoint it reached, within 128 units, and walks back to it first. From a corner of a walk between two nodes, it finishes that walk to its end node. Farther away, it retries planning every 250 ms. A walk stays within the bot's strongly connected area of the graph, or leaves it one way for an area with more goals. Without that rule, a bot could walk into a pocket whose only exits are jumps and stay there. Authored route files have no graph to plan over. Recovery from off-graph positions and live collision checks remain open.
 
-## Next milestone: separate the Washoi brain from its client
+## Next milestone: agent kinds and hosting adapters
+
+The brain separation gave Washoi one brain with a game-owned contract. The structure still assumes a single kind of AI, a bot that joins as a networked player. A different entity, such as a flying drone in single player, has no place to plug in yet. This milestone makes two independent choices explicit, which kind of agent the entity is and how it is hosted. It proves the split with the only kind that exists today, the WebSocket player.
+
+### Layers today
+
+| Layer | Code | Generic or Washoi | Knows about |
+| --- | --- | --- | --- |
+| Scheduler and lifetimes | `src/runtime/` | Generic over `GameSession` | Entity keys, spawn and removal, input and decision deadlines, budgets |
+| Host control | `src/control/` | Washoi feature | The lobby or supervisor's line protocol |
+| Session | `games/washoi/session.rs` | Washoi | One WebSocket client per bot, admission, and the bot's brain |
+| Wire adapter | `games/washoi/protocol/` | Washoi | Snapshots, acknowledgments, `Observation` mapping, `Controls` encoding |
+| Brain | `games/washoi/behavior.rs` and its modules | Washoi | `BotPlayer` and everything a player bot does |
+
+The runtime already handles several entity kinds. A test drives two fake kinds at different rates. The gap is in the Washoi layer. `WashoiSession` spawns only `BotPlayer`, and only as a networked client. `Controls` is a player's input frame, with a wish direction, view, buttons, and a weapon slot.
+
+### Target layout
+
+```text
+games/washoi/
+  mod.rs, observation.rs, difficulty.rs, random.rs   shared contract and plumbing
+  perception/            senses any kind can use: sight, noticing, enemy estimate
+  agents/
+    mod.rs               Agent and NetworkedPlayer traits
+    player/              the player bot: behavior, combat, movement, strategy, navigation
+  hosting/
+    net/                 WebSocket hosting: session and protocol
+```
+
+Two Washoi-internal traits separate the agent from its hosting:
+
+```rust
+/// Every Washoi agent kind: takes observations and decides on its own clock.
+pub(crate) trait Agent: Send {
+    fn observe_at(&mut self, observation: Observation, now: SimTime);
+    fn decide(&mut self, now: SimTime);
+}
+
+/// An agent that plays as a networked Washoi player.
+pub(crate) trait NetworkedPlayer: Agent {
+    fn request_respawn_at(&mut self, now: SimTime) -> bool;
+    fn inputs_at(&mut self, now: SimTime) -> Vec<Controls>;
+}
+```
+
+`hosting/net` drives a brain only through these traits. It builds a concrete `BotPlayer` at spawn and otherwise does not name its internals. Each kind keeps its own action type: `Controls` for the player, and something like a 3D velocity and turret command for a drone. Kinds do not share one action enum. Perception moves out of the player because other kinds need it. Strafing, cover, high ground, the walk graph, weapon slots, combos, and orders stay with the player.
+
+### Adding a single-player drone later
+
+A drone is simulated by the game server, not logged in over a socket. It needs:
+
+1. **An embedded hosting adapter** in `hosting/embedded/`, next to `hosting/net/`. It builds observations from the server world in process and applies the drone's actions to its entity. Admission, acknowledgments, and input pacing do not apply. This adapter also settles the "smallest shared adapter interface" question left in this design.
+2. **A drone agent** in `agents/drone/`. It implements `Agent`, adds an embedded-hosting trait for its own action type, and has free 3D flight navigation checked against the static sight geometry. It reuses `perception/`, `difficulty.rs`, `random.rs`, and likely the aim controller for a turret.
+3. **Kind-aware spawning.** Spawn options name a kind, and the hosting session keeps each entity's agent by kind. `src/runtime/` does not change.
+
+Build the embedded adapter against a real drone, not before. An abstraction guessed without its second user is usually wrong.
+
+### Verification for this milestone
+
+This is a move plus the two traits, with no gameplay change. It is confirmed with the player over WebSocket:
+
+- `cargo fmt`, `clippy -D warnings`, and `cargo test`, each with and without `washoi`. The trace replay (`behavior/replay.rs`) and the hosted replay (`tests/washoi_hosted_replay.rs`) must match unchanged.
+- The live direct and hosted fights on `washoi_dm2`, and the private lobby Duel smoke test with admission and shutdown.
+- `hosting/net` uses `BotPlayer` only to construct it. The rest goes through `Agent` and `NetworkedPlayer`.
+
+## Completed milestone: separate the Washoi brain from its client
 
 Start this refactor after the gameplay patch currently in progress lands. Review its changes to perception and behavior before moving those boundaries. Complete the separation before starting another gameplay parity feature. Washoi remains the only game deliverable for this milestone.
 
