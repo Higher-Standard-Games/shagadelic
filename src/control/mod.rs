@@ -16,6 +16,7 @@ struct Initialization {
     washoi_endpoint: Option<String>,
     navigation: Option<Navigation>,
     learned_routes_file: Option<std::path::PathBuf>,
+    sight_file: Option<std::path::PathBuf>,
 }
 
 #[cfg(feature = "washoi")]
@@ -86,11 +87,14 @@ pub fn run(mut reader: impl BufRead + Send + 'static, writer: &mut impl Write) -
         || init.washoi_endpoint.is_some()
         || init.navigation.is_some()
         || init.learned_routes_file.is_some()
+        || init.sight_file.is_some()
     {
         return Err(invalid("Washoi support is disabled"));
     }
     #[cfg(feature = "washoi")]
-    if (init.navigation.is_some() || init.learned_routes_file.is_some())
+    if (init.navigation.is_some()
+        || init.learned_routes_file.is_some()
+        || init.sight_file.is_some())
         && init.washoi_endpoint.is_none()
     {
         return Err(invalid("navigation requires a Washoi session"));
@@ -112,12 +116,24 @@ pub fn run(mut reader: impl BufRead + Send + 'static, writer: &mut impl Write) -
         .map(shagadelic::games::washoi::LearnedRoutes::load)
         .transpose()?;
     #[cfg(feature = "washoi")]
-    if let (Some(navigation), Some(learned)) = (&init.navigation, &learned)
-        && navigation.map() != learned.map()
+    let sight = init
+        .sight_file
+        .as_ref()
+        .map(shagadelic::games::washoi::Sight::load)
+        .transpose()?;
+    #[cfg(feature = "washoi")]
     {
-        return Err(invalid(
-            "navigation and learned routes refer to different maps",
-        ));
+        let maps = [
+            init.navigation.as_ref().map(|navigation| navigation.map()),
+            learned.as_ref().map(|learned| learned.map()),
+            sight.as_ref().map(|sight| sight.map()),
+        ];
+        let mut maps = maps.into_iter().flatten();
+        if let Some(first) = maps.next()
+            && maps.any(|map| map != first)
+        {
+            return Err(invalid("map assets refer to different maps"));
+        }
     }
 
     #[cfg(feature = "washoi")]
@@ -141,7 +157,16 @@ pub fn run(mut reader: impl BufRead + Send + 'static, writer: &mut impl Write) -
     }
     #[cfg(feature = "washoi")]
     if let Some(endpoint) = init.washoi_endpoint {
-        return washoi::run(reader, writer, endpoint, init.navigation, learned);
+        return washoi::run(
+            reader,
+            writer,
+            endpoint,
+            washoi::MapAssets {
+                navigation: init.navigation,
+                learned,
+                sight,
+            },
+        );
     }
     await_shutdown(&mut reader, &mut record)
 }

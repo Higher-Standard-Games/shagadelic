@@ -42,6 +42,7 @@ test("map assets use the match map and reject a file labeled for a different map
   t.after(async () => {
     await supervisor.stopAll();
     await rm(join(directory, "washoi_dm2.json"), { force: true });
+    await rm(join(directory, "washoi_dm2.sight"), { force: true });
     await rmdir(directory);
   });
   const endpoint = "ws://127.0.0.1:1";
@@ -53,7 +54,23 @@ test("map assets use the match map and reject a file labeled for a different map
   await assert.rejects(supervisor.start("wrong", endpoint, "washoi_dm2"), /wrong map/);
   await writeFile(file, JSON.stringify({ map: "washoi_dm2", routes: [route] }));
   await supervisor.start("correct", endpoint, "washoi_dm2");
+  const sight = join(directory, "washoi_dm2.sight");
+  await writeFile(sight, emptySight("other"));
+  await assert.rejects(supervisor.start("wrong sight", endpoint, "washoi_dm2"));
+  await writeFile(sight, emptySight("washoi_dm2"));
+  await supervisor.start("sight", endpoint, "washoi_dm2");
 });
+
+/** A sight file with no geometry, in the format of tools/bake-washoi-sight.mjs. */
+function emptySight(map) {
+  const header = Buffer.from(JSON.stringify({ map, bsp_sha256: "0" }));
+  const count = (value) => {
+    const buffer = Buffer.alloc(4);
+    buffer.writeUInt32LE(value);
+    return buffer;
+  };
+  return Buffer.concat([Buffer.from("SHAGSGT1"), count(header.length), header, count(0), count(0), count(0)]);
+}
 
 const endpoint = process.env.SHAGADELIC_TEST_WASHOI;
 test("the supervisor disposes bots and reaps the child with a live bot still connected", {

@@ -6,7 +6,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 use shagadelic::{
     games::washoi::{
-        BotReport, Difficulty, LearnedRoutes, SpawnBot, WashoiNavigation, WashoiSession,
+        BotReport, Difficulty, LearnedRoutes, Sight, SpawnBot, WashoiNavigation, WashoiSession,
     },
     runtime::{Budget, EntityKey, EntityStatus, Runtime, SpawnError},
 };
@@ -58,12 +58,17 @@ enum Event<'a> {
     RequestFailed { id: &'a str, reason: &'static str },
 }
 
+pub(super) struct MapAssets {
+    pub(super) navigation: Option<WashoiNavigation>,
+    pub(super) learned: Option<LearnedRoutes>,
+    pub(super) sight: Option<Sight>,
+}
+
 pub(super) fn run(
     mut reader: impl BufRead + Send + 'static,
     writer: &mut impl Write,
     endpoint: String,
-    navigation: Option<WashoiNavigation>,
-    learned: Option<LearnedRoutes>,
+    assets: MapAssets,
 ) -> io::Result<()> {
     let (send, receive) = mpsc::channel(32);
     let executor = tokio::runtime::Builder::new_current_thread()
@@ -83,11 +88,14 @@ pub(super) fn run(
             }
         })?;
     let mut session = WashoiSession::new(endpoint);
-    if let Some(navigation) = navigation {
+    if let Some(navigation) = assets.navigation {
         session = session.with_navigation(navigation);
     }
-    if let Some(learned) = learned {
+    if let Some(learned) = assets.learned {
         session = session.with_learned_routes(learned);
+    }
+    if let Some(sight) = assets.sight {
+        session = session.with_sight(sight);
     }
     executor.block_on(drive(receive, writer, session))
 }

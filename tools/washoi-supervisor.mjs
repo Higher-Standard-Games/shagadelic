@@ -221,7 +221,11 @@ async function mapAssets(map, { navigationDir, learnedRoutesDir }) {
   if (!map || (!navigationDir && !learnedRoutesDir)) return {};
   if (!/^[A-Za-z0-9_-]+$/.test(map)) throw new Error("invalid Washoi map name");
   const name = map + ".json";
-  const [navigation, learned_routes_file] = await Promise.all([
+  const existing = async (path) => {
+    await access(path);
+    return path;
+  };
+  const [navigation, learned_routes_file, sight_file] = await Promise.all([
     navigationDir ? optionalFile(resolve(navigationDir, name), async (path) => {
       const file = await open(path, "r");
       try {
@@ -240,12 +244,11 @@ async function mapAssets(map, { navigationDir, learnedRoutesDir }) {
         await file.close();
       }
     }) : undefined,
-    learnedRoutesDir ? optionalFile(resolve(learnedRoutesDir, name), async (path) => {
-      await access(path);
-      return path;
-    }) : undefined,
+    learnedRoutesDir ? optionalFile(resolve(learnedRoutesDir, name), existing) : undefined,
+    // Baked by tools/bake-washoi-sight.mjs. The child checks its map.
+    navigationDir ? optionalFile(resolve(navigationDir, map + ".sight"), existing) : undefined,
   ]);
-  return { navigation, learned_routes_file };
+  return { navigation, learned_routes_file, sight_file };
 }
 
 async function optionalFile(path, use) {

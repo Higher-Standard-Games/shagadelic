@@ -9,7 +9,7 @@ use tokio::{sync::mpsc, task::JoinHandle};
 use crate::runtime::{Deadlines, EntityKey, GameSession, SessionEvent, Update};
 
 use super::{
-    BotPlayer, Difficulty, LearnedRoutes, WashoiNavigation,
+    BotPlayer, Difficulty, LearnedRoutes, Sight, WashoiNavigation,
     behavior::INPUT_PERIOD,
     protocol::{AdmissionError, WashoiEvents, connect},
 };
@@ -34,6 +34,26 @@ pub enum BotReport {
     },
 }
 
+/// Per-map data shared by every bot in the session.
+#[derive(Clone, Default)]
+struct MapAssets {
+    navigation: Option<Arc<WashoiNavigation>>,
+    learned: Option<Arc<LearnedRoutes>>,
+    sight: Option<Arc<Sight>>,
+}
+
+impl MapAssets {
+    fn maps(&self) -> impl Iterator<Item = &str> {
+        [
+            self.navigation.as_ref().map(|navigation| navigation.map()),
+            self.learned.as_ref().map(|learned| learned.map()),
+            self.sight.as_ref().map(|sight| sight.map()),
+        ]
+        .into_iter()
+        .flatten()
+    }
+}
+
 struct BotTask {
     task: JoinHandle<()>,
     pulse: mpsc::Sender<()>,
@@ -43,8 +63,7 @@ struct BotTask {
 /// the caller-driven scheduler. Each task has room for one pending pulse.
 pub struct WashoiSession {
     endpoint: String,
-    navigation: Option<Arc<WashoiNavigation>>,
-    learned: Option<Arc<LearnedRoutes>>,
+    assets: MapAssets,
     bots: BTreeMap<EntityKey, BotTask>,
     send_event: mpsc::Sender<BotReport>,
     events: mpsc::Receiver<BotReport>,
@@ -56,8 +75,7 @@ impl WashoiSession {
         let (send_event, events) = mpsc::channel(2 * MAX_BOTS);
         Self {
             endpoint,
-            navigation: None,
-            learned: None,
+            assets: MapAssets::default(),
             bots: BTreeMap::new(),
             send_event,
             events,
@@ -66,12 +84,17 @@ impl WashoiSession {
     }
 
     pub fn with_navigation(mut self, navigation: WashoiNavigation) -> Self {
-        self.navigation = Some(Arc::new(navigation));
+        self.assets.navigation = Some(Arc::new(navigation));
         self
     }
 
     pub fn with_learned_routes(mut self, learned: LearnedRoutes) -> Self {
-        self.learned = Some(Arc::new(learned));
+        self.assets.learned = Some(Arc::new(learned));
+        self
+    }
+
+    pub fn with_sight(mut self, sight: Sight) -> Self {
+        self.assets.sight = Some(Arc::new(sight));
         self
     }
 
@@ -99,8 +122,7 @@ impl GameSession for WashoiSession {
             bot,
             pulses,
             self.send_event.clone(),
-            self.navigation.clone(),
-            self.learned.clone(),
+            self.assets.clone(),
         ));
         self.bots.insert(key.clone(), BotTask { task, pulse });
         Ok(())
@@ -167,8 +189,7 @@ async fn run_bot(
     bot: SpawnBot,
     mut pulses: mpsc::Receiver<()>,
     events: mpsc::Sender<BotReport>,
-    navigation: Option<Arc<WashoiNavigation>>,
-    learned: Option<Arc<LearnedRoutes>>,
+    assets: MapAssets,
 ) {
     let connection = connect(
         &endpoint,
@@ -186,13 +207,7 @@ async fn run_bot(
                 .welcome
                 .as_ref()
                 .map(|welcome| welcome.map.as_str());
-            if navigation
-                .as_ref()
-                .is_some_and(|navigation| Some(navigation.map()) != server_map)
-                || learned
-                    .as_ref()
-                    .is_some_and(|library| Some(library.map()) != server_map)
-            {
+            if assets.maps().any(|map| Some(map) != server_map) {
                 let _ = events
                     .send(BotReport::Ended {
                         key,
@@ -210,11 +225,14 @@ async fn run_bot(
             }
             let mut bot = BotPlayer::new(connection.identity.entity_id.clone())
                 .with_difficulty(bot.difficulty);
-            if let Some(navigation) = navigation {
+            if let Some(navigation) = assets.navigation {
                 bot = bot.with_navigation(navigation);
             }
-            if let Some(learned) = learned {
+            if let Some(learned) = assets.learned {
                 bot = bot.with_learned_routes(learned);
+            }
+            if let Some(sight) = assets.sight {
+                bot = bot.with_sight(sight);
             }
             let pulses = futures_util::stream::poll_fn(|cx| pulses.poll_recv(cx));
             match connection.play_on(bot, |_| true, pulses).await {
