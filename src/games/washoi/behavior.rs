@@ -341,6 +341,15 @@ impl BotPlayer {
             moves.strafe,
         ));
         let [x, _, z] = self.planned_input.direction;
+        // An order that says stand means stand. Since 9507ab5 an order leaves
+        // the bot still only on a `move_to` arrival: an S&D carrier planting
+        // or a defender defusing. Washoi's `BombModel` starts either only
+        // below `maxPlantSpeed`, so a strafe or dodge there would hold the
+        // plant off until the fight ends. `hold_area`, `defend`, and `escort`
+        // patrol with a direction and keep their strafe. Aim and fire go on.
+        if self.ordered && x == 0.0 && z == 0.0 {
+            return;
+        }
         // Peeking from cover, the bot keeps its spot: only the side step.
         // Making for high ground, the walk there replaces the strafe. A server
         // order outranks both: the bot keeps walking it and only strafes.
@@ -880,6 +889,71 @@ mod tests {
             bot.fight_moves(&world, fight, &sight, here, SimTime::ZERO);
             assert_eq!(bot.planned_input.direction, expected, "ordered: {ordered}");
         }
+    }
+
+    #[test]
+    fn a_bot_planting_on_order_holds_still_but_a_patrolling_guard_strafes() {
+        use crate::games::washoi::{
+            Vec3,
+            sight::tests::{cube, encode},
+        };
+        // Open floor all round, so strafing always finds room.
+        let sight = Sight::parse(&encode(
+            "test",
+            &[cube([-1000.0, -10.0, -1000.0], [1000.0, 0.0, 1000.0])],
+            &[],
+        ))
+        .unwrap();
+        let fight = Engagement {
+            view: View {
+                yaw: 0.0,
+                pitch: 0.0,
+            },
+            buttons: FIRE,
+            melee: false,
+            weapon_slot: 0,
+            peek: None,
+            in_sight: true,
+            target: Vec3::new(0.0, 24.0, 600.0),
+            splash: false,
+        };
+        // Hit this tick: a skilled bot would dodge-jump.
+        let mut world = Observation::default();
+        world.events.push(SnapshotEvent::Damage {
+            entity_id: "bot".into(),
+            attacker_id: "foe".into(),
+            damage: 10,
+            weapon_id: "machinegun".into(),
+            at: crate::games::washoi::protocol::Point {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            hit_location: None,
+            pain_tier: None,
+        });
+        let here = Vec3::new(0.0, 24.0, 0.0);
+        // Planting: the order stands still, and so does the fight.
+        let mut planter = BotPlayer::new("bot".into()).with_difficulty(Difficulty::Insane);
+        planter.ordered = true;
+        planter.planned_input.direction = [0.0; 3];
+        for tick in 0..60 {
+            world.tick = tick;
+            planter.fight_moves(&world, fight, &sight, here, SimTime::ZERO);
+            assert_eq!(planter.planned_input.direction, [0.0; 3]);
+            assert_eq!(planter.planned_input.buttons & (JUMP | CROUCH), 0);
+        }
+        // A guard patrolling under an order keeps strafing off its walk.
+        let mut guard = BotPlayer::new("bot".into()).with_difficulty(Difficulty::Insane);
+        let mut strafed = false;
+        for tick in 0..200 {
+            world.tick = tick;
+            guard.ordered = true;
+            guard.planned_input.direction = [1.0, 0.0, 0.0];
+            guard.fight_moves(&world, fight, &sight, here, SimTime::ZERO);
+            strafed |= guard.planned_input.direction != [1.0, 0.0, 0.0];
+        }
+        assert!(strafed);
     }
 
     #[test]
