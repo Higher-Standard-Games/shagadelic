@@ -39,7 +39,13 @@ Suggested path:
 
 ## Session A plan (combat)
 
-1. Fix and commit strafing. `strafe.rs` ports `BotCombatMovement`'s strafe rhythm and hit dodges, with sight-ray wall and floor checks. It is uncommitted, because it lowered the live kill rate from 10 of 10 to 8 of 10.
-2. Sidestep incoming rockets and grenades, which needs projectile tracking.
-3. Target memory: chase and pre-aim an enemy that went out of sight, after `BotVision` `EnemyTrack` and `BotPerception` hearing.
-4. Charged shots and weapon combos, after `updateChargedFire` and `BotWeaponCombos`.
+Done: strafing and hit dodges (`b83927c`), rocket and grenade sidesteps (`37eef1d`), and chasing an enemy out of sight (`efe5de9`). On session A's own server (port 7791), two Insane bots reach a kill in every run, within 10 to 32 seconds.
+
+Next:
+1. Heard enemies: footsteps, jumps, and shots from `BotPerception.ts`, as chase leads.
+2. Charged shots and weapon combos, after `updateChargedFire` and `BotWeaponCombos.ts`.
+3. Cover peeking and high ground, after `BotCoverPeek.ts` and `findHighGround`.
+
+## Notes between sessions
+
+- `a7e0093` staged the whole design doc and took session A's uncommitted fight-movement paragraph with it. No harm, since the text was right, but stage doc hunks one by one.
