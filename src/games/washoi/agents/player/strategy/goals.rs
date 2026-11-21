@@ -2,15 +2,13 @@
 
 use std::time::Duration;
 
-use crate::games::washoi::Difficulty;
+use crate::games::washoi::{
+    Difficulty,
+    agents::player::strategy::items::{self, ARMOR_MAX, HEALTH_MAX},
+};
 use serde::Deserialize;
 
-// Caps from Washoi `shared/items/ItemGrants.ts`.
-const HEALTH_MAX: u16 = 100;
-const HEALTH_OVERHEAL_MAX: u16 = 200;
-const ARMOR_MAX: u16 = 100;
-
-#[derive(Debug, Clone, Copy, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(in crate::games::washoi) enum PickupKind {
     Health,
@@ -20,26 +18,26 @@ pub(in crate::games::washoi) enum PickupKind {
     Powerup,
 }
 
-/// The item within its category, as in the map's pickup table. Only the
-/// health kinds that overheal change what the bot may take.
-#[derive(Debug, Clone, Copy, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub(in crate::games::washoi) enum PickupItem {
-    Small,
-    Mega,
-    Ultra,
-    /// An armor shard, the one armor that is not a major item.
-    Shard,
-    #[serde(other)]
-    Other,
-}
-
-#[derive(Debug, Clone, Copy, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
 pub(in crate::games::washoi) struct PickupGoal {
     pub(in crate::games::washoi) id: usize,
-    kind: PickupKind,
+    pub(in crate::games::washoi) kind: PickupKind,
+    /// The item within its kind, as the map's pickup table names it: a
+    /// health or armor grant, a weapon, an ammo pool, or a powerup.
     #[serde(default)]
-    item: Option<PickupItem>,
+    pub(in crate::games::washoi) item: Item,
+}
+
+/// A pickup table item name, interned so a goal stays `Copy`. Empty when the
+/// name is unknown or missing.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(in crate::games::washoi) struct Item(pub(in crate::games::washoi) &'static str);
+
+impl<'de> Deserialize<'de> for Item {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let name = Option::<String>::deserialize(deserializer)?;
+        Ok(Self(name.map_or("", |name| items::intern(&name))))
+    }
 }
 
 #[derive(Default, Clone, Copy)]
@@ -49,49 +47,37 @@ pub(in crate::games::washoi) struct OwnVitals {
 }
 
 impl PickupGoal {
-    /// How long a taken item stays away, from Washoi
-    /// `shared/items/ItemRespawn.ts` `itemRespawnSeconds` with its default
-    /// weapon time. The TypeScript bot uses the same defaults.
     /// `isMajorItem` in `goals/considerations/ItemFacts.ts`: powerups,
     /// green, yellow, and red armor, Mega Health, and Ultra Health.
     pub(in crate::games::washoi) fn is_major(self) -> bool {
-        match self.kind {
-            PickupKind::Powerup => true,
-            PickupKind::Armor => !matches!(self.item, Some(PickupItem::Shard)),
-            PickupKind::Health => matches!(self.item, Some(PickupItem::Mega | PickupItem::Ultra)),
-            PickupKind::Weapon | PickupKind::Ammo => false,
-        }
+        items::is_major(self.kind, self.item.0)
     }
 
+    /// How long a taken item stays away, from Washoi
+    /// `shared/items/ItemRespawn.ts` `itemRespawnSeconds` with its default
+    /// weapon time. The TypeScript bot uses the same defaults.
     pub(in crate::games::washoi) fn respawn(self) -> Duration {
         Duration::from_secs(match self.kind {
             PickupKind::Weapon | PickupKind::Ammo => 15,
             PickupKind::Armor => 25,
             PickupKind::Powerup => 120,
-            PickupKind::Health => match self.item {
-                Some(PickupItem::Mega | PickupItem::Ultra) => 60,
-                _ => 20,
-            },
+            PickupKind::Health if matches!(self.item.0, "mega" | "ultra") => 60,
+            PickupKind::Health => 20,
         })
     }
 
     /// Whether the server would let the bot take this item now. Washoi's
     /// `PickupSystem.ts` leaves health and armor in place when they add
-    /// nothing. A bot sent to one would wait on it indefinitely. Weapon and
+    /// nothing, by the `ItemGrants.ts` rules. A bot sent to one would wait on it indefinitely. Weapon and
     /// ammo limits depend on inventory the bot doesn't track yet.
     pub(in crate::games::washoi) fn benefits(self, vitals: OwnVitals) -> bool {
         match self.kind {
-            PickupKind::Health => {
-                let cap = match self.item {
-                    Some(PickupItem::Small | PickupItem::Mega | PickupItem::Ultra) => {
-                        HEALTH_OVERHEAL_MAX
-                    }
-                    // Without the item kind, assume the stricter cap.
-                    _ => HEALTH_MAX,
-                };
-                vitals.health.is_none_or(|health| health < cap)
-            }
-            PickupKind::Armor => vitals.armor.is_none_or(|armor| armor < ARMOR_MAX),
+            PickupKind::Health => vitals
+                .health
+                .is_none_or(|health| items::health_after(health, self.item.0) > health),
+            PickupKind::Armor => vitals
+                .armor
+                .is_none_or(|armor| items::armor_after(armor, self.item.0) > armor),
             PickupKind::Weapon | PickupKind::Ammo | PickupKind::Powerup => true,
         }
     }
