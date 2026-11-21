@@ -360,10 +360,12 @@ fn local_walk(sight: &Sight, from: Vec3, to: Vec3) -> bool {
     }
     let (sx, sz) = (dz / distance, -dx / distance);
     let steps = (distance / 16.0).ceil() as u32;
-    for side in [-14.0, 0.0, 14.0] {
+    // Sample the horizontal extent and the low and high planes of
+    // SHAG's BotVision.WALK_SWEEP_BOUNDS.
+    for side in [-15.0, 0.0, 15.0] {
         let from_x = from.x + sx * side;
         let from_z = from.z + sz * side;
-        for height in [-6.0, 16.0] {
+        for height in [-6.0, 17.0, 40.0] {
             let y = from.y + height;
             if !sight.clear([from_x, y, from_z], [from_x + dx, y, from_z + dz]) {
                 return false;
