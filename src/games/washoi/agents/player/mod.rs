@@ -15,6 +15,7 @@ use crate::games::washoi::{
 
 use crate::games::washoi::agents::player::combat::aim::{AimController, View};
 use crate::games::washoi::agents::player::combat::mood::{BotMood, Mistake};
+use crate::games::washoi::agents::player::combat::safety;
 use crate::games::washoi::agents::player::combat::{ALT_FIRE, Combat, Engagement, FIRE};
 use crate::games::washoi::agents::player::movement::chase::Chase;
 use crate::games::washoi::agents::player::movement::highground::{self, HighGround};
@@ -74,6 +75,11 @@ pub struct BotPlayer {
     moves: CombatMovement,
     chase: Chase,
     mood: BotMood,
+    /// Where the bot and its living teammates were at the last decision,
+    /// and whether the trigger was down on the aim.
+    position: Option<super::super::Vec3>,
+    allies: Vec<super::super::Vec3>,
+    shooting: bool,
     /// Whether the last decision had a fight, to see fights start and end.
     fighting: bool,
     /// A ledge to fight from with a splash weapon, and the walk there.
@@ -118,6 +124,9 @@ impl BotPlayer {
             moves: CombatMovement::default(),
             chase: Chase::default(),
             mood: BotMood::default(),
+            position: None,
+            allies: Vec::new(),
+            shooting: false,
             fighting: false,
             high_ground: HighGround::default(),
             climb: Chase::default(),
@@ -250,6 +259,8 @@ impl BotPlayer {
             _ => None,
         };
         self.apply_mood(world, position);
+        self.position = position;
+        self.allies = self.combat.allies(world, &self.entity_id);
         match (self.engagement, self.sight.clone(), position) {
             (Some(fight), Some(sight), Some(position)) => {
                 self.fight_moves(world, fight, &sight, position, now);
@@ -709,7 +720,33 @@ impl BotPlayer {
     /// One planned command, with the view turned by the aim controller and
     /// fire pressed in a fight. A blade swings on each fresh press only, so
     /// melee fire alternates, as in TypeScript `pulseMeleeFire`.
+    /// One command with the trigger gated as `BotClient._aimed` gates it:
+    /// fire waits for the view to reach the aim, and no attack goes out with
+    /// an ally on the line of the view sent.
     fn next_command(&mut self) -> PlayerInput {
+        let (mut input, aim) = self.aimed_command();
+        let sent = View {
+            yaw: input.yaw,
+            pitch: input.pitch,
+        };
+        match aim {
+            Some(aim) => {
+                let (buttons, shooting) =
+                    safety::hold_fire_off_aim(input.buttons, aim, sent, self.shooting);
+                input.buttons = buttons;
+                self.shooting = shooting;
+            }
+            None => self.shooting = false,
+        }
+        if let Some(position) = self.position {
+            input.buttons = safety::spare_allies(input.buttons, position, sent, &self.allies);
+        }
+        input
+    }
+
+    /// The planned command with the view turned by the aim controller, and
+    /// the aim the view was turning to while fighting or chasing.
+    fn aimed_command(&mut self) -> (PlayerInput, Option<View>) {
         let mut input = self.planned_input;
         let planned = View {
             yaw: input.yaw,
@@ -717,7 +754,7 @@ impl BotPlayer {
         };
         if self.exact_view {
             self.aim.reset(planned);
-            return input;
+            return (input, None);
         }
         if self.engagement.is_none()
             && let Some((wanted, prefire)) = self.chasing
@@ -735,7 +772,7 @@ impl BotPlayer {
             if prefire {
                 input.buttons |= FIRE;
             }
-            return input;
+            return (input, Some(wanted));
         }
         let Some(fight) = self.engagement else {
             self.pressed_melee = false;
@@ -748,7 +785,7 @@ impl BotPlayer {
             );
             input.yaw = view.yaw;
             input.pitch = view.pitch;
-            return input;
+            return (input, None);
         };
         let fire = fight.buttons & FIRE != 0;
         let view = self.aim.step(
@@ -767,7 +804,7 @@ impl BotPlayer {
             input.buttons |= FIRE;
         }
         self.pressed_melee = press && fight.melee;
-        input
+        (input, Some(fight.view))
     }
 
     fn commands_due(&mut self, now: SimTime) -> u64 {
@@ -854,6 +891,7 @@ mod tests {
         }
         let start = SimTime::ZERO;
         let mut fired = 0;
+        let mut first_shot = None;
         let mut last = Controls::default();
         for step in 0..150u64 {
             let now = start + INPUT_PERIOD * step as u32;
@@ -861,14 +899,21 @@ mod tests {
             bot.observe_at(world.clone(), now);
             bot.decide(now);
             for input in bot.inputs_at(now) {
-                fired += usize::from(input.buttons & FIRE != 0);
+                if input.buttons & FIRE != 0 {
+                    fired += 1;
+                    first_shot.get_or_insert(input.yaw);
+                }
                 last = input;
             }
         }
         // Insane notices it within 4 ticks and turns to it well within
-        // 1.2 s, firing all the while.
-        assert!((last.yaw - std::f64::consts::FRAC_PI_4).abs() < 0.05);
-        assert!(fired >= 140);
+        // 1.2 s. It holds fire until its view is within 12 degrees of the
+        // aim, then keeps firing.
+        let aim = std::f64::consts::FRAC_PI_4;
+        assert!((last.yaw - aim).abs() < 0.05);
+        let first_shot = first_shot.expect("fired");
+        assert!((first_shot - aim).abs() <= 12f64.to_radians() + 1e-9);
+        assert!(fired >= 100, "fired {fired} times");
         // Behind the wall, fire stops.
         world.body_mut("foe").unwrap().position = Some(Vec3::new(0.0, 34.0, 500.0));
         let now = start + INPUT_PERIOD * 150;

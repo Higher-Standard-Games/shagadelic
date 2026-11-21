@@ -10,6 +10,7 @@
 pub(in crate::games::washoi) mod aim;
 pub(in crate::games::washoi) mod combos;
 pub(in crate::games::washoi) mod mood;
+pub(in crate::games::washoi) mod safety;
 pub(in crate::games::washoi) mod weapons;
 
 use self::{
@@ -708,6 +709,25 @@ impl Combat {
     /// Out of a fight, aim is released.
     pub(in crate::games::washoi) fn disengage(&mut self) {
         self.ads_since = None;
+    }
+
+    /// Living teammates' positions, for the friendly-fire gate. None outside
+    /// team play.
+    pub(super) fn allies(&self, world: &Observation, own: &str) -> Vec<Vec3> {
+        let team = world.player(own).map(|player| player.team.as_str());
+        if !on_a_team(team) {
+            return Vec::new();
+        }
+        world
+            .players
+            .iter()
+            .filter(|player| {
+                player.entity_id != own
+                    && Some(player.team.as_str()) == team
+                    && !self.dead.contains(&player.entity_id)
+            })
+            .filter_map(|player| world.body(&player.entity_id)?.position)
+            .collect()
     }
 
     /// Forget the weapon on death. Other players' state stays current.
