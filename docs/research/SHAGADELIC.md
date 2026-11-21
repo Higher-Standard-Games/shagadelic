@@ -481,6 +481,12 @@ The ignored `washoi_bots_fight_until_one_kills_the_other` test runs two Insane b
 
 **Implemented readying a gun out of a fight.** Following `BotFight.readyForHeard`, a bot that isn't fighting gets out the gun for the distance of the nearest enemy heard but not seen within 1,500 units. This is rolled every two seconds at `predictionSkill` odds and kept for two seconds. Otherwise it puts the blade away for the gun a fight at 800 units would pick, unless a blade charge is being carried. It also runs while a server order steers, and changes only the weapon slot. Direct live fights reached a kill in five of five runs and hosted ones in three of three.
 
+**Measuring parity against the TypeScript bot.** `tools/bench-washoi-ab.mjs` plays a Rust bot against a TypeScript bot over many headless Duels, as SHAG's `bot:ab` plays two TypeScript arms. Each match gets an in-process `GameServer` at 125 Hz with 60 Hz snapshots and 15 s pickup respawns. The TypeScript bot joins through `BotServer`, the Rust bot through the supervisor with a navigation directory holding `<map>.json` and `<map>.sight`, and join order alternates. It reports wins, a sign test, the per-match frag gap with a 95% interval, and total frags and deaths. Run it from the SHAG checkout:
+
+```text
+node node_modules/vite-node/vite-node.mjs <SHAGADELIC>/tools/bench-washoi-ab.mjs -- --exe <shagadelic.exe> --nav <navigation dir> --matches 12 --seconds 120 --difficulty hard
+```
+
 **Hunting is mostly covered.** TypeScript `BotRoam.hunt` goes after the freshest enemy sighting within 300 server ticks (2.4 seconds). Otherwise it takes an item goal or patrols a random graph node. With `scoredGoals`, it weighs those by desires from the bot's weight profile. The Rust chase already follows seen and heard enemies for up to 2.8 seconds, and roaming walks between pickup and plain goals. The remaining difference is the weighted choice between hunting, items, and territory. That belongs with the strategy layer and its weight profiles, which are not ported.
 
 The demo workflow is a separate source. `training_demo` recordings processed by `bot:learn` produce `config/bot-routes/<map>.json`. Those records carry a start pose, landing, and run-length-encoded commands for deterministic maneuvers. `config/bot-lanes/<map>.json`, written by `bot:lanes`, can feed S&D tactics when that layer is implemented.
