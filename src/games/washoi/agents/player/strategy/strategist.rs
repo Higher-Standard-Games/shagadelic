@@ -33,6 +33,8 @@ const PRIOR_SD: f64 = 1.0;
 const REWARD_PER_FRAG: f64 = 1.0;
 const REWARD_PER_ITEM: f64 = 0.3;
 const REWARD_PER_STACK: f64 = 0.2;
+/// A prior from earlier matches counts from this many episodes.
+const PRIOR_MIN_EPISODES: u32 = 10;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::games::washoi) enum DiagnosisId {
@@ -43,6 +45,20 @@ pub(in crate::games::washoi) enum DiagnosisId {
     AheadLate,
     BehindLate,
     Focused,
+}
+
+impl DiagnosisId {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Understacked => "understacked",
+            Self::Stacked => "stacked",
+            Self::LosingItems => "losing_items",
+            Self::EnemyWeak => "enemy_weak",
+            Self::AheadLate => "ahead_late",
+            Self::BehindLate => "behind_late",
+            Self::Focused => "focused",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -309,6 +325,8 @@ pub(in crate::games::washoi) struct Strategist {
     arms: Vec<((DiagnosisId, StrategyId), (u32, f64))>,
     episode: Option<Episode>,
     random: Random,
+    /// Payoffs from earlier matches, by `diagnosis:strategy`.
+    priors: Vec<(String, (u32, f64))>,
 }
 
 impl Strategist {
@@ -322,7 +340,13 @@ impl Strategist {
             arms: Vec::new(),
             episode: None,
             random,
+            priors: Vec::new(),
         }
+    }
+
+    /// `setPriors`: what each answer paid in earlier matches on this map.
+    pub(in crate::games::washoi) fn set_priors(&mut self, priors: Vec<(String, (u32, f64))>) {
+        self.priors = priors;
     }
 
     #[cfg(test)]
@@ -333,7 +357,7 @@ impl Strategist {
     /// The strategy and the diagnosis it answers, on one line.
     pub(in crate::games::washoi) fn explain(&self) -> String {
         match &self.because {
-            Some(because) => format!("{} ({:?})", self.current.name(), because.id).to_lowercase(),
+            Some(because) => format!("{} ({})", self.current.name(), because.id.name()),
             None => self.current.name().to_owned(),
         }
     }
@@ -434,7 +458,18 @@ impl Strategist {
                 .iter()
                 .find(|(key, _)| *key == (diagnosis, strategy))
                 .map_or((0, 0.0), |(_, arm)| *arm);
-            let prior = if strategy == rule { RULE_PRIOR } else { 0.0 };
+            let key = format!("{}:{}", diagnosis.name(), strategy.name());
+            let learned = self
+                .priors
+                .iter()
+                .find(|(known, _)| *known == key)
+                .map(|(_, prior)| *prior)
+                .filter(|(n, _)| *n >= PRIOR_MIN_EPISODES);
+            let prior = match learned {
+                Some((_, mean)) => mean,
+                None if strategy == rule => RULE_PRIOR,
+                None => 0.0,
+            };
             let n = f64::from(n);
             let expected = (prior + mean * n) / (1.0 + n);
             let draw = expected + PRIOR_SD / (1.0 + n).sqrt() * gaussian(&mut self.random);

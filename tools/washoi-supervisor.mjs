@@ -18,9 +18,11 @@ export class WashoiSupervisor {
   constructor(executable, {
     navigationDir = process.env.SHAGADELIC_NAVIGATION_DIR,
     learnedRoutesDir = process.env.SHAGADELIC_LEARNED_ROUTES_DIR,
+    // SHAG's config/bot-intel: people.json and <map>.json.
+    intelDir = process.env.SHAGADELIC_INTEL_DIR,
   } = {}) {
     this.#executable = executable;
-    this.#assets = { navigationDir, learnedRoutesDir };
+    this.#assets = { navigationDir, learnedRoutesDir, intelDir };
   }
 
   start(matchId, endpoint, map) {
@@ -217,23 +219,33 @@ class MatchChild {
   }
 }
 
-async function mapAssets(map, { navigationDir, learnedRoutesDir }) {
-  if (!map || (!navigationDir && !learnedRoutesDir)) return {};
+async function mapAssets(map, { navigationDir, learnedRoutesDir, intelDir }) {
+  if (!map || (!navigationDir && !learnedRoutesDir && !intelDir)) return {};
   if (!/^[A-Za-z0-9_-]+$/.test(map)) throw new Error("invalid Washoi map name");
   const name = map + ".json";
   const existing = async (path) => {
     await access(path);
     return path;
   };
-  const [navigation_file, learned_routes_file, sight_file, locations_file] = await Promise.all([
+  const [navigation_file, learned_routes_file, sight_file, locations_file, people_file, baseline_file] = await Promise.all([
     navigationDir ? optionalFile(resolve(navigationDir, name), existing) : undefined,
     learnedRoutesDir ? optionalFile(resolve(learnedRoutesDir, name), existing) : undefined,
     // Baked by tools/bake-washoi-sight.mjs. The child checks its map.
     navigationDir ? optionalFile(resolve(navigationDir, map + ".sight"), existing) : undefined,
     // Baked by tools/bake-washoi-locations.mjs, for team callouts.
     navigationDir ? optionalFile(resolve(navigationDir, map + ".locations.json"), existing) : undefined,
+    intelDir ? optionalFile(resolve(intelDir, "people.json"), existing) : undefined,
+    intelDir ? optionalFile(resolve(intelDir, name), existing) : undefined,
   ]);
-  return { washoi_map: map, navigation_file, learned_routes_file, sight_file, locations_file };
+  return {
+    washoi_map: map,
+    navigation_file,
+    learned_routes_file,
+    sight_file,
+    locations_file,
+    people_file,
+    baseline_file,
+  };
 }
 
 async function optionalFile(path, use) {

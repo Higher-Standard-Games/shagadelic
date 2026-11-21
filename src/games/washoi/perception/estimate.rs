@@ -29,6 +29,8 @@ struct Enemy {
     health: f64,
     armor: f64,
     known: u32,
+    /// When it was first known alive this life.
+    spawn: u32,
     alive: bool,
 }
 
@@ -47,6 +49,7 @@ impl Estimates {
                     health: SPAWN_HEALTH,
                     armor: 0.0,
                     known: tick,
+                    spawn: tick,
                     alive: true,
                 });
                 self.enemies.len() - 1
@@ -64,6 +67,7 @@ impl Estimates {
                 health: SPAWN_HEALTH,
                 armor: 0.0,
                 known: tick,
+                spawn: tick,
                 alive: true,
             };
         }
@@ -114,14 +118,22 @@ impl Estimates {
         self.enemies.iter().filter(|enemy| enemy.alive).count()
     }
 
-    /// The living enemy the bot heard of last, with its estimate.
-    pub(in crate::games::washoi) fn freshest(&self, tick: u32) -> Option<Estimate> {
+    /// The living enemy the bot heard of last, and its estimate.
+    pub(in crate::games::washoi) fn freshest(&self, tick: u32) -> Option<(&str, Estimate)> {
         let enemy = self
             .enemies
             .iter()
             .filter(|enemy| enemy.alive)
             .max_by_key(|enemy| enemy.known)?;
-        self.of(&enemy.entity, tick)
+        Some((enemy.entity.as_str(), self.of(&enemy.entity, tick)?))
+    }
+
+    /// Seconds since the enemy was first known alive this life.
+    pub(in crate::games::washoi) fn alive_for(&self, entity: &str, tick: u32) -> Option<f64> {
+        self.enemies
+            .iter()
+            .find(|enemy| enemy.entity == entity && enemy.alive)
+            .map(|enemy| f64::from(tick.saturating_sub(enemy.spawn)) / 125.0)
     }
 
     /// The estimate for a living enemy the bot has met.

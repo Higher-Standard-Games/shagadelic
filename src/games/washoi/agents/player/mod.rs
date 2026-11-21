@@ -38,6 +38,7 @@ use crate::games::washoi::agents::player::navigation::{
 use crate::games::washoi::agents::player::strategy::candidates::{Candidate, GoalTarget};
 use crate::games::washoi::agents::player::strategy::considerations::{Me, Situation};
 use crate::games::washoi::agents::player::strategy::goals::OwnVitals;
+use crate::games::washoi::agents::player::strategy::intel::{Baseline, PeopleProfile};
 use crate::games::washoi::agents::player::strategy::match_read::{MatchRead, Moment};
 use crate::games::washoi::agents::player::strategy::opponents::{Opponents, Scene};
 use crate::games::washoi::agents::player::strategy::orders::Orders;
@@ -123,6 +124,11 @@ pub struct BotPlayer {
     chat: Chat,
     callouts: Callouts,
     locations: Option<Arc<Locations>>,
+    /// `intel/`: people's typical stacks, and the map's strategy payoffs,
+    /// applied once the gametype is known.
+    people: Option<Arc<PeopleProfile>>,
+    baseline: Option<Arc<Baseline>>,
+    priors_for: Option<String>,
     outgoing: Vec<String>,
     said_calls: Vec<String>,
     team_sighting: Option<(super::super::Vec3, u32)>,
@@ -211,6 +217,9 @@ impl BotPlayer {
             chat,
             callouts,
             locations: None,
+            people: None,
+            baseline: None,
+            priors_for: None,
             outgoing: Vec::new(),
             said_calls: Vec::new(),
             team_sighting: None,
@@ -251,6 +260,18 @@ impl BotPlayer {
     /// The name the bot plays under, which sets its chat personality.
     pub fn with_name(mut self, name: &str) -> Self {
         self.chat = Chat::new(name, Random::for_bot(&format!("{}/chat", self.entity_id)));
+        self
+    }
+
+    /// How people's stacks grow with time alive, for estimating humans.
+    pub fn with_people(mut self, people: Arc<PeopleProfile>) -> Self {
+        self.people = Some(people);
+        self
+    }
+
+    /// What strategies paid on this map in earlier matches.
+    pub fn with_baseline(mut self, baseline: Arc<Baseline>) -> Self {
+        self.baseline = Some(baseline);
         self
     }
 
@@ -1435,6 +1456,28 @@ impl BotPlayer {
 
     /// `MatchRead.update`, then `Strategist.update`.
     fn read_match(&mut self, world: &Observation) {
+        // `_loadPriors`: the map's payoffs for the gametype, once known.
+        if let (Some(baseline), Some(context)) = (&self.baseline, &self.match_context)
+            && !context.gametype.is_empty()
+            && self.priors_for.as_deref() != Some(context.gametype.as_str())
+        {
+            self.strategist
+                .set_priors(baseline.priors(&context.gametype));
+            self.priors_for = Some(context.gametype.clone());
+        }
+        if self.people.is_some() {
+            let humans = world
+                .players
+                .iter()
+                .filter(|player| {
+                    player.entity_id != self.entity_id
+                        && !player.name.is_empty()
+                        && !chat::is_bot_name(&player.name)
+                })
+                .map(|player| player.entity_id.clone())
+                .collect();
+            self.combat.know_people(self.people.clone(), humans);
+        }
         let tick = world.tick;
         let seen = self
             .engagement

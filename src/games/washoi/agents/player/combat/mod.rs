@@ -20,7 +20,9 @@ use self::{
     weapons::Profile,
 };
 
-use std::collections::HashSet;
+use std::{collections::HashSet, sync::Arc};
+
+use crate::games::washoi::agents::player::strategy::intel::PeopleProfile;
 
 use crate::games::washoi::agents::player::strategy::goals::PickupGoal;
 
@@ -101,6 +103,9 @@ pub(in crate::games::washoi) struct Combat {
     /// from the one chosen; keying it by weapon also covers a switch between
     /// two snapshots.
     ads_since: Option<(&'static str, u32)>,
+    /// `people.json`, and the enemies that are people.
+    people: Option<Arc<PeopleProfile>>,
+    humans: Vec<String>,
 }
 
 struct Charge {
@@ -793,29 +798,47 @@ impl Combat {
             });
     }
 
-    /// An enemy's estimated health plus armor, for one alive and met.
-    pub(in crate::games::washoi) fn enemy_stack(&self, entity: &str, tick: u32) -> Option<f64> {
-        self.estimates
-            .of(entity, tick)
-            .map(|estimate| estimate.health + estimate.armor)
+    /// The people profile, and the enemies that are people, not bots.
+    pub(in crate::games::washoi) fn know_people(
+        &mut self,
+        profile: Option<Arc<PeopleProfile>>,
+        humans: Vec<String>,
+    ) {
+        self.people = profile;
+        self.humans = humans;
     }
 
-    /// An enemy's stack and how unsure it is.
+    /// An enemy's estimated health plus armor, for one alive and met.
+    pub(in crate::games::washoi) fn enemy_stack(&self, entity: &str, tick: u32) -> Option<f64> {
+        self.enemy_estimate(entity, tick).map(|(stack, _)| stack)
+    }
+
+    /// `MatchRead.enemyStack`: an enemy's stack and how unsure it is. For a
+    /// person, an unsure estimate leans toward the stack people typically
+    /// have after so long alive (`people.json`).
     pub(in crate::games::washoi) fn enemy_estimate(
         &self,
         entity: &str,
         tick: u32,
     ) -> Option<(f64, f64)> {
-        self.estimates
-            .of(entity, tick)
-            .map(|estimate| (estimate.health + estimate.armor, estimate.uncertainty))
+        let estimate = self.estimates.of(entity, tick)?;
+        let known = estimate.health + estimate.armor;
+        let typical = self
+            .people
+            .as_ref()
+            .filter(|_| self.humans.iter().any(|human| human == entity))
+            .and_then(|people| people.typical_stack_after(self.estimates.alive_for(entity, tick)?));
+        let stack = match typical {
+            Some(typical) if typical > known => known + estimate.uncertainty * (typical - known),
+            _ => known,
+        };
+        Some((stack, estimate.uncertainty))
     }
 
     /// The freshest living enemy's stack and how unsure it is.
     pub(in crate::games::washoi) fn freshest_enemy(&self, tick: u32) -> Option<(f64, f64)> {
-        self.estimates
-            .freshest(tick)
-            .map(|estimate| (estimate.health + estimate.armor, estimate.uncertainty))
+        let (entity, _) = self.estimates.freshest(tick)?;
+        self.enemy_estimate(entity, tick)
     }
 
     /// Enemies the bot believes alive, from what it saw, heard, and hit.

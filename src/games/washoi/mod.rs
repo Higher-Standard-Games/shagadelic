@@ -12,6 +12,7 @@ pub use agents::player::BotPlayer;
 pub use agents::player::callouts::Locations;
 pub use agents::player::navigation::WashoiNavigation;
 pub use agents::player::navigation::learned::LearnedRoutes;
+pub use agents::player::strategy::intel::{Baseline, PeopleProfile};
 pub use difficulty::Difficulty;
 pub use hosting::net::protocol;
 pub use hosting::net::session::{BotReport, SpawnBot, WashoiSession};

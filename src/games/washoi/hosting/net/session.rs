@@ -10,7 +10,8 @@ use tokio::{sync::mpsc, task::JoinHandle};
 use crate::runtime::{Deadlines, EntityKey, GameSession, SessionEvent, Update};
 
 use crate::games::washoi::{
-    BotPlayer, Difficulty, LearnedRoutes, Locations, Sight, SimTime, WashoiNavigation,
+    Baseline, BotPlayer, Difficulty, LearnedRoutes, Locations, PeopleProfile, Sight, SimTime,
+    WashoiNavigation,
     agents::NetworkedPlayer,
     hosting::net::protocol::{
         self, AdmissionError, InputBatch, SnapshotEvent, WashoiEvents, connect,
@@ -45,6 +46,8 @@ struct MapAssets {
     learned: Option<Arc<LearnedRoutes>>,
     sight: Option<Arc<Sight>>,
     locations: Option<Arc<Locations>>,
+    people: Option<Arc<PeopleProfile>>,
+    baseline: Option<Arc<Baseline>>,
 }
 
 impl MapAssets {
@@ -54,6 +57,7 @@ impl MapAssets {
             self.learned.as_ref().map(|learned| learned.map()),
             self.sight.as_ref().map(|sight| sight.map()),
             self.locations.as_ref().map(|locations| locations.map()),
+            self.baseline.as_ref().map(|baseline| baseline.map()),
         ]
         .into_iter()
         .flatten()
@@ -122,6 +126,16 @@ impl WashoiSession {
 
     pub fn with_locations(mut self, locations: Locations) -> Self {
         self.assets.locations = Some(Arc::new(locations));
+        self
+    }
+
+    pub fn with_people(mut self, people: PeopleProfile) -> Self {
+        self.assets.people = Some(Arc::new(people));
+        self
+    }
+
+    pub fn with_baseline(mut self, baseline: Baseline) -> Self {
+        self.assets.baseline = Some(Arc::new(baseline));
         self
     }
 
@@ -197,6 +211,12 @@ impl GameSession for WashoiSession {
                     }
                     if let Some(locations) = &self.assets.locations {
                         player = player.with_locations(locations.clone());
+                    }
+                    if let Some(people) = &self.assets.people {
+                        player = player.with_people(people.clone());
+                    }
+                    if let Some(baseline) = &self.assets.baseline {
+                        player = player.with_baseline(baseline.clone());
                     }
                     bot.player = Some(Box::new(player));
                     self.reports.push_back(BotReport::Admitted {

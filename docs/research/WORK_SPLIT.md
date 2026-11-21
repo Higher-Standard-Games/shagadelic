@@ -66,7 +66,7 @@ Session A, decisions and combat:
 - [x] Fire safety: `BotFireSafety.ts` (97).
 - [x] Goal arbiter and considerations: `goals/` (about 1,500). Covers `GoalArbiter`, `ItemGoalPlanner`, `ItemGoalSource`, and `DirectiveGoalSource`, plus the Danger, ItemDenial, ContestedItem, ItemValue, RouteCost, TeamPlay, and ObjectivePush considerations.
 - [x] Strategy layer: `strategy/Strategist.ts` (448), `strategy/OpponentModel.ts` (59), the rest of `strategy/MatchRead.ts`, `BotTerritory.ts` (62), and `states/BotRoam.ts` roam choice (`goals/RoamChoice.ts`).
-- [ ] Learned strategy priors from earlier matches: `intel/` (393). The retreat's escape out of the enemy's sight is in `movement/escape.rs`.
+- [x] Learned strategy priors from earlier matches: `intel/` (393), in `strategy/intel.rs`. The supervisor's `intelDir` (`SHAGADELIC_INTEL_DIR`, SHAG's `config/bot-intel`) passes `people.json` and `<map>.json`. Building the store and exporting baselines stays with the TypeScript tools. The retreat's escape out of the enemy's sight is in `movement/escape.rs`.
 - [x] Look behavior: `view/BotLook.ts` (226).
 - [x] Blade lunge: `sequences/SlideBladeSequence.ts` (173).
 - [x] Decision traces: `DecisionTrace.ts` (53) and replayable decision records.
