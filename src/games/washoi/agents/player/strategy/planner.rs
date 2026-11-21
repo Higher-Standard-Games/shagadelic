@@ -9,6 +9,8 @@
 
 use std::fmt::Write as _;
 
+use crate::games::washoi::agents::player::trace::{TRACED_CANDIDATES, TracedCandidate};
+
 use crate::games::washoi::{
     Vec3,
     agents::player::strategy::{
@@ -67,6 +69,11 @@ pub(in crate::games::washoi) struct Planner {
     explain: String,
     /// The arbiter's score for the last goal chosen, zero for none.
     desire: f64,
+    /// The last decision for its trace: the goal chosen, the best
+    /// candidates past the gates, and how many a gate ruled out.
+    last_goal: Option<String>,
+    last_candidates: Vec<TracedCandidate>,
+    last_gated: usize,
     /// The pickup pursued, and how it is going.
     pursuit: Option<Pursuit>,
     /// Goals given up on, and the server tick they may be tried again.
@@ -90,10 +97,23 @@ impl Planner {
             arbiter: Arbiter::new(&considerations::ALL, mistake_probability(mistake_rate)),
             explain: String::new(),
             desire: 0.0,
+            last_goal: None,
+            last_candidates: Vec::new(),
+            last_gated: 0,
             pursuit: None,
             failed: Vec::new(),
             stopover: None,
         }
+    }
+
+    /// The last decision as `DecisionTrace` records it: the goal, the best
+    /// candidates past the gates, and the number gated.
+    pub(in crate::games::washoi) fn last(&self) -> (Option<&str>, &[TracedCandidate], usize) {
+        (
+            self.last_goal.as_deref(),
+            &self.last_candidates,
+            self.last_gated,
+        )
     }
 
     /// What the last goal chosen is worth, in the arbiter's currency.
@@ -129,6 +149,9 @@ impl Planner {
             && let Some(order) = mandatory(&orders)
         {
             self.explain = format!("goal={} mandatory", order.id);
+            self.last_goal = Some(order.id.clone());
+            self.last_candidates.clear();
+            self.last_gated = 0;
             return Some(order.target.clone());
         }
         let tick = situation.tick;
@@ -197,6 +220,19 @@ impl Planner {
             random,
         );
         self.explain = explain;
+        let mut passed: Vec<&Trace> = traces.iter().filter(|t| t.gated.is_none()).collect();
+        passed.sort_by(|a, b| b.desire.total_cmp(&a.desire));
+        self.last_candidates = passed
+            .into_iter()
+            .take(TRACED_CANDIDATES)
+            .map(|trace| TracedCandidate {
+                id: trace.goal.clone(),
+                desire: trace.desire,
+                via: trace.via,
+            })
+            .collect();
+        self.last_gated = traces.iter().filter(|t| t.gated.is_some()).count();
+        self.last_goal = goal.map(|index| goals[index].id.clone());
         let Some(index) = goal else {
             self.stopover = None;
             return None;

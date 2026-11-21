@@ -5,6 +5,7 @@ pub(in crate::games::washoi) mod look;
 pub(in crate::games::washoi) mod movement;
 pub(in crate::games::washoi) mod navigation;
 pub(in crate::games::washoi) mod strategy;
+pub mod trace;
 
 use std::{collections::VecDeque, sync::Arc, time::Duration};
 
@@ -107,6 +108,11 @@ pub struct BotPlayer {
     /// What to go for, the match it is chosen in, and the server ticks the
     /// bot was hurt at lately.
     planner: Planner,
+    /// `BotOptions.trace`: a record of each decision.
+    tracing: bool,
+    trace: Option<trace::DecisionTrace>,
+    /// The arbiter was consulted this decision.
+    arbitrated: bool,
     lunge: Lunge,
     opponents: Opponents,
     match_context: Option<MatchContext>,
@@ -168,6 +174,9 @@ impl BotPlayer {
             fighting: false,
             unstick: Unstick::default(),
             planner: Planner::new(Difficulty::default().mistake_rate()),
+            tracing: false,
+            trace: None,
+            arbitrated: false,
             lunge: Lunge::default(),
             opponents: Opponents::default(),
             match_context: None,
@@ -190,6 +199,17 @@ impl BotPlayer {
                 ..PlayerInput::default()
             },
         }
+    }
+
+    /// Keep a `DecisionTrace` of each decision, for tools.
+    pub fn with_trace(mut self, tracing: bool) -> Self {
+        self.tracing = tracing;
+        self
+    }
+
+    /// The record of the last decision, for a bot made `with_trace(true)`.
+    pub fn last_trace(&self) -> Option<&trace::DecisionTrace> {
+        self.trace.as_ref()
     }
 
     pub fn with_difficulty(mut self, difficulty: Difficulty) -> Self {
@@ -270,6 +290,7 @@ impl BotPlayer {
     }
 
     fn decide_on(&mut self, world: &Observation, now: SimTime) {
+        self.arbitrated = false;
         self.combat
             .observe(&world.events, &self.entity_id, world.tick);
         self.exact_view = self.plan(world, now);
@@ -355,6 +376,63 @@ impl BotPlayer {
         }
         self.look_around(world, position);
         self.turn_from_block(world, position, now);
+        if self.tracing {
+            self.trace = Some(self.record(world, position));
+        }
+    }
+
+    /// `DecisionTrace` for this decision.
+    fn record(
+        &self,
+        world: &Observation,
+        position: Option<super::super::Vec3>,
+    ) -> trace::DecisionTrace {
+        let state = if self.respawn_at.is_some() {
+            "dead"
+        } else if self.lunge.active() {
+            "lunge"
+        } else if self.exact_view {
+            "traversal"
+        } else if self.engagement.is_some() {
+            "fight"
+        } else if self.chasing.is_some() {
+            "chase"
+        } else if self.ordered {
+            "order"
+        } else {
+            "roam"
+        };
+        let (goal, candidates, gated) = if self.arbitrated {
+            self.planner.last()
+        } else {
+            (None, &[][..], 0)
+        };
+        let velocity = world.body(&self.entity_id).and_then(|body| body.velocity);
+        trace::DecisionTrace {
+            tick: world.tick,
+            state,
+            orders: self
+                .orders
+                .candidates(position.unwrap_or_default())
+                .map(|order| order.id)
+                .collect(),
+            goal: goal.map(str::to_owned),
+            candidates: candidates.to_vec(),
+            gated,
+            explain: if self.arbitrated {
+                self.planner.explain().to_owned()
+            } else {
+                String::new()
+            },
+            sequence: self.lunge.active().then_some("combat_slide_blade"),
+            position: position.map(|at| [at.x, at.y, at.z]),
+            speed: velocity.map_or(0.0, |v| v.linear.x.hypot(v.linear.z)),
+            grounded: velocity.is_some_and(|v| v.grounded),
+            crouching: velocity.is_some_and(|v| v.is_crouching),
+            health: self.vitals.health,
+            armor: self.vitals.armor,
+            weapon: self.combat.weapon().to_owned(),
+        }
     }
 
     /// Whatever the state, a bot that asks to move and goes nowhere turns
@@ -1065,6 +1143,7 @@ impl BotPlayer {
         if pickups.is_empty() && orders.is_empty() {
             return None;
         }
+        self.arbitrated = true;
         let contested = self.opponents.contested();
         let (weapons, ammo) = self.combat.inventory();
         let allies = self.combat.allies_by_id(world, &self.entity_id);
@@ -1352,7 +1431,8 @@ mod tests {
         .unwrap();
         let mut bot = BotPlayer::new("bot".into())
             .with_difficulty(Difficulty::Insane)
-            .with_sight(Arc::new(sight));
+            .with_sight(Arc::new(sight))
+            .with_trace(true);
         let mut world = Observation::default();
         // The foe stands level with the bot's fire origin, 45° to the right
         // of where the bot starts looking: inside its 55° view.
@@ -1391,6 +1471,15 @@ mod tests {
         let first_shot = first_shot.expect("fired");
         assert!((first_shot - aim).abs() <= 12f64.to_radians() + 1e-9);
         assert!(fired >= 100, "fired {fired} times");
+        // The trace records the fight, and serializes for tools.
+        let trace = bot.last_trace().expect("traced");
+        assert_eq!((trace.tick, trace.state), (149, "fight"));
+        assert_eq!(trace.goal, None);
+        assert!(
+            serde_json::to_string(trace)
+                .unwrap()
+                .contains(r#""state":"fight""#)
+        );
         // Behind the wall, fire stops.
         world.body_mut("foe").unwrap().position = Some(Vec3::new(0.0, 34.0, 500.0));
         let now = start + INPUT_PERIOD * 150;
