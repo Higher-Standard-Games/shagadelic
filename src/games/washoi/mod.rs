@@ -1,5 +1,6 @@
 mod aim;
 mod behavior;
+mod chase;
 mod combat;
 mod difficulty;
 mod goals;

@@ -34,6 +34,13 @@ const PREDICTED_SHOT_SPEED: f64 = 1400.0;
 const SPLASH_DROP: f64 = 20.0;
 /// `states/BotFight.ts` `MELEE_RANGE`.
 const MELEE_RANGE: f64 = 150.0;
+/// `BotVision.ts` enemy memory, in server ticks at 125 Hz: a visual track
+/// fades from full confidence to none over 4 s, its position is
+/// extrapolated for up to 3 s, and it is chased above 0.3.
+const TRACK_DECAY_TICKS: f64 = 500.0;
+const MAX_EXTRAPOLATION_TICKS: u32 = 375;
+const TICK_RATE: f64 = 125.0;
+const CHASE_CONFIDENCE: f64 = 0.3;
 // `InputButtons` in `engine/network/components/InputComponent.ts`.
 pub(super) const FIRE: u16 = 1 << 8;
 pub(super) const ALT_FIRE: u16 = 1 << 9;
@@ -46,11 +53,27 @@ pub(super) struct Combat {
     weapon: String,
     weapons: Vec<String>,
     ammo: Vec<(String, f64)>,
+    /// The last enemy fought, where and when it was last seen.
+    track: Option<Track>,
     /// The weapon and server tick since which aim has been held with it out.
     /// TypeScript resets this during a switch, when the weapon out differs
     /// from the one chosen; keying it by weapon also covers a switch between
     /// two snapshots.
     ads_since: Option<(&'static str, u32)>,
+}
+
+struct Track {
+    entity: String,
+    at: Vec3,
+    velocity: Vec3,
+    tick: u32,
+}
+
+/// An enemy out of sight: where it should be by now, and how sure the bot is.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct Lost {
+    pub(super) predicted: Vec3,
+    pub(super) confidence: f64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -135,15 +158,22 @@ impl Combat {
                     distance(position, at),
                     at,
                     entity.velocity.map(|v| v.linear),
+                    player.entity_id.as_str(),
                 ))
             })
             .collect();
         enemies.sort_by(|a, b| a.0.total_cmp(&b.0));
         let eye = [position.x, position.y + EYE_HEIGHT, position.z];
-        let (distance, at, velocity) = enemies
+        let (distance, at, velocity, entity) = enemies
             .into_iter()
             .take(MAX_SIGHT_CHECKS)
-            .find(|(_, at, _)| sight.clear(eye, [at.x, at.y + 0.8 * EYE_HEIGHT, at.z]))?;
+            .find(|(_, at, _, _)| sight.clear(eye, [at.x, at.y + 0.8 * EYE_HEIGHT, at.z]))?;
+        self.track = Some(Track {
+            entity: entity.to_owned(),
+            at,
+            velocity: velocity.filter(|v| finite(*v)).unwrap_or_default(),
+            tick: world.tick,
+        });
         let ammo = |id: &str| {
             self.ammo
                 .iter()
@@ -235,6 +265,32 @@ impl Combat {
         buttons
     }
 
+    /// `_getActiveTrackedEnemies` for the last enemy fought, while it is out
+    /// of sight: forgotten once dead or faded, chased above 0.3 confidence.
+    pub(super) fn lost(&mut self, tick: u32) -> Option<Lost> {
+        let track = self.track.as_ref()?;
+        let elapsed = tick.wrapping_sub(track.tick);
+        let confidence = 1.0 - f64::from(elapsed) / TRACK_DECAY_TICKS;
+        if confidence <= 0.0 || self.dead.contains(&track.entity) {
+            self.track = None;
+            return None;
+        }
+        let seconds = f64::from(elapsed.min(MAX_EXTRAPOLATION_TICKS)) / TICK_RATE;
+        let predicted = Vec3::new(
+            track.at.x + track.velocity.x * seconds,
+            track.at.y + track.velocity.y * seconds,
+            track.at.z + track.velocity.z * seconds,
+        );
+        (confidence >= CHASE_CONFIDENCE).then_some(Lost {
+            predicted,
+            confidence,
+        })
+    }
+
+    pub(super) fn holding_melee(&self) -> bool {
+        weapons::profile_of(&self.weapon).melee
+    }
+
     /// Out of a fight, aim is released.
     pub(super) fn disengage(&mut self) {
         self.ads_since = None;
@@ -246,6 +302,7 @@ impl Combat {
         self.weapons.clear();
         self.ammo.clear();
         self.ads_since = None;
+        self.track = None;
     }
 }
 
@@ -496,5 +553,47 @@ mod tests {
                 .buttons,
             FIRE
         );
+    }
+
+    #[test]
+    fn remembers_an_enemy_out_of_sight_until_it_fades_or_dies() {
+        let me = Vec3::new(0.0, 0.0, -100.0);
+        let mut world = world(&[
+            ("me", "", [0.0, 0.0, -100.0]),
+            ("foe", "", [0.0, 0.0, -500.0]),
+        ]);
+        world.entities.get_mut("foe").unwrap().velocity = Some(Velocity {
+            linear: Vec3::new(250.0, 0.0, 0.0),
+            ..Velocity::default()
+        });
+        let mut combat = Combat::default();
+        let skill = Difficulty::Medium.aim();
+        world.tick = 1000;
+        assert!(combat.engage(&world, "me", me, &sight(), skill).is_some());
+        // Behind the wall across x = 0 for z > 0, one second later.
+        world.entities.get_mut("foe").unwrap().position = Some(Vec3::new(0.0, 0.0, 300.0));
+        world.tick = 1125;
+        assert!(combat.engage(&world, "me", me, &sight(), skill).is_none());
+        let lost = combat.lost(1125).unwrap();
+        assert!((lost.confidence - 0.75).abs() < 1e-9);
+        assert_eq!(lost.predicted, Vec3::new(250.0, 0.0, -500.0));
+        // The chase ends below 0.3 confidence, after 2.8 s.
+        let last = combat.lost(1000 + 350).unwrap();
+        assert!((last.predicted.x - 700.0).abs() < 1e-9);
+        assert!(combat.lost(1000 + 351).is_none());
+        // The memory is gone; seeing the foe again brings it back.
+        world.entities.get_mut("foe").unwrap().position = Some(Vec3::new(0.0, 0.0, -500.0));
+        assert!(combat.engage(&world, "me", me, &sight(), skill).is_some());
+        // A death ends the memory.
+        combat.observe(
+            &[SnapshotEvent::CombatState {
+                entity_id: "foe".into(),
+                health: 0,
+                armor: 0,
+                dead: true,
+            }],
+            "me",
+        );
+        assert!(combat.lost(1125).is_none());
     }
 }

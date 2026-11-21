@@ -4,6 +4,7 @@ use shagger_shared::net::game_state::GameState;
 use tokio::time::Instant;
 
 use super::aim::{AimController, View};
+use super::chase::Chase;
 use super::combat::{Combat, Engagement, FIRE};
 use super::goals::OwnVitals;
 use super::navigation::{RouteFollower, RouteObservation};
@@ -44,6 +45,11 @@ pub struct BotPlayer {
     combat: Combat,
     engagement: Option<Engagement>,
     moves: CombatMovement,
+    chase: Chase,
+    /// A server order steered this tick, which takes over from a chase.
+    ordered: bool,
+    /// Where to look while chasing, and whether to fire into the spot.
+    chasing: Option<(View, bool)>,
     aim: AimController,
     random: Random,
     /// A traversal sets the view itself, so the aim controller stands aside.
@@ -73,6 +79,9 @@ impl BotPlayer {
             combat: Combat::default(),
             engagement: None,
             moves: CombatMovement::default(),
+            chase: Chase::default(),
+            ordered: false,
+            chasing: None,
             aim: AimController::new(Difficulty::default().aim()),
             exact_view: false,
             pressed_melee: false,
@@ -149,6 +158,60 @@ impl BotPlayer {
                 self.moves.reset();
             }
         }
+        self.chasing = None;
+        if self.engagement.is_none()
+            && !self.exact_view
+            && !self.ordered
+            && self.respawn_at.is_none()
+            && let (Some(navigation), Some(sight), Some(position)) =
+                (self.navigation.clone(), self.sight.clone(), position)
+            && let Some(lost) = self.combat.lost(world.tick)
+        {
+            self.chase_lost(world, now, &navigation, &sight, position, lost);
+        } else {
+            self.chase.reset();
+        }
+    }
+
+    /// `chase`: walk toward where the enemy should be, watch it, and fire
+    /// into it within 200 units while the memory is above 0.7.
+    fn chase_lost(
+        &mut self,
+        world: &GameState<SnapshotEvent>,
+        now: Instant,
+        navigation: &WashoiNavigation,
+        sight: &Sight,
+        position: shagger_shared::net::game_state::Vec3,
+        lost: super::combat::Lost,
+    ) {
+        let velocity = world
+            .entities
+            .get(&self.entity_id)
+            .and_then(|entity| entity.velocity);
+        let target = lost.predicted;
+        let Some(input) = self
+            .chase
+            .steer(navigation, sight, position, velocity, target, now)
+        else {
+            return;
+        };
+        self.planned_input = input;
+        let (dx, dy, dz) = (
+            target.x - position.x,
+            target.y - (position.y + 34.0),
+            target.z - position.z,
+        );
+        let horizontal = dx.hypot(dz);
+        if horizontal <= 0.01 {
+            return;
+        }
+        let view = View {
+            yaw: dx.atan2(dz),
+            pitch: -dy.atan2(horizontal),
+        };
+        let prefire =
+            horizontal.hypot(dy) < 200.0 && lost.confidence > 0.7 && !self.combat.holding_melee();
+        self.chasing = Some((view, prefire));
     }
 
     /// Strafe across the walk while fighting, and dodge when hit. The strafe
@@ -290,8 +353,10 @@ impl BotPlayer {
         {
             self.route.detach();
             self.planned_input = input;
+            self.ordered = true;
             return false;
         }
+        self.ordered = false;
         if let Some(navigation) = &self.navigation {
             self.planned_input = PlayerInput::default();
             if self.respawn_at.is_none()
@@ -318,7 +383,7 @@ impl BotPlayer {
                         landed_id: landed,
                         timing_noise: 2.0 * self.random.next() - 1.0,
                         sight: self.sight.as_deref(),
-                        fighting: self.engagement.is_some(),
+                        fighting: self.engagement.is_some() || self.chasing.is_some(),
                     },
                 );
                 if self.route.exact() {
@@ -390,6 +455,24 @@ impl BotPlayer {
         };
         if self.exact_view {
             self.aim.reset(planned);
+            return input;
+        }
+        if self.engagement.is_none()
+            && let Some((wanted, prefire)) = self.chasing
+        {
+            self.pressed_melee = false;
+            let view = self.aim.step(
+                INPUT_PERIOD.as_secs_f64(),
+                wanted,
+                prefire,
+                false,
+                &mut self.random,
+            );
+            input.yaw = view.yaw;
+            input.pitch = view.pitch;
+            if prefire {
+                input.buttons |= FIRE;
+            }
             return input;
         }
         let Some(fight) = self.engagement else {
@@ -511,6 +594,65 @@ mod tests {
         let now = start + INPUT_PERIOD * 150;
         bot.observe(&world, now);
         assert!(bot.inputs(now).all(|input| input.buttons & FIRE == 0));
+    }
+
+    #[test]
+    fn chases_an_enemy_that_ducked_out_of_sight() {
+        use crate::games::washoi::sight::tests::{cube, encode};
+        use shagger_shared::net::game_state::{PlayerState, Vec3};
+        // A floor, and a wall that hides x > 200 from the bot at the origin.
+        let sight = Sight::parse(&encode(
+            "test",
+            &[
+                cube([-500.0, -10.0, -500.0], [1000.0, 0.0, 500.0]),
+                cube([200.0, 0.0, 40.0], [210.0, 200.0, 500.0]),
+            ],
+            &[],
+        ))
+        .unwrap();
+        let navigation: WashoiNavigation = serde_json::from_str(
+            r#"{
+            "map":"test","graph":{
+                "bsp_sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                "nodes":[[0,24,0],[150,24,0],[300,24,0],[300,24,150]],
+                "edges":[[0,1],[1,0],[1,2],[2,1],[2,3],[3,2]],"entries":[0],"goals":[0,3]
+            }
+        }"#,
+        )
+        .unwrap();
+        let mut bot = BotPlayer::new("bot".into())
+            .with_navigation(Arc::new(navigation))
+            .with_sight(Arc::new(sight));
+        let mut world = GameState::default();
+        for (id, at) in [
+            ("bot", Vec3::new(0.0, 24.0, 0.0)),
+            ("foe", Vec3::new(300.0, 24.0, 0.0)),
+        ] {
+            world.players.insert(
+                id,
+                PlayerState {
+                    entity_id: id.into(),
+                    ..PlayerState::default()
+                },
+            );
+            world
+                .entities
+                .get_or_insert_with(id, Default::default)
+                .position = Some(at);
+        }
+        let start = Instant::now();
+        world.tick = 100;
+        bot.observe(&world, start);
+        assert!(bot.engagement.is_some());
+        // Behind the wall now, so the bot walks toward where it was seen.
+        world.entities.get_mut("foe").unwrap().position = Some(Vec3::new(300.0, 24.0, 150.0));
+        world.tick = 110;
+        bot.observe(&world, start + Duration::from_millis(80));
+        assert!(bot.engagement.is_none());
+        let (view, prefire) = bot.chasing.expect("chasing");
+        assert!((view.yaw - std::f64::consts::FRAC_PI_2).abs() < 1e-6);
+        assert!(!prefire);
+        assert_eq!(bot.planned_input.direction, [1.0, 0.0, 0.0]);
     }
 
     #[test]

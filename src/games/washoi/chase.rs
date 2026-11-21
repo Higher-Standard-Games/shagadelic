@@ -1,0 +1,65 @@
+//! Chasing an enemy that went out of sight, after TypeScript
+//! `states/BotRoam.ts` `chase`: walk toward where it should be by now, watch
+//! that spot, and fire into it when close and the memory is fresh. The walk
+//! comes from the graph planner's objective walks.
+
+use std::time::Duration;
+
+use shagger_shared::net::game_state::{Vec3, Velocity};
+use tokio::time::Instant;
+
+use super::{Sight, WashoiNavigation, navigation::ObjectiveWalk, protocol::PlayerInput};
+
+/// Close enough to the predicted spot to stop walking.
+const ARRIVAL_RADIUS: f64 = 64.0;
+/// A prediction this far from the walk's target starts a new walk.
+const REPLAN_DISTANCE: f64 = 96.0;
+const RETRY: Duration = Duration::from_millis(500);
+
+#[derive(Default)]
+pub(super) struct Chase {
+    walk: Option<(Vec3, ObjectiveWalk)>,
+    retry_at: Option<Instant>,
+}
+
+impl Chase {
+    pub(super) fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    /// Movement toward `target`, or none when no walk leads there.
+    pub(super) fn steer(
+        &mut self,
+        navigation: &WashoiNavigation,
+        sight: &Sight,
+        position: Vec3,
+        velocity: Option<Velocity>,
+        target: Vec3,
+        now: Instant,
+    ) -> Option<PlayerInput> {
+        if self
+            .walk
+            .as_ref()
+            .is_some_and(|(previous, _)| distance(*previous, target) > REPLAN_DISTANCE)
+        {
+            self.walk = None;
+        }
+        if self.walk.is_none() && self.retry_at.is_none_or(|at| now >= at) {
+            self.retry_at = Some(now + RETRY);
+            self.walk = navigation
+                .objective_walk(position, target, ARRIVAL_RADIUS, None, Some(sight))
+                .map(|walk| (target, walk));
+        }
+        let (_, walk) = self.walk.as_mut()?;
+        let input = walk.steer(position, velocity);
+        if input.direction == [0.0; 3] {
+            // Arrived, or the walk ran out: plan again after the retry delay.
+            self.walk = None;
+        }
+        Some(input)
+    }
+}
+
+fn distance(a: Vec3, b: Vec3) -> f64 {
+    (a.x - b.x).hypot(a.z - b.z).hypot(a.y - b.y)
+}
