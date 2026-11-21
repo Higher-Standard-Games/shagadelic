@@ -17,7 +17,7 @@ use tokio_tungstenite::{
 };
 
 use super::{Admission, AdmissionEvent, SnapshotEvent, SnapshotReceiver, WashoiEvents};
-use crate::games::washoi::Controls;
+use crate::games::washoi::{Controls, SimTime};
 
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
@@ -102,19 +102,22 @@ impl Connection<WashoiEvents> {
         let mut bot = bot;
         let mut observe = observe;
         let mut keys = super::keys::MovementKeys::default();
+        // The standalone pilot keeps its own simulation clock from the start of play.
+        let start = tokio::time::Instant::now();
+        let now = || SimTime::from_elapsed(start.elapsed());
         loop {
             tokio::select! {
                 frame = self.socket.next() => {
                     if matches!(frame, None | Some(Ok(Message::Close(_)))) { return Ok(()); }
                     if let Some(state) = self.receive_frame(frame).await? {
-                        bot.observe(&state, tokio::time::Instant::now());
+                        bot.observe_at(&super::observe(&state), now());
                         if !observe(&state) {
                             return Ok(());
                         }
                     }
                 }
                 _ = updates.tick() => {
-                    let actions = InputBatch::from_player(&mut bot, tokio::time::Instant::now());
+                    let actions = InputBatch::from_player(&mut bot, now());
                     self.send_batch(actions, &mut keys).await?;
                 }
             }
@@ -187,14 +190,11 @@ pub(crate) struct InputBatch {
 }
 
 impl InputBatch {
-    pub(crate) fn from_player(
-        bot: &mut super::super::BotPlayer,
-        now: tokio::time::Instant,
-    ) -> Self {
-        let respawn = bot.request_respawn(now);
+    pub(crate) fn from_player(bot: &mut super::super::BotPlayer, now: SimTime) -> Self {
+        let respawn = bot.request_respawn_at(now);
         let exact = bot.uses_exact_movement();
         let controls = bot
-            .inputs(now)
+            .inputs_at(now)
             .map(|input| Controls {
                 direction: input.direction,
                 yaw: input.yaw,

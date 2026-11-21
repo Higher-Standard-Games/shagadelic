@@ -5,14 +5,14 @@ use std::{
 };
 
 use shagger_shared::net::game_state::GameState;
-use tokio::{sync::mpsc, task::JoinHandle, time::Instant};
+use tokio::{sync::mpsc, task::JoinHandle};
 
 use crate::runtime::{Deadlines, EntityKey, GameSession, SessionEvent, Update};
 
 use super::{
-    BotPlayer, Difficulty, LearnedRoutes, Sight, WashoiNavigation,
+    BotPlayer, Difficulty, LearnedRoutes, Observation, Sight, SimTime, WashoiNavigation,
     behavior::INPUT_PERIOD,
-    protocol::{AdmissionError, InputBatch, SnapshotEvent, WashoiEvents, connect},
+    protocol::{self, AdmissionError, InputBatch, SnapshotEvent, WashoiEvents, connect},
 };
 
 const MAX_BOTS: usize = 64;
@@ -74,7 +74,7 @@ struct BotTask {
     actions: mpsc::Sender<InputBatch>,
     difficulty: Difficulty,
     player: Option<BotPlayer>,
-    pending: VecDeque<(Duration, GameState<SnapshotEvent>)>,
+    pending: VecDeque<(SimTime, Observation)>,
 }
 
 /// One lobby. Each connection handles I/O while the session owns its bot brain.
@@ -84,8 +84,7 @@ pub struct WashoiSession {
     bots: BTreeMap<EntityKey, BotTask>,
     send_event: mpsc::Sender<SocketEvent>,
     events: mpsc::Receiver<SocketEvent>,
-    // Bridge the current brain's Instant API to the caller's simulation clock.
-    epoch: Instant,
+    // The caller's simulation clock, also the brain's time.
     now: Duration,
     reports: VecDeque<BotReport>,
 }
@@ -97,7 +96,6 @@ impl WashoiSession {
             endpoint,
             assets: MapAssets::default(),
             bots: BTreeMap::new(),
-            epoch: Instant::now(),
             now: Duration::ZERO,
             send_event,
             events,
@@ -211,7 +209,8 @@ impl GameSession for WashoiSession {
                         });
                         return Some(SessionEvent::Ended(key));
                     }
-                    bot.pending.push_back((self.now, state));
+                    let received = SimTime::from_elapsed(self.now);
+                    bot.pending.push_back((received, protocol::observe(&state)));
                 }
                 Some(SessionEvent::WakeDecision(key))
             }
@@ -237,8 +236,8 @@ impl GameSession for WashoiSession {
         let player = bot.player.as_mut()?;
         match kind {
             Update::Decision => {
-                let (received, state) = bot.pending.pop_front()?;
-                player.observe(&state, self.epoch + received);
+                let (received, observation) = bot.pending.pop_front()?;
+                player.observe_at(&observation, received);
                 // One frame per permit including its ordered events. A later
                 // grant resumes the queue, even without another network wake.
                 (!bot.pending.is_empty()).then_some(now)
@@ -246,7 +245,7 @@ impl GameSession for WashoiSession {
             Update::Input => {
                 // Reserve before advancing an exact maneuver or respawn timer.
                 if let Ok(slot) = bot.actions.try_reserve() {
-                    slot.send(InputBatch::from_player(player, self.epoch + now));
+                    slot.send(InputBatch::from_player(player, SimTime::from_elapsed(now)));
                 }
                 now.checked_add(INPUT_PERIOD)
             }

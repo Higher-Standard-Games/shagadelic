@@ -1,8 +1,6 @@
 use std::{sync::Arc, time::Duration};
 
 use crate::games::washoi::{Observation, SimTime};
-use shagger_shared::net::game_state::GameState;
-use tokio::time::Instant;
 
 use super::aim::{AimController, View};
 use super::chase::Chase;
@@ -28,8 +26,6 @@ const RESPAWN_DELAY: Duration = Duration::from_millis(2500);
 /// fights enemies in sight when it has the map's sight file.
 pub struct BotPlayer {
     entity_id: String,
-    /// The hosted clock's instant at simulation time zero.
-    epoch: Option<Instant>,
     respawn_at: Option<SimTime>,
     own_entity_present: bool,
     last_snapshot: Option<SimTime>,
@@ -61,39 +57,10 @@ pub struct BotPlayer {
 }
 
 impl BotPlayer {
-    /// `observe_at` for the hosted session's snapshot and clock. These
-    /// wrappers keep `session.rs` and `connection.rs` working until they call
-    /// the simulation-time methods directly.
-    pub(crate) fn observe(&mut self, state: &GameState<SnapshotEvent>, now: Instant) {
-        let now = self.sim_time(now);
-        self.observe_at(&super::protocol::observe(state), now);
-    }
-
-    pub(crate) fn request_respawn(&mut self, now: Instant) -> bool {
-        let now = self.sim_time(now);
-        self.request_respawn_at(now)
-    }
-
-    pub(crate) fn inputs(&mut self, now: Instant) -> impl Iterator<Item = PlayerInput> {
-        let now = self.sim_time(now);
-        self.inputs_at(now)
-    }
-
-    /// Simulation time on one timebase for every wrapper call: the epoch is
-    /// an hour before the first instant seen, so a slightly earlier
-    /// timestamp delivered later still maps forward of zero.
-    fn sim_time(&mut self, now: Instant) -> SimTime {
-        let epoch = *self
-            .epoch
-            .get_or_insert_with(|| now.checked_sub(Duration::from_secs(3600)).unwrap_or(now));
-        SimTime::from_elapsed(now.saturating_duration_since(epoch))
-    }
-
     pub fn new(entity_id: String) -> Self {
         Self {
             random: Random::for_bot(&entity_id),
             entity_id,
-            epoch: None,
             respawn_at: None,
             own_entity_present: false,
             last_snapshot: None,
