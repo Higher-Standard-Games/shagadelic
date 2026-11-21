@@ -1,4 +1,4 @@
-//! Positional gametype orders, following SHAG's AgentDirective contract.
+//! Gametype orders, following SHAG's AgentDirective contract.
 
 use std::time::Duration;
 
@@ -17,13 +17,14 @@ use super::{
 const DEFAULT_RADIUS: f64 = 160.0;
 const WAYPOINT_RADIUS: f64 = 48.0;
 const HEIGHT_TOLERANCE: f64 = 40.0;
+const ESCORT_REPLAN_DISTANCE: f64 = 48.0;
 const RETRY: Duration = Duration::from_millis(350);
 const STALL: Duration = Duration::from_millis(850);
 
 #[derive(Debug, PartialEq)]
 struct Directive {
     id: String,
-    target: Vec3,
+    target: Target,
     radius: f64,
     priority: f64,
     expires: f64,
@@ -32,11 +33,18 @@ struct Directive {
     via: Vec<Vec3>,
 }
 
+#[derive(Debug, PartialEq)]
+enum Target {
+    Position(Vec3),
+    Escort(String),
+}
+
 #[derive(Default)]
 pub(super) struct Orders {
     directive: Option<Directive>,
+    destination: Option<Vec3>,
     via: usize,
-    walk: Option<ObjectiveWalk>,
+    walk: Option<(Vec3, ObjectiveWalk)>,
     retry_at: Option<Instant>,
     progress: Option<(Vec3, Instant)>,
 }
@@ -50,34 +58,40 @@ impl Orders {
         {
             *self = Self::default();
         }
-        for event in &world.events {
-            let SnapshotEvent::AgentDirectives {
+        let addressed = world.events.iter().rev().find_map(|event| match event {
+            SnapshotEvent::AgentDirectives {
                 entity_id,
                 directives,
-            } = event
-            else {
-                continue;
-            };
-            if entity_id != own_entity {
-                continue;
-            }
+            } if entity_id == own_entity => Some(directives),
+            _ => None,
+        });
+        if let Some(directives) = addressed {
             let latest = directives
                 .as_array()
                 .into_iter()
                 .flatten()
                 .filter_map(|value| Directive::parse(value, world.tick))
-                .min_by(|a, b| {
+                .filter_map(|order| Some((order.target.position(world, own_entity)?, order)))
+                .min_by(|(_, a), (_, b)| {
                     b.immediate
                         .cmp(&a.immediate)
                         .then_with(|| b.priority.total_cmp(&a.priority))
                         .then_with(|| a.id.cmp(&b.id))
                 });
-            let same_route = matches!((&self.directive, &latest), (Some(a), Some(b))
+            let same_route = matches!((&self.directive, &latest), (Some(a), Some((_, b)))
                 if a.id == b.id && a.target == b.target && a.radius == b.radius && a.via == b.via);
             if !same_route {
                 *self = Self::default();
             }
-            self.directive = latest;
+            if let Some((destination, order)) = latest {
+                self.directive = Some(order);
+                self.destination = Some(destination);
+            }
+        } else {
+            self.destination = self
+                .directive
+                .as_ref()
+                .and_then(|order| order.target.position(world, own_entity));
         }
     }
 
@@ -89,6 +103,12 @@ impl Orders {
         now: Instant,
     ) -> Option<PlayerInput> {
         let directive = self.directive.as_ref()?;
+        let Some(destination) = self.destination else {
+            self.walk = None;
+            self.progress = None;
+            self.retry_at = None;
+            return None;
+        };
         while let Some(&waypoint) = directive.via.get(self.via) {
             if !near(position, waypoint, WAYPOINT_RADIUS) {
                 break;
@@ -102,9 +122,18 @@ impl Orders {
             .via
             .get(self.via)
             .copied()
-            .map_or((directive.target, directive.radius), |point| {
+            .map_or((destination, directive.radius), |point| {
                 (point, WAYPOINT_RADIUS)
             });
+        if self
+            .walk
+            .as_ref()
+            .is_some_and(|(previous, _)| !near(target, *previous, ESCORT_REPLAN_DISTANCE))
+        {
+            self.walk = None;
+            self.progress = None;
+            self.retry_at = None;
+        }
         if near(position, target, radius) {
             self.walk = None;
             self.progress = None;
@@ -125,13 +154,15 @@ impl Orders {
             }
         }
         if self.walk.is_none() && self.retry_at.is_none_or(|at| now >= at) {
-            self.walk = navigation.and_then(|map| map.objective_walk(position, target, radius));
+            self.walk = navigation
+                .and_then(|map| map.objective_walk(position, target, radius))
+                .map(|walk| (target, walk));
             self.progress = self.walk.as_ref().map(|_| (position, now));
             self.retry_at = Some(now + RETRY);
         }
         self.walk
             .as_mut()
-            .map(|walk| walk.steer(position, velocity))
+            .map(|(_, walk)| walk.steer(position, velocity))
     }
 }
 
@@ -145,8 +176,6 @@ impl Directive {
         let interrupt = value.get("interrupt")?.as_str()?;
         if id.is_empty()
             || id.len() > 128
-            || !matches!(kind, "move_to" | "hold_area" | "defend")
-            || target.get("type")?.as_str()? != "position"
             || !priority.is_finite()
             || !expires.is_finite()
             || expires <= f64::from(tick)
@@ -157,7 +186,19 @@ impl Directive {
         {
             return None;
         }
-        let position = point(target.get("position")?)?;
+        let destination = match (kind, target.get("type")?.as_str()?) {
+            ("move_to" | "hold_area" | "defend", "position") => {
+                Target::Position(point(target.get("position")?)?)
+            }
+            ("escort", "player") => {
+                let entity_id = target.get("entityId")?.as_str()?;
+                if entity_id.is_empty() || entity_id.len() > 128 {
+                    return None;
+                }
+                Target::Escort(entity_id.to_owned())
+            }
+            _ => return None,
+        };
         let mut via = Vec::new();
         if let Some(points) = value.get("via") {
             let points = points.as_array()?;
@@ -175,7 +216,7 @@ impl Directive {
             .map_or(DEFAULT_RADIUS, |radius| radius.clamp(4.0, 1024.0));
         Some(Self {
             id: id.to_owned(),
-            target: position,
+            target: destination,
             radius,
             priority,
             expires,
@@ -186,14 +227,52 @@ impl Directive {
     }
 }
 
+impl Target {
+    fn position(&self, world: &GameState<SnapshotEvent>, own_entity: &str) -> Option<Vec3> {
+        let carrier = match self {
+            Self::Position(position) => return Some(*position),
+            Self::Escort(carrier) => carrier,
+        };
+        if carrier == own_entity {
+            return None;
+        }
+        let team = &world
+            .players
+            .values()
+            .find(|p| p.entity_id == own_entity)?
+            .team;
+        if matches!(team.as_str(), "" | "spectator" | "ffa")
+            || !world
+                .players
+                .values()
+                .any(|p| p.entity_id == *carrier && p.team == *team)
+        {
+            return None;
+        }
+        let dead = world.events.iter().rev().find_map(|event| match event {
+            SnapshotEvent::CombatState {
+                entity_id, dead, ..
+            } if entity_id == carrier => Some(*dead),
+            SnapshotEvent::Death { entity_id, .. } if entity_id == carrier => Some(true),
+            _ => None,
+        });
+        if dead == Some(true) {
+            return None;
+        }
+        world.entities.get(carrier)?.position.filter(|p| finite(*p))
+    }
+}
+
 fn point(value: &Value) -> Option<Vec3> {
     let x = value.get("x")?.as_f64()?;
     let y = value.get("y")?.as_f64()?;
     let z = value.get("z")?.as_f64()?;
-    [x, y, z]
-        .into_iter()
-        .all(f64::is_finite)
-        .then(|| Vec3::new(x, y, z))
+    let point = Vec3::new(x, y, z);
+    finite(point).then_some(point)
+}
+
+fn finite(point: Vec3) -> bool {
+    [point.x, point.y, point.z].into_iter().all(f64::is_finite)
 }
 
 fn near(position: Vec3, target: Vec3, radius: f64) -> bool {
@@ -321,5 +400,89 @@ mod tests {
             assert_eq!(inputs.next().unwrap().direction, direction);
             assert!(inputs.all(|input| input.direction == direction));
         }
+    }
+
+    #[test]
+    fn escorts_a_moving_teammate_and_drops_an_unavailable_carrier() {
+        use shagger_shared::net::game_state::PlayerState;
+
+        let mut world = GameState {
+            tick: 1,
+            events: vec![SnapshotEvent::AgentDirectives {
+                entity_id: "bot".into(),
+                directives: json::parse(
+                    r#"[{"id":"snd_escort_carrier","kind":"escort",
+                         "target":{"type":"player","entityId":"carrier"},
+                         "priority":1,"expiresAtTick":50,"interrupt":"enemy_visible"}]"#,
+                )
+                .unwrap(),
+            }],
+            ..GameState::default()
+        };
+        for id in ["bot", "carrier"] {
+            world.players.insert(
+                id,
+                PlayerState {
+                    entity_id: id.into(),
+                    team: "soba".into(),
+                    ..PlayerState::default()
+                },
+            );
+        }
+        world
+            .entities
+            .get_or_insert_with("carrier", Default::default)
+            .position = Some(Vec3::new(300.0, 0.0, 0.0));
+        let navigation = serde_json::from_str(
+            r#"{"map":"snd","graph":{
+                "bsp_sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                "nodes":[[0,0,0],[220,0,0],[0,0,220]],
+                "edges":[[0,1],[0,2]],"entries":[0],"goals":[1,2]
+            }}"#,
+        )
+        .unwrap();
+        let mut orders = Orders::default();
+        let origin = Vec3::default();
+        let start = Instant::now();
+        orders.observe(&world, "bot");
+        assert_eq!(
+            orders
+                .input(Some(&navigation), origin, None, start)
+                .unwrap()
+                .direction,
+            [1.0, 0.0, 0.0]
+        );
+
+        world.tick = 2;
+        world.entities.get_mut("carrier").unwrap().position = Some(Vec3::new(0.0, 0.0, 300.0));
+        orders.observe(&world, "bot");
+        assert_eq!(
+            orders
+                .input(Some(&navigation), origin, None, start)
+                .unwrap()
+                .direction,
+            [0.0, 0.0, 1.0]
+        );
+
+        world.events.push(SnapshotEvent::CombatState {
+            entity_id: "carrier".into(),
+            health: 0,
+            armor: 0,
+            dead: true,
+        });
+        orders.observe(&world, "bot");
+        assert!(
+            orders
+                .input(Some(&navigation), origin, None, start)
+                .is_none()
+        );
+        world.events.pop();
+        world.players.get_mut("carrier").unwrap().team = "udon".into();
+        orders.observe(&world, "bot");
+        assert!(
+            orders
+                .input(Some(&navigation), origin, None, start)
+                .is_none()
+        );
     }
 }
