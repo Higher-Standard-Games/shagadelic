@@ -12,6 +12,8 @@ use super::{
     ObjectiveRecovery, PickupGoal, Route, horizontal_distance,
 };
 
+/// Nodes tried in turn when recovery walks straight back to the graph.
+const MAX_LOCAL_STARTS: usize = 4;
 const MAX_NODES: usize = 1024;
 const MAX_ENTRIES: usize = 64;
 const MAX_EDGES: usize = 32768;
@@ -260,20 +262,61 @@ impl Planner {
         })
     }
 
+    /// The best accepted walk to a goal. Within the entry radius of a node,
+    /// it starts there. Otherwise the bot walks back to its anchor, or,
+    /// when that walk is blocked or missing, to one of the nearest nodes
+    /// `local_walk` finds a straight walk to.
     pub(super) fn plan(
         &self,
         position: Vec3,
         anchor: Option<[f64; 3]>,
         accept: impl Fn(&Route) -> bool,
         score: impl Fn(&Route) -> f64,
+        local_walk: impl Fn(Vec3, Vec3) -> bool,
     ) -> Option<Route> {
         let here = |node: [f64; 3], radius: f64| {
             horizontal_distance(position, node) <= radius
                 && (node[1] - position.y).abs() <= MAX_HEIGHT_DELTA
         };
-        let (start, lead) = match self.nearest_entry(position) {
-            Some(node) => (node, Vec::new()),
-            None => self.resume_at(anchor.filter(|&anchor| here(anchor, ANCHOR_RADIUS))?)?,
+        if let Some(node) = self.nearest_entry(position) {
+            return self.best_route(position, node, Vec::new(), &accept, &score);
+        }
+        let resumed = anchor
+            .filter(|&anchor| here(anchor, ANCHOR_RADIUS))
+            .and_then(|anchor| self.resume_at(anchor));
+        if let Some((start, lead)) = resumed
+            && let Some(route) = self.best_route(position, start, lead, &accept, &score)
+        {
+            return Some(route);
+        }
+        let mut near: Vec<_> = (0..self.nodes.len())
+            .filter(|&node| here(self.nodes[node], ANCHOR_RADIUS))
+            .map(|node| (horizontal_distance(position, self.nodes[node]), node))
+            .collect();
+        near.sort_by(|a, b| a.0.total_cmp(&b.0));
+        near.into_iter()
+            .map(|(_, node)| node)
+            .filter(|&node| {
+                let [x, y, z] = self.nodes[node];
+                local_walk(position, Vec3::new(x, y, z))
+            })
+            .take(MAX_LOCAL_STARTS)
+            .find_map(|node| {
+                self.best_route(position, node, vec![self.nodes[node]], &accept, &score)
+            })
+    }
+
+    fn best_route(
+        &self,
+        position: Vec3,
+        start: usize,
+        lead: Vec<[f64; 3]>,
+        accept: &impl Fn(&Route) -> bool,
+        score: &impl Fn(&Route) -> f64,
+    ) -> Option<Route> {
+        let here = |node: [f64; 3], radius: f64| {
+            horizontal_distance(position, node) <= radius
+                && (node[1] - position.y).abs() <= MAX_HEIGHT_DELTA
         };
         let mut best: Option<(f64, f32, Route)> = None;
         for goal in &self.goals {

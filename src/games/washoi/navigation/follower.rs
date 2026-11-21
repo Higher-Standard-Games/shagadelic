@@ -5,7 +5,7 @@ use shagger_shared::net::game_state::{Vec3, Velocity};
 use tokio::time::Instant;
 
 use super::{MAX_HEIGHT_DELTA, PlayerInput, Route, WashoiNavigation, horizontal_distance};
-use crate::games::washoi::{Difficulty, goals::OwnVitals};
+use crate::games::washoi::{Difficulty, Sight, goals::OwnVitals};
 
 const STALL_TIMEOUT: Duration = Duration::from_millis(800);
 const RETRY_DELAY: Duration = Duration::from_secs(5);
@@ -37,6 +37,10 @@ pub(in crate::games::washoi) struct RouteObservation<'a> {
     pub(in crate::games::washoi) landed_id: Option<&'a str>,
     /// A uniform draw in [-1, 1] that blurs a remembered take time.
     pub(in crate::games::washoi) timing_noise: f64,
+    /// The map's static collision, for walks back onto the graph.
+    pub(in crate::games::washoi) sight: Option<&'a Sight>,
+    /// Fight movement crosses the walk, so slow progress is no stall.
+    pub(in crate::games::washoi) fighting: bool,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -123,6 +127,8 @@ impl RouteFollower {
             allow_takeoff,
             landed_id,
             timing_noise,
+            sight,
+            fighting,
         } = observation;
         self.blocked.retain(|(_, until)| now < *until);
         self.pickup_unavailable.retain(|_, until| now < *until);
@@ -183,7 +189,7 @@ impl RouteFollower {
                     if self.replan_at.is_some_and(|at| now < at) {
                         return PlayerInput::default();
                     }
-                    let planned = navigation.plan(position, self.anchor, unblocked, score);
+                    let planned = navigation.plan(position, self.anchor, sight, unblocked, score);
                     let Some(route) = planned else {
                         self.replan_at = Some(now + REPLAN_DELAY);
                         return PlayerInput::default();
@@ -267,7 +273,7 @@ impl RouteFollower {
             distance,
             updated: now,
         });
-        if *next != progress.next || distance + MIN_PROGRESS <= progress.distance {
+        if fighting || *next != progress.next || distance + MIN_PROGRESS <= progress.distance {
             *progress = Progress {
                 next: *next,
                 distance,
@@ -316,6 +322,8 @@ mod tests {
             allow_takeoff,
             landed_id,
             timing_noise: 0.0,
+            sight: None,
+            fighting: false,
         }
     }
 

@@ -237,10 +237,15 @@ impl WashoiNavigation {
         &self,
         position: Vec3,
         anchor: Option<[f64; 3]>,
+        sight: Option<&Sight>,
         accept: impl Fn(&Route) -> bool,
         score: impl Fn(&Route) -> f64,
     ) -> Option<Route> {
-        self.planner.as_ref()?.plan(position, anchor, accept, score)
+        self.planner
+            .as_ref()?
+            .plan(position, anchor, accept, score, |from, to| {
+                sight.is_some_and(|map| local_walk(map, from, to))
+            })
     }
 
     fn route_at(&self, position: Vec3, allowed: impl Fn(&Route) -> bool) -> Option<usize> {
@@ -502,7 +507,7 @@ mod tests {
             .filter(|&entry| {
                 let [x, y, z] = nodes[entry];
                 graph
-                    .plan(Vec3::new(x, y, z), None, |_| true, |_| 0.0)
+                    .plan(Vec3::new(x, y, z), None, None, |_| true, |_| 0.0)
                     .is_none()
             })
             .collect();
@@ -585,13 +590,14 @@ mod tests {
             .plan(
                 Vec3::new(0.0, 0.0, 0.0),
                 None,
+                None,
                 |_| true,
                 |route| f64::from(u8::from(route.pickup.is_some())),
             )
             .unwrap();
         assert_eq!(planned.waypoints, [[100.0, 0.0, 0.0]]);
         // A bot left in the dead end has no walk out until it dies.
-        let inside = graph.plan(Vec3::new(0.0, 0.0, 100.0), None, |_| true, |_| 0.0);
+        let inside = graph.plan(Vec3::new(0.0, 0.0, 100.0), None, None, |_| true, |_| 0.0);
         assert!(inside.is_none());
 
         // Dropping one way from a small area into a larger one is fine.
@@ -606,7 +612,7 @@ mod tests {
         )
         .unwrap();
         let down = ledge
-            .plan(Vec3::new(0.0, 200.0, 0.0), None, |_| true, |_| 0.0)
+            .plan(Vec3::new(0.0, 200.0, 0.0), None, None, |_| true, |_| 0.0)
             .unwrap();
         assert_eq!(down.waypoints, [[40.0, 0.0, 0.0], [200.0, 0.0, 0.0]]);
     }
@@ -627,7 +633,7 @@ mod tests {
         .unwrap();
         let off = Vec3::new(260.0, 0.0, 60.0);
         let back = graph
-            .plan(off, Some([200.0, 0.0, 0.0]), |_| true, |_| 0.0)
+            .plan(off, Some([200.0, 0.0, 0.0]), None, |_| true, |_| 0.0)
             .unwrap();
         assert_eq!(
             back.waypoints,
@@ -644,12 +650,57 @@ mod tests {
             .plan(
                 Vec3::new(60.0, 0.0, 30.0),
                 Some([0.0; 3]),
+                None,
                 |_| true,
                 |_| 0.0,
             )
             .unwrap();
         assert_eq!(node.waypoints[0], [0.0; 3]);
-        assert!(graph.plan(off, Some([1.0; 3]), |_| true, |_| 0.0).is_none());
+        assert!(
+            graph
+                .plan(off, Some([1.0; 3]), None, |_| true, |_| 0.0)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn walks_straight_back_to_an_open_node_when_the_anchor_walk_fails() {
+        use super::super::sight::tests::{cube, encode};
+        // Off the graph between two nodes. A wall stands between the bot and
+        // node 0; node 1 is farther but in the open. The floor spans both.
+        let graph: WashoiNavigation = serde_json::from_str(
+            r#"{
+            "map":"test","graph":{
+                "bsp_sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                "nodes":[[0,24,0],[180,24,0],[180,24,300]],
+                "edges":[[0,1],[1,0],[1,2],[2,1]],"entries":[0],"goals":[0,2]
+            }
+        }"#,
+        )
+        .unwrap();
+        let sight = Sight::parse(&encode(
+            "test",
+            &[
+                cube([-200.0, -10.0, -200.0], [400.0, 0.0, 400.0]),
+                cube([40.0, 0.0, -50.0], [50.0, 100.0, 50.0]),
+            ],
+            &[],
+        ))
+        .unwrap();
+        let off = Vec3::new(100.0, 24.0, 0.0);
+        let plan = |anchor, sight, accept: &dyn Fn(&Route) -> bool| {
+            graph.plan(off, anchor, sight, accept, |_| 0.0)
+        };
+        // Without sight there is no way back, as before.
+        assert!(plan(None, None, &|_| true).is_none());
+        let open = plan(None, Some(&sight), &|_| true).unwrap();
+        assert_eq!(open.entry, [180.0, 24.0, 0.0]);
+        // An anchor comes first, unless its walk was blocked.
+        let anchored = plan(Some([0.0, 24.0, 0.0]), Some(&sight), &|_| true).unwrap();
+        assert_eq!(anchored.entry, [0.0, 24.0, 0.0]);
+        let blocked = |route: &Route| route.entry != [0.0, 24.0, 0.0];
+        let around = plan(Some([0.0, 24.0, 0.0]), Some(&sight), &blocked).unwrap();
+        assert_eq!(around.entry, [180.0, 24.0, 0.0]);
     }
 
     #[test]

@@ -229,6 +229,8 @@ impl BotPlayer {
                             && self.traversal.landing_result().is_none(),
                         landed_id: landed,
                         timing_noise: 2.0 * self.random.next() - 1.0,
+                        sight: self.sight.as_deref(),
+                        fighting: self.engagement.is_some(),
                     },
                 );
                 if let Some(library) = &self.learned
