@@ -143,6 +143,9 @@ impl BotPlayer {
                     world,
                     &self.entity_id,
                     position,
+                    self.aim
+                        .current()
+                        .map_or(self.planned_input.yaw, |view| view.yaw),
                     sight,
                     self.difficulty.aim(),
                 )
@@ -558,10 +561,11 @@ mod tests {
             .with_difficulty(Difficulty::Insane)
             .with_sight(Arc::new(sight));
         let mut world = GameState::default();
-        // The foe stands level with the bot's fire origin.
+        // The foe stands level with the bot's fire origin, 45° to the right
+        // of where the bot starts looking: inside its 55° view.
         for (id, at) in [
             ("bot", Vec3::default()),
-            ("foe", Vec3::new(500.0, 34.0, 0.0)),
+            ("foe", Vec3::new(400.0, 34.0, 400.0)),
         ] {
             world.players.insert(
                 id,
@@ -580,18 +584,21 @@ mod tests {
         let mut last = PlayerInput::default();
         for step in 0..150u64 {
             let now = start + INPUT_PERIOD * step as u32;
+            world.tick = step as u32;
             bot.observe(&world, now);
             for input in bot.inputs(now) {
                 fired += usize::from(input.buttons & FIRE != 0);
                 last = input;
             }
         }
-        // Insane turns 90° well within 1.2 s, firing all the while.
-        assert!((last.yaw - std::f64::consts::FRAC_PI_2).abs() < 0.05);
+        // Insane notices it within 4 ticks and turns to it well within
+        // 1.2 s, firing all the while.
+        assert!((last.yaw - std::f64::consts::FRAC_PI_4).abs() < 0.05);
         assert!(fired >= 140);
         // Behind the wall, fire stops.
         world.entities.get_mut("foe").unwrap().position = Some(Vec3::new(0.0, 34.0, 500.0));
         let now = start + INPUT_PERIOD * 150;
+        world.tick = 150;
         bot.observe(&world, now);
         assert!(bot.inputs(now).all(|input| input.buttons & FIRE == 0));
     }
@@ -641,13 +648,16 @@ mod tests {
                 .position = Some(at);
         }
         let start = Instant::now();
+        // Ahead along the walk, so in view; noticed after 18 ticks.
         world.tick = 100;
         bot.observe(&world, start);
+        world.tick = 120;
+        bot.observe(&world, start + Duration::from_millis(160));
         assert!(bot.engagement.is_some());
         // Behind the wall now, so the bot walks toward where it was seen.
         world.entities.get_mut("foe").unwrap().position = Some(Vec3::new(300.0, 24.0, 150.0));
-        world.tick = 110;
-        bot.observe(&world, start + Duration::from_millis(80));
+        world.tick = 130;
+        bot.observe(&world, start + Duration::from_millis(240));
         assert!(bot.engagement.is_none());
         let (view, prefire) = bot.chasing.expect("chasing");
         assert!((view.yaw - std::f64::consts::FRAC_PI_2).abs() < 1e-6);

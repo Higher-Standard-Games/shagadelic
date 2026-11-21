@@ -196,6 +196,14 @@ impl AimController {
         }
     }
 
+    /// The view as last sent, if any.
+    pub(super) fn current(&self) -> Option<View> {
+        self.view.map(|(yaw, pitch)| View {
+            yaw: yaw.value,
+            pitch: pitch.value,
+        })
+    }
+
     /// Forget the view, as on death.
     pub(super) fn clear(&mut self) {
         self.view = None;

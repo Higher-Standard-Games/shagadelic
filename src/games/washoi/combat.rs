@@ -1,8 +1,9 @@
 //! First Washoi fight layer, after TypeScript `states/BotFight.ts` and
-//! `bot/BotVision.ts`: pick the weapon for the range to the nearest enemy in
-//! sight, aim at it from the fire origin, leading projectiles, and hold fire
-//! while it stays in sight and the weapon has ammo. Sight is a static
-//! line-of-sight trace, and the bot sees all around, as in TypeScript.
+//! `bot/BotVision.ts`: pick the weapon for the range to the nearest enemy
+//! the bot has noticed, aim at it from the fire origin, leading projectiles,
+//! and hold fire while it stays noticed and the weapon has ammo. What the
+//! bot notices comes from `perception.rs`: a view cone, a static
+//! line-of-sight trace, and sounds.
 //! Strafing, cover, weapon combos, charged shots, and memory of enemies out
 //! of sight remain open.
 
@@ -17,17 +18,13 @@ use super::{
     Sight,
     aim::View,
     difficulty::AimSkill,
+    perception::{Enemy, Perception, Senses, Source},
     protocol::SnapshotEvent,
     weapons::{self, Profile},
 };
 
-/// `BotVision.ts` `EYE_HEIGHT`: sight lines run from here to 0.8 of it on
-/// the target.
-const EYE_HEIGHT: f64 = 32.0;
 /// `DEFAULT_VIEWHEIGHT` in `engine/physics/PlayerPhysicsConstants.ts`.
 const FIRE_HEIGHT: f64 = 34.0;
-/// `MAX_ENEMY_LOS_CHECKS`.
-const MAX_SIGHT_CHECKS: usize = 5;
 /// `predictTargetPosition` assumes this projectile speed.
 const PREDICTED_SHOT_SPEED: f64 = 1400.0;
 /// `aimWithLead` aims splash weapons this far below the target.
@@ -38,6 +35,11 @@ const MELEE_RANGE: f64 = 150.0;
 /// fades from full confidence to none over 4 s, its position is
 /// extrapolated for up to 3 s, and it is chased above 0.3.
 const TRACK_DECAY_TICKS: f64 = 500.0;
+/// Heard tracks start less sure and fade in 2.5 s: `SOUND_CONFIDENCE`,
+/// `DAMAGE_CONFIDENCE`, and `SOUND_TRACK_DECAY_TICKS`.
+const SOUND_CONFIDENCE: f64 = 0.6;
+const DAMAGE_CONFIDENCE: f64 = 0.8;
+const SOUND_DECAY_TICKS: f64 = 312.5;
 const MAX_EXTRAPOLATION_TICKS: u32 = 375;
 const TICK_RATE: f64 = 125.0;
 const CHASE_CONFIDENCE: f64 = 0.3;
@@ -53,8 +55,9 @@ pub(super) struct Combat {
     weapon: String,
     weapons: Vec<String>,
     ammo: Vec<(String, f64)>,
-    /// The last enemy fought, where and when it was last seen.
+    /// The enemy last fought or heard, where and when it was last noticed.
     track: Option<Track>,
+    perception: Perception,
     /// The weapon and server tick since which aim has been held with it out.
     /// TypeScript resets this during a switch, when the weapon out differs
     /// from the one chosen; keying it by weapon also covers a switch between
@@ -67,6 +70,15 @@ struct Track {
     at: Vec3,
     velocity: Vec3,
     tick: u32,
+    /// Confidence when noticed, and the ticks it takes to fade from 1.
+    initial: f64,
+    decay: f64,
+}
+
+impl Track {
+    fn confidence(&self, tick: u32) -> f64 {
+        self.initial - f64::from(tick.wrapping_sub(self.tick)) / self.decay
+    }
 }
 
 /// An enemy out of sight: where it should be by now, and how sure the bot is.
@@ -134,6 +146,7 @@ impl Combat {
         world: &GameState<SnapshotEvent>,
         own: &str,
         position: Vec3,
+        view_yaw: f64,
         sight: &Sight,
         skill: AimSkill,
     ) -> Option<Engagement> {
@@ -154,25 +167,42 @@ impl Combat {
             .filter_map(|player| {
                 let entity = world.entities.get(&player.entity_id)?;
                 let at = entity.position.filter(|at| finite(*at))?;
-                Some((
-                    distance(position, at),
+                let velocity = entity.velocity.unwrap_or_default();
+                Some(Enemy {
+                    entity: player.entity_id.as_str(),
                     at,
-                    entity.velocity.map(|v| v.linear),
-                    player.entity_id.as_str(),
-                ))
+                    velocity: Some(velocity.linear)
+                        .filter(|v| finite(*v))
+                        .unwrap_or_default(),
+                    grounded: entity.velocity.is_none_or(|v| v.grounded),
+                    sliding: velocity.is_sliding,
+                })
             })
             .collect();
-        enemies.sort_by(|a, b| a.0.total_cmp(&b.0));
-        let eye = [position.x, position.y + EYE_HEIGHT, position.z];
-        let (distance, at, velocity, entity) = enemies
-            .into_iter()
-            .take(MAX_SIGHT_CHECKS)
-            .find(|(_, at, _, _)| sight.clear(eye, [at.x, at.y + 0.8 * EYE_HEIGHT, at.z]))?;
-        self.track = Some(Track {
-            entity: entity.to_owned(),
-            at,
-            velocity: velocity.filter(|v| finite(*v)).unwrap_or_default(),
+        enemies.sort_by(|a, b| distance(position, a.at).total_cmp(&distance(position, b.at)));
+        let senses = Senses {
+            own,
+            position,
+            view_yaw,
+            reaction_ms: skill.reaction_ms,
             tick: world.tick,
+            sight,
+        };
+        let noticed = self.perception.perceive(senses, &world.events, &enemies);
+        for (entity, at, source) in &noticed.heard {
+            self.heard(entity, *at, *source, world.tick);
+        }
+        // `seen` is nearest first.
+        let enemy = enemies[*noticed.seen.first()?];
+        let (distance, at, velocity) =
+            (distance(position, enemy.at), enemy.at, Some(enemy.velocity));
+        self.track = Some(Track {
+            entity: enemy.entity.to_owned(),
+            at,
+            velocity: enemy.velocity,
+            tick: world.tick,
+            initial: 1.0,
+            decay: TRACK_DECAY_TICKS,
         });
         let ammo = |id: &str| {
             self.ammo
@@ -270,7 +300,7 @@ impl Combat {
     pub(super) fn lost(&mut self, tick: u32) -> Option<Lost> {
         let track = self.track.as_ref()?;
         let elapsed = tick.wrapping_sub(track.tick);
-        let confidence = 1.0 - f64::from(elapsed) / TRACK_DECAY_TICKS;
+        let confidence = track.confidence(tick);
         if confidence <= 0.0 || self.dead.contains(&track.entity) {
             self.track = None;
             return None;
@@ -285,6 +315,30 @@ impl Combat {
             predicted,
             confidence,
         })
+    }
+
+    /// A heard enemy leads the chase unless a surer track of another one
+    /// is still fresh. TypeScript keeps several tracks and prefers seen ones.
+    fn heard(&mut self, entity: &str, at: Vec3, source: Source, tick: u32) {
+        let initial = match source {
+            Source::Sound => SOUND_CONFIDENCE,
+            Source::Damage => DAMAGE_CONFIDENCE,
+        };
+        if self
+            .track
+            .as_ref()
+            .is_some_and(|track| track.entity != entity && track.confidence(tick) > initial)
+        {
+            return;
+        }
+        self.track = Some(Track {
+            entity: entity.to_owned(),
+            at,
+            velocity: Vec3::default(),
+            tick,
+            initial,
+            decay: SOUND_DECAY_TICKS,
+        });
     }
 
     pub(super) fn holding_melee(&self) -> bool {
@@ -369,6 +423,21 @@ mod tests {
         .unwrap()
     }
 
+    /// The bot looks down -z, at every foe in these tests, for longer than
+    /// it takes to notice one, then engages.
+    fn engaged(
+        combat: &mut Combat,
+        world: &GameState<SnapshotEvent>,
+        me: Vec3,
+        skill: AimSkill,
+    ) -> Option<Engagement> {
+        let facing = std::f64::consts::PI;
+        let mut before = world.clone();
+        before.tick = world.tick.wrapping_sub(30);
+        combat.engage(&before, "me", me, facing, &sight(), skill);
+        combat.engage(world, "me", me, facing, &sight(), skill)
+    }
+
     #[test]
     fn aims_at_the_nearest_enemy_in_sight_and_skips_allies_and_the_dead() {
         let skill = AimSkill {
@@ -392,7 +461,7 @@ mod tests {
             dead: true,
         });
         combat.observe(&world.events, "me");
-        let fight = combat.engage(&world, "me", me, &sight(), skill).unwrap();
+        let fight = engaged(&mut combat, &world, me, skill).unwrap();
         // Straight down -z, level with the fire origin.
         assert!((fight.view.yaw.abs() - std::f64::consts::PI).abs() < 1e-9);
         assert!(fight.view.pitch.abs() < 1e-9);
@@ -403,12 +472,12 @@ mod tests {
         for player in ["me", "ally"] {
             ffa.players.get_mut(player).unwrap().team = "ffa".into();
         }
-        let fight = combat.engage(&ffa, "me", me, &sight(), skill).unwrap();
+        let fight = engaged(&mut combat, &ffa, me, skill).unwrap();
         assert!(fight.view.pitch > 0.0, "looks down at the closer player");
 
         // Nobody in sight but the hidden one: no fight.
         world.players.get_mut("open").unwrap().team = "red".into();
-        assert!(combat.engage(&world, "me", me, &sight(), skill).is_none());
+        assert!(engaged(&mut combat, &world, me, skill).is_none());
     }
 
     fn armed(weapon: &str, weapons: &[&str], ammo: &[(&str, Value)]) -> SnapshotEvent {
@@ -451,12 +520,12 @@ mod tests {
         });
         let mut combat = Combat::default();
         let skill = Difficulty::Insane.aim();
-        let fight = combat.engage(&world, "me", me, &sight(), skill).unwrap();
+        let fight = engaged(&mut combat, &world, me, skill).unwrap();
         // 0.9 · 1400 / 1400 s ahead: 270 units to +x, so the yaw leans that way.
         assert!((fight.view.yaw - 270f64.atan2(-1400.0)).abs() < 1e-9);
         // A plasma bolt takes 1400 / 1750 s and splashes at the feet.
         combat.observe(&[armed("plasmagun", &["plasmagun"], &[])], "me");
-        let fight = combat.engage(&world, "me", me, &sight(), skill).unwrap();
+        let fight = engaged(&mut combat, &world, me, skill).unwrap();
         assert!((fight.view.yaw - 240f64.atan2(-1400.0)).abs() < 1e-9);
         assert!(fight.view.pitch > 0.0);
     }
@@ -484,7 +553,7 @@ mod tests {
             )],
             "me",
         );
-        let fight = combat.engage(&world, "me", me, &sight(), skill).unwrap();
+        let fight = engaged(&mut combat, &world, me, skill).unwrap();
         assert_eq!((fight.weapon_slot, fight.buttons), (2, FIRE));
         // With it out, aim down sights while firing.
         combat.observe(
@@ -498,7 +567,7 @@ mod tests {
             )],
             "me",
         );
-        let fight = combat.engage(&world, "me", me, &sight(), skill).unwrap();
+        let fight = engaged(&mut combat, &world, me, skill).unwrap();
         assert_eq!((fight.weapon_slot, fight.buttons), (0, FIRE | ALT_FIRE));
         // The electrobolt counts a shot as aimed after 47 ticks of aim.
         combat.observe(
@@ -511,18 +580,12 @@ mod tests {
         );
         world.tick = 100;
         assert_eq!(
-            combat
-                .engage(&world, "me", me, &sight(), skill)
-                .unwrap()
-                .buttons,
+            engaged(&mut combat, &world, me, skill).unwrap().buttons,
             ALT_FIRE
         );
         world.tick = 147;
         assert_eq!(
-            combat
-                .engage(&world, "me", me, &sight(), skill)
-                .unwrap()
-                .buttons,
+            engaged(&mut combat, &world, me, skill).unwrap().buttons,
             FIRE | ALT_FIRE
         );
         // Out of rounds, nothing is pressed.
@@ -534,23 +597,14 @@ mod tests {
             )],
             "me",
         );
-        assert_eq!(
-            combat
-                .engage(&world, "me", me, &sight(), skill)
-                .unwrap()
-                .buttons,
-            0
-        );
+        assert_eq!(engaged(&mut combat, &world, me, skill).unwrap().buttons, 0);
         // The blade swings only within reach.
         combat.observe(&[armed("blade", &["blade"], &[])], "me");
-        let far = combat.engage(&world, "me", me, &sight(), skill).unwrap();
+        let far = engaged(&mut combat, &world, me, skill).unwrap();
         assert!(far.melee && far.buttons == 0);
         world.entities.get_mut("foe").unwrap().position = Some(Vec3::new(0.0, 0.0, -200.0));
         assert_eq!(
-            combat
-                .engage(&world, "me", me, &sight(), skill)
-                .unwrap()
-                .buttons,
+            engaged(&mut combat, &world, me, skill).unwrap().buttons,
             FIRE
         );
     }
@@ -569,11 +623,11 @@ mod tests {
         let mut combat = Combat::default();
         let skill = Difficulty::Medium.aim();
         world.tick = 1000;
-        assert!(combat.engage(&world, "me", me, &sight(), skill).is_some());
+        assert!(engaged(&mut combat, &world, me, skill).is_some());
         // Behind the wall across x = 0 for z > 0, one second later.
         world.entities.get_mut("foe").unwrap().position = Some(Vec3::new(0.0, 0.0, 300.0));
         world.tick = 1125;
-        assert!(combat.engage(&world, "me", me, &sight(), skill).is_none());
+        assert!(engaged(&mut combat, &world, me, skill).is_none());
         let lost = combat.lost(1125).unwrap();
         assert!((lost.confidence - 0.75).abs() < 1e-9);
         assert_eq!(lost.predicted, Vec3::new(250.0, 0.0, -500.0));
@@ -583,7 +637,7 @@ mod tests {
         assert!(combat.lost(1000 + 351).is_none());
         // The memory is gone; seeing the foe again brings it back.
         world.entities.get_mut("foe").unwrap().position = Some(Vec3::new(0.0, 0.0, -500.0));
-        assert!(combat.engage(&world, "me", me, &sight(), skill).is_some());
+        assert!(engaged(&mut combat, &world, me, skill).is_some());
         // A death ends the memory.
         combat.observe(
             &[SnapshotEvent::CombatState {

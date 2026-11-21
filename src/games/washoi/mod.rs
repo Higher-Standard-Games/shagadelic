@@ -7,6 +7,7 @@ mod goals;
 mod learned;
 mod navigation;
 mod orders;
+mod perception;
 pub mod protocol;
 mod random;
 mod session;
