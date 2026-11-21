@@ -8,6 +8,8 @@ const MAX_ENTRIES = 64;
 const MAX_EDGES = 32768;
 const MAX_CORNERS = 32;
 const MAX_FILE_BYTES = 4 * 1024 * 1024;
+// Hull height used by SHAG's BotNavGraph.walkOrigin.
+const STANDING_LIFT = 24;
 const learnedOption = args.indexOf("--learned");
 const learnedFile = learnedOption < 0 ? undefined : args.splice(learnedOption, 2)[1];
 const fromCache = args[0] === "--shag-cache";
@@ -99,6 +101,7 @@ async function cachedGraph() {
   const saved = cache.load(data.map, map.bspSha256);
   if (!saved) throw new Error(cache.lastDiagnostic);
   const { nodes: original, edges: transitions } = saved.exportStaticData();
+  const types = new Map();
   const standing = new Map();
   const entries = [];
   const goals = [];
@@ -110,7 +113,8 @@ async function cachedGraph() {
     // BotNavGraph.walkOrigin lifts floor and item nodes to the standing origin.
     const index = nodes.length;
     standing.set(id, index);
-    nodes.push(rounded([position.x, position.y + (type === "spawn" ? 0 : 24), position.z]));
+    types.set(id, type);
+    nodes.push(rounded([position.x, position.y + (type === "spawn" ? 0 : STANDING_LIFT), position.z]));
     if (type === "spawn") entries.push(index);
     if (type === "item") {
       goals.push(index);
@@ -124,14 +128,27 @@ async function cachedGraph() {
     }
   }
   const edges = [];
+  const canWalk = await walkTest();
+  const liftedOrigin = (node, id) => {
+    const origin = point(nodes[node]);
+    return { ...origin, y: origin.y + (types.get(id) === "spawn" ? STANDING_LIFT : 0) };
+  };
   for (const edge of transitions) {
     const from = standing.get(edge.from);
     const to = standing.get(edge.to);
-    // Walks, including their corners, and falls off ledges need only steering.
-    // Jumps, jump pads, and teleporters need execution rules the bot lacks.
-    if ((edge.type !== "walk" && edge.type !== "fall") || from === undefined || to === undefined) continue;
-    const via = (edge.via ?? []).map(({ x, y, z }) => rounded([x, y, z]));
-    edges.push(via.length ? [from, to, via] : [from, to]);
+    if (from === undefined || to === undefined) continue;
+    if (edge.type === "walk" || edge.type === "fall") {
+      const via = (edge.via ?? []).map(({ x, y, z }) => rounded([x, y, z]));
+      edges.push(via.length ? [from, to, via] : [from, to]);
+    } else if (
+      edge.type === "jump" && edge.requiredSpeed === 0
+      && (types.get(edge.from) === "spawn" || types.get(edge.to) === "spawn")
+      && canWalk(liftedOrigin(from, edge.from), liftedOrigin(to, edge.to))
+    ) {
+      // Some team spawns in the cache sit on the floor. The player spawns
+      // at hull height, where these links pass the straight walk check.
+      edges.push([from, to]);
+    }
   }
   for (const [node] of pickupGoals) {
     if (entries.length >= 32) break;
