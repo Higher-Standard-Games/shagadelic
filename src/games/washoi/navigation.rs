@@ -264,6 +264,31 @@ mod tests {
     }
 
     #[test]
+    fn the_cached_washoi_dm2_graph_plans_from_its_spawns() {
+        let baked = include_str!("../../../tests/fixtures/washoi_dm2_cache_graph.json");
+        // The navigation object travels inside one 64 KiB control record.
+        assert!(baked.len() < 48 * 1024);
+        let graph: WashoiNavigation = serde_json::from_str(baked).unwrap();
+        let raw: serde_json::Value = serde_json::from_str(baked).unwrap();
+        let nodes: Vec<[f64; 3]> = serde_json::from_value(raw["graph"]["nodes"].clone()).unwrap();
+        let entries: Vec<usize> = serde_json::from_value(raw["graph"]["entries"].clone()).unwrap();
+        let edges = raw["graph"]["edges"].as_array().unwrap();
+        let stuck: Vec<_> = entries
+            .iter()
+            .copied()
+            .filter(|&entry| {
+                let [x, y, z] = nodes[entry];
+                graph
+                    .plan(Vec3::new(x, y, z), None, |_| true, |_| 0.0)
+                    .is_none()
+            })
+            .collect();
+        // Only the Red Armor's ledge has no walk out. It is left by a jump.
+        assert_eq!(stuck, [3]);
+        assert!(!edges.iter().any(|edge| edge[0] == 3));
+    }
+
+    #[test]
     fn brakes_before_a_ledge_and_steps_off_toward_the_landing() {
         let routes: WashoiNavigation = serde_json::from_str(
             r#"{"map":"test","routes":[
