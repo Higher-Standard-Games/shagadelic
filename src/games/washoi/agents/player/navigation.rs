@@ -230,6 +230,7 @@ impl WashoiNavigation {
             radius - arrival,
             recovery,
             |from, to| sight.is_some_and(|map| local_walk(map, from, to)),
+            |from, to| sight.is_some_and(|map| open_line(map, from, to)),
         )?;
         Some(ObjectiveWalk {
             route,
@@ -280,11 +281,14 @@ impl WashoiNavigation {
         accept: impl Fn(&Route) -> bool,
         score: impl Fn(&Route) -> f64,
     ) -> Option<Route> {
-        self.planner
-            .as_ref()?
-            .plan(position, anchor, accept, score, |from, to| {
-                sight.is_some_and(|map| local_walk(map, from, to))
-            })
+        self.planner.as_ref()?.plan(
+            position,
+            anchor,
+            accept,
+            score,
+            |from, to| sight.is_some_and(|map| local_walk(map, from, to)),
+            |from, to| sight.is_some_and(|map| open_line(map, from, to)),
+        )
     }
 
     fn route_at(&self, position: Vec3, allowed: impl Fn(&Route) -> bool) -> Option<usize> {
@@ -453,6 +457,28 @@ pub(in crate::games::washoi) fn local_walk(sight: &Sight, from: Vec3, to: Vec3) 
     true
 }
 
+/// Nothing static in the way of a straight walk toward `to` at knee and
+/// chest height, held at the bot's own height, with ground under every 32
+/// units of it no lower than 64 below the lower end. A walk that steps off a
+/// ledge toward a lower point passes, and one over a pit does not.
+pub(in crate::games::washoi) fn open_line(sight: &Sight, from: Vec3, to: Vec3) -> bool {
+    let clear = [17.0, 40.0].into_iter().all(|height| {
+        sight.clear(
+            [from.x, from.y + height, from.z],
+            [to.x, from.y + height, to.z],
+        )
+    });
+    let (dx, dz) = (to.x - from.x, to.z - from.z);
+    let steps = (dx.hypot(dz) / 32.0).ceil().max(1.0) as u32;
+    let lowest = from.y.min(to.y) - 64.0;
+    clear
+        && (1..=steps).all(|step| {
+            let t = f64::from(step) / f64::from(steps);
+            let (x, z) = (from.x + dx * t, from.z + dz * t);
+            !sight.clear([x, from.y - 6.0, z], [x, lowest, z])
+        })
+}
+
 fn horizontal_distance(position: Vec3, target: [f64; 3]) -> f64 {
     (target[0] - position.x).hypot(target[2] - position.z)
 }
@@ -545,16 +571,23 @@ mod tests {
         let target = Vec3::new(124.0, 0.0, 0.0);
         assert!(
             planner
-                .plan_to(start, target, 12.0, None, |_, _| false)
+                .plan_to(start, target, 12.0, None, |_, _| false, |_, _| false)
                 .is_none()
         );
 
         let (route, _) = planner
-            .plan_to(start, target, 12.0, None, |a, b| {
-                // The closer graph node can also reach the target, but its
-                // connector makes the complete route longer.
-                (a.x, b.x) == (-64.0, 0.0) || (a.x, b.x) == (64.0, 112.0) || a.z == 30.0
-            })
+            .plan_to(
+                start,
+                target,
+                12.0,
+                None,
+                |a, b| {
+                    // The closer graph node can also reach the target, but its
+                    // connector makes the complete route longer.
+                    (a.x, b.x) == (-64.0, 0.0) || (a.x, b.x) == (64.0, 112.0) || a.z == 30.0
+                },
+                |_, _| false,
+            )
             .unwrap();
         assert_eq!(
             route.waypoints,
@@ -668,8 +701,16 @@ mod tests {
         )
         .unwrap();
         let planner = graph.planner.as_ref().unwrap();
-        let plan =
-            |x: f64| planner.plan(Vec3::new(x, 0.0, 0.0), None, |_| true, |_| 0.0, |_, _| true);
+        let plan = |x: f64| {
+            planner.plan(
+                Vec3::new(x, 0.0, 0.0),
+                None,
+                |_| true,
+                |_| 0.0,
+                |_, _| true,
+                |_, _| false,
+            )
+        };
         assert_eq!(
             plan(-200.0).unwrap().waypoints,
             [[0.0; 3], [100.0, 0.0, 0.0]]
@@ -781,6 +822,32 @@ mod tests {
                 )
                 .is_none()
         );
+    }
+
+    #[test]
+    fn an_open_line_may_drop_off_a_ledge_but_not_into_a_pit() {
+        use crate::games::washoi::perception::sight::tests::{cube, encode};
+        // A ledge at height 100 from x = -100 to 0, floor at 0 from 0 to 300,
+        // and a pit from 300 to 400 before more floor.
+        let sight = Sight::parse(&encode(
+            "test",
+            &[
+                cube([-100.0, 90.0, -50.0], [0.0, 100.0, 50.0]),
+                cube([0.0, -10.0, -50.0], [300.0, 0.0, 50.0]),
+                cube([400.0, -10.0, -50.0], [600.0, 0.0, 50.0]),
+            ],
+            &[],
+        ))
+        .unwrap();
+        // Standing origins sit 24 above the floor.
+        let ledge = Vec3::new(-50.0, 124.0, 0.0);
+        assert!(open_line(&sight, ledge, Vec3::new(250.0, 24.0, 0.0)));
+        assert!(!open_line(&sight, ledge, Vec3::new(500.0, 24.0, 0.0)));
+        assert!(!open_line(
+            &sight,
+            Vec3::new(100.0, 24.0, 0.0),
+            Vec3::new(500.0, 24.0, 0.0)
+        ));
     }
 
     #[test]

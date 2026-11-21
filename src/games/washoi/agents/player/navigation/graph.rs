@@ -20,6 +20,8 @@ const MAX_ENTRIES: usize = 64;
 const MAX_EDGES: usize = 32768;
 const ROUTES_PER_ENTRY: usize = 3;
 const MAX_CORNERS: usize = 32;
+/// How far a bot off the graph looks for a node in clear view.
+const FAR_RADIUS: f64 = 1024.0;
 
 /// Intermediate points of a walk edge, from the TypeScript nav cache `via`.
 type Corners = BTreeMap<(usize, usize), Vec<[f64; 3]>>;
@@ -173,6 +175,7 @@ impl Planner {
         radius: f64,
         recovery: Option<ObjectiveRecovery>,
         local_walk: impl Fn(Vec3, Vec3) -> bool,
+        open_line: impl Fn(Vec3, Vec3) -> bool,
     ) -> Option<(Route, Vec<ObjectiveEdge>)> {
         let mut lead = None;
         let start = self
@@ -199,7 +202,8 @@ impl Planner {
                             .total_cmp(&horizontal_distance(position, **b))
                     })
                     .map(|(node, _)| node)
-            })?;
+            })
+            .or_else(|| self.in_view(position, &open_line).next())?;
         let mut search = Search::new(self.nodes.len(), start);
         let mut finish: Option<(usize, f64, Option<[f64; 3]>)> = None;
         while let Some(node) = search.next() {
@@ -342,13 +346,18 @@ impl Planner {
         accept: impl Fn(&Route) -> bool,
         score: impl Fn(&Route) -> f64,
         local_walk: impl Fn(Vec3, Vec3) -> bool,
+        open_line: impl Fn(Vec3, Vec3) -> bool,
     ) -> Option<Route> {
         let here = |node: [f64; 3], radius: f64| {
             horizontal_distance(position, node) <= radius
                 && (node[1] - position.y).abs() <= MAX_HEIGHT_DELTA
         };
-        if let Some(node) = self.nearest_entry(position) {
-            return self.best_route(position, node, Vec::new(), &accept, &score);
+        // A node with no route out, as on a ledge in a pocket, is no start:
+        // try the other ways onto the graph.
+        if let Some(node) = self.nearest_entry(position)
+            && let Some(route) = self.best_route(position, node, Vec::new(), &accept, &score)
+        {
+            return Some(route);
         }
         let resumed = anchor
             .filter(|&anchor| here(anchor, ANCHOR_RADIUS))
@@ -381,6 +390,39 @@ impl Planner {
             .find_map(|node| {
                 self.best_route(position, node, vec![self.nodes[node]], &accept, &score)
             })
+            .or_else(|| {
+                self.in_view(position, &open_line)
+                    .take(MAX_LOCAL_STARTS)
+                    .find_map(|node| {
+                        self.best_route(position, node, vec![self.nodes[node]], &accept, &score)
+                    })
+            })
+    }
+
+    /// The last way onto the graph: nodes in clear view, nearest first,
+    /// within `FAR_RADIUS` and no more than a step above. A lower node is
+    /// fine, because walking straight at it drops off whatever ledge the
+    /// bot is on. Wide open floors on cache graphs leave bots 300 to 600
+    /// units from the nearest node, which is what TypeScript's recovery walk
+    /// handles. Without this, a bot there stood still for the match.
+    fn in_view<'a>(
+        &'a self,
+        position: Vec3,
+        open_line: &'a impl Fn(Vec3, Vec3) -> bool,
+    ) -> impl Iterator<Item = usize> + 'a {
+        let mut near: Vec<_> = (0..self.nodes.len())
+            .filter_map(|node| {
+                let point = self.nodes[node];
+                let distance = horizontal_distance(position, point);
+                (distance <= FAR_RADIUS && point[1] - position.y <= MAX_HEIGHT_DELTA)
+                    .then_some((distance, node))
+            })
+            .collect();
+        near.sort_by(|a, b| a.0.total_cmp(&b.0));
+        near.into_iter().map(|(_, node)| node).filter(move |&node| {
+            let [x, y, z] = self.nodes[node];
+            open_line(position, Vec3::new(x, y, z))
+        })
     }
 
     fn best_route(
