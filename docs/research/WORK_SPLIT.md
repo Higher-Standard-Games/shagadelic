@@ -19,7 +19,9 @@ Shared files: `behavior.rs`, `mod.rs`, `difficulty.rs`, `navigation.rs`, `naviga
 - `origin` is `github.com/Higher-Standard-Games/shagadelic`. Push only when the user asks.
 - Update this file when ownership changes, and the design doc when a contract or milestone changes.
 
-## Current handoff: Washoi brain separation
+## Done: Washoi brain separation
+
+The separation landed through `bfd9308`. Session A continues with gameplay (hunting next), and session B with the traversal and lobby handover below. The assignments that follow are kept for reference.
 
 The gameplay ownership above describes the parity work. For the architecture milestone, use the assignments below. The baseline includes the perception changes in `17db763`. Capture their behavior before changing the brain or switching the live scheduler.
 
