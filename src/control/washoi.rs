@@ -5,7 +5,9 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use shagadelic::{
-    games::washoi::{BotReport, LearnedRoutes, SpawnBot, WashoiNavigation, WashoiSession},
+    games::washoi::{
+        BotReport, Difficulty, LearnedRoutes, SpawnBot, WashoiNavigation, WashoiSession,
+    },
     runtime::{Budget, EntityKey, EntityStatus, Runtime, SpawnError},
 };
 use tokio::{
@@ -28,6 +30,7 @@ pub(super) struct Spawn {
     name: String,
     ticket: Option<String>,
     team: Option<String>,
+    difficulty: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -145,10 +148,26 @@ fn spawn_bot(
             },
         );
     }
+    let difficulty = match spawn.difficulty {
+        None => Difficulty::default(),
+        Some(name) => match Difficulty::from_name(&name) {
+            Some(difficulty) => difficulty,
+            None => {
+                return emit(
+                    writer,
+                    &Event::RequestFailed {
+                        id: &spawn.id,
+                        reason: "unknown_difficulty",
+                    },
+                );
+            }
+        },
+    };
     let options = SpawnBot {
         name: spawn.name,
         ticket: spawn.ticket,
         team: spawn.team,
+        difficulty,
     };
     let event = match runtime.spawn(spawn.id.clone(), options) {
         Ok(status) => {

@@ -5,20 +5,20 @@ use shagger_shared::net::game_state::Vec3;
 use tokio::time::Instant;
 
 use super::{PlayerInput, Route, WashoiNavigation, horizontal_distance};
-use crate::games::washoi::goals::OwnVitals;
+use crate::games::washoi::{Difficulty, goals::OwnVitals};
 
 const STALL_TIMEOUT: Duration = Duration::from_millis(800);
 const RETRY_DELAY: Duration = Duration::from_secs(5);
 const MIN_PROGRESS: f64 = 8.0;
 const DISPLACEMENT: f64 = 128.0;
 const MAX_BLOCKS: usize = 16;
-const PICKUP_RECHECK: Duration = Duration::from_secs(4);
 const LOCAL_PICKUP_RADIUS: f64 = 24.0;
 
 #[derive(Clone, Copy)]
 pub(in crate::games::washoi) struct RouteObservation<'a> {
     pub(in crate::games::washoi) now: Instant,
     pub(in crate::games::washoi) vitals: OwnVitals,
+    pub(in crate::games::washoi) difficulty: Difficulty,
     pub(in crate::games::washoi) pickup_active: &'a [bool],
     pub(in crate::games::washoi) allow_takeoff: bool,
     pub(in crate::games::washoi) landed_id: Option<&'a str>,
@@ -71,6 +71,7 @@ impl RouteFollower {
         let RouteObservation {
             now,
             vitals,
+            difficulty,
             pickup_active,
             allow_takeoff,
             landed_id,
@@ -121,7 +122,7 @@ impl RouteFollower {
                                     (to, total + distance)
                                 })
                                 .1;
-                            pickup.value(vitals) / (1.0 + travel / 512.0)
+                            pickup.value(vitals, difficulty) / (1.0 + travel / 512.0)
                         })
                     },
                 )
@@ -148,7 +149,7 @@ impl RouteFollower {
                 && pickup_active.get(pickup.id) == Some(&false)
             {
                 self.pickup_unavailable
-                    .insert(pickup.id, now + PICKUP_RECHECK);
+                    .insert(pickup.id, now + difficulty.pickup_recheck());
                 self.active = None;
             }
             return input;
@@ -203,6 +204,7 @@ mod tests {
         RouteObservation {
             now,
             vitals: OwnVitals::default(),
+            difficulty: Difficulty::default(),
             pickup_active: &[],
             allow_takeoff,
             landed_id,

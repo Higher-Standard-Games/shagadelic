@@ -1,5 +1,6 @@
 //! First Washoi pickup policy. Pickup IDs index the map's snapshot active mask.
 
+use super::Difficulty;
 use serde::Deserialize;
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -25,11 +26,15 @@ pub(super) struct OwnVitals {
 }
 
 impl PickupGoal {
-    pub(super) fn value(self, vitals: OwnVitals) -> f64 {
+    pub(super) fn value(self, vitals: OwnVitals, difficulty: Difficulty) -> f64 {
         // Missing health or armor is unknown until our own CombatState arrives.
         match self.kind {
-            PickupKind::Health => 0.3 + 1.4 * deficit(vitals.health, 100),
-            PickupKind::Armor => 0.4 + 0.9 * deficit(vitals.armor, 100),
+            PickupKind::Health => {
+                0.3 + 1.4 * deficit(vitals.health, 100) * difficulty.resource_awareness()
+            }
+            PickupKind::Armor => {
+                0.4 + 0.9 * deficit(vitals.armor, 100) * difficulty.resource_awareness()
+            }
             PickupKind::Weapon => 0.75,
             PickupKind::Ammo => 0.25,
             PickupKind::Powerup => 1.05,

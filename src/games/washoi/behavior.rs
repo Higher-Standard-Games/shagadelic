@@ -6,7 +6,7 @@ use tokio::time::Instant;
 use super::goals::OwnVitals;
 use super::navigation::{RouteFollower, RouteObservation};
 use super::protocol::{PlayerInput, SnapshotEvent};
-use super::{LearnedRoutes, WashoiNavigation, learned::Traversal};
+use super::{Difficulty, LearnedRoutes, WashoiNavigation, learned::Traversal};
 
 pub(crate) const INPUT_PERIOD: Duration = Duration::from_millis(8);
 const MAX_BURST: u64 = 4;
@@ -29,6 +29,7 @@ pub struct BotPlayer {
     traversal: Traversal,
     linked_takeoffs: bool,
     vitals: OwnVitals,
+    difficulty: Difficulty,
 }
 
 impl BotPlayer {
@@ -46,11 +47,17 @@ impl BotPlayer {
             traversal: Traversal::default(),
             linked_takeoffs: false,
             vitals: OwnVitals::default(),
+            difficulty: Difficulty::default(),
             planned_input: PlayerInput {
                 direction: [0.0, 0.0, 1.0],
                 ..PlayerInput::default()
             },
         }
+    }
+
+    pub fn with_difficulty(mut self, difficulty: Difficulty) -> Self {
+        self.difficulty = difficulty;
+        self
     }
 
     pub fn with_learned_routes(mut self, library: Arc<LearnedRoutes>) -> Self {
@@ -137,6 +144,7 @@ impl BotPlayer {
                     RouteObservation {
                         now,
                         vitals: self.vitals,
+                        difficulty: self.difficulty,
                         pickup_active: &world.pickup_active_mask,
                         allow_takeoff: self.learned.is_some()
                             && self.traversal.landing_result().is_none(),

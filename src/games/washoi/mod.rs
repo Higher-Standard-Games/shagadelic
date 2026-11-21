@@ -1,10 +1,12 @@
 mod behavior;
+mod difficulty;
 mod goals;
 mod learned;
 mod navigation;
 pub mod protocol;
 mod session;
 pub use behavior::BotPlayer;
+pub use difficulty::Difficulty;
 pub use learned::LearnedRoutes;
 pub use navigation::WashoiNavigation;
 pub use session::{BotReport, SpawnBot, WashoiSession};

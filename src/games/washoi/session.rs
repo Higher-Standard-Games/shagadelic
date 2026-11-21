@@ -9,7 +9,7 @@ use tokio::{sync::mpsc, task::JoinHandle};
 use crate::runtime::{Deadlines, EntityKey, GameSession, SessionEvent, Update};
 
 use super::{
-    BotPlayer, LearnedRoutes, WashoiNavigation,
+    BotPlayer, Difficulty, LearnedRoutes, WashoiNavigation,
     behavior::INPUT_PERIOD,
     protocol::{AdmissionError, WashoiEvents, connect},
 };
@@ -20,6 +20,7 @@ pub struct SpawnBot {
     pub name: String,
     pub ticket: Option<String>,
     pub team: Option<String>,
+    pub difficulty: Difficulty,
 }
 
 pub enum BotReport {
@@ -207,7 +208,8 @@ async fn run_bot(
             if events.send(report).await.is_err() {
                 return;
             }
-            let mut bot = BotPlayer::new(connection.identity.entity_id.clone());
+            let mut bot = BotPlayer::new(connection.identity.entity_id.clone())
+                .with_difficulty(bot.difficulty);
             if let Some(navigation) = navigation {
                 bot = bot.with_navigation(navigation);
             }
