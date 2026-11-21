@@ -409,10 +409,13 @@ mod tests {
             let input = follower.steer(&graph, Vec3::new(p[0], p[1], p[2]), observation);
             (input, follower.exact())
         };
-        let (jump, exact) = steer(0, [0.0, 24.0, 0.0], true, 0.0);
+        let (settle, exact) = steer(0, [0.0, 44.0, 0.0], false, -100.0);
+        assert!(exact);
+        assert_eq!(settle.buttons, 0);
+        let (jump, exact) = steer(104, [0.0, 24.0, 0.0], true, 0.0);
         assert!(exact);
         assert_eq!(jump.buttons & (1 << 4), 1 << 4);
-        let (airborne, exact) = steer(16, [12.0, 48.0, 0.0], false, 260.0);
+        let (airborne, exact) = steer(120, [12.0, 48.0, 0.0], false, 260.0);
         assert!(exact);
         assert_eq!(airborne.buttons & (1 << 4), 0);
         steer(600, [80.0, 24.0, 0.0], true, 0.0);

@@ -121,12 +121,12 @@ impl Traversal {
         velocity: Option<Velocity>,
         now: Instant,
     ) -> Outcome {
-        let Some(velocity) = velocity else {
-            return Outcome::Failed;
-        };
         if now - self.started >= ticks(260) {
             return Outcome::Failed;
         }
+        let Some(velocity) = velocity else {
+            return Outcome::Running(PlayerInput::default());
+        };
         match self.maneuver {
             Maneuver::Jump {
                 takeoff,
@@ -154,7 +154,12 @@ impl Traversal {
                     return forward(yaw, if self.airborne { 0 } else { JUMP });
                 }
                 if !velocity.grounded {
-                    return Outcome::Failed;
+                    // A newly spawned bot can still be dropping onto the
+                    // takeoff. Wait for support before pressing jump.
+                    return Outcome::Running(PlayerInput {
+                        yaw,
+                        ..PlayerInput::default()
+                    });
                 }
                 if !near(position, takeoff, 32.0, 40.0) {
                     return forward(bearing(position, takeoff, yaw), 0);
