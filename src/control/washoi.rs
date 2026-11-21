@@ -21,7 +21,7 @@ const PERIOD: Duration = Duration::from_millis(8);
 const BUDGET: Budget = Budget {
     events: 128,
     inputs: 64,
-    decisions: 0,
+    decisions: 64,
 };
 
 #[derive(Deserialize)]

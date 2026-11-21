@@ -55,6 +55,10 @@ pub trait GameSession {
     /// Cancel a pending attempt or release an active entity. Must be idempotent.
     fn remove(&mut self, key: &EntityKey);
     fn poll_event(&mut self) -> Option<SessionEvent>;
+    /// Timestamp incoming observations with the same simulation clock as updates.
+    fn poll_event_at(&mut self, _now: Duration) -> Option<SessionEvent> {
+        self.poll_event()
+    }
     /// Return the next deadline for this update kind, or disable it with None.
     /// Deadlines at or before now are moved to the next representable time.
     fn update(&mut self, key: &EntityKey, kind: Update, now: Duration) -> Option<Duration>;
@@ -169,7 +173,7 @@ impl<S: GameSession> Runtime<S> {
         self.now = now;
         let mut progress = Progress::default();
         while progress.events < budget.events {
-            let Some(event) = self.session.poll_event() else {
+            let Some(event) = self.session.poll_event_at(now) else {
                 break;
             };
             self.handle_event(event);

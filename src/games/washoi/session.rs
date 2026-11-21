@@ -4,14 +4,15 @@ use std::{
     time::Duration,
 };
 
-use tokio::{sync::mpsc, task::JoinHandle};
+use shagger_shared::net::game_state::GameState;
+use tokio::{sync::mpsc, task::JoinHandle, time::Instant};
 
 use crate::runtime::{Deadlines, EntityKey, GameSession, SessionEvent, Update};
 
 use super::{
     BotPlayer, Difficulty, LearnedRoutes, Sight, WashoiNavigation,
     behavior::INPUT_PERIOD,
-    protocol::{AdmissionError, WashoiEvents, connect},
+    protocol::{AdmissionError, InputBatch, SnapshotEvent, WashoiEvents, connect},
 };
 
 const MAX_BOTS: usize = 64;
@@ -54,19 +55,38 @@ impl MapAssets {
     }
 }
 
-struct BotTask {
-    task: JoinHandle<()>,
-    pulse: mpsc::Sender<()>,
+// Retain the entity positions and server tick that gave each transient event
+// its meaning (for example a sound or a jump-pad contact).
+const MAX_PENDING_FRAMES: usize = 32;
+
+enum SocketEvent {
+    Admitted {
+        key: EntityKey,
+        player_id: String,
+        entity_id: String,
+    },
+    Snapshot(EntityKey, GameState<SnapshotEvent>),
+    Ended(EntityKey, &'static str),
 }
 
-/// One Washoi game session. Socket tasks own I/O and receive input pulses from
-/// the caller-driven scheduler. Each task has room for one pending pulse.
+struct BotTask {
+    task: JoinHandle<()>,
+    actions: mpsc::Sender<InputBatch>,
+    difficulty: Difficulty,
+    player: Option<BotPlayer>,
+    pending: VecDeque<(Duration, GameState<SnapshotEvent>)>,
+}
+
+/// One lobby. Each connection handles I/O while the session owns its bot brain.
 pub struct WashoiSession {
     endpoint: String,
     assets: MapAssets,
     bots: BTreeMap<EntityKey, BotTask>,
-    send_event: mpsc::Sender<BotReport>,
-    events: mpsc::Receiver<BotReport>,
+    send_event: mpsc::Sender<SocketEvent>,
+    events: mpsc::Receiver<SocketEvent>,
+    // Bridge the current brain's Instant API to the caller's simulation clock.
+    epoch: Instant,
+    now: Duration,
     reports: VecDeque<BotReport>,
 }
 
@@ -77,6 +97,8 @@ impl WashoiSession {
             endpoint,
             assets: MapAssets::default(),
             bots: BTreeMap::new(),
+            epoch: Instant::now(),
+            now: Duration::ZERO,
             send_event,
             events,
             reports: VecDeque::new(),
@@ -115,16 +137,26 @@ impl GameSession for WashoiSession {
             return Err("empty_name");
         }
         let executor = tokio::runtime::Handle::try_current().map_err(|_| "executor_unavailable")?;
-        let (pulse, pulses) = mpsc::channel(1);
+        let (actions, outgoing) = mpsc::channel(1);
+        let difficulty = bot.difficulty;
         let task = executor.spawn(run_bot(
             self.endpoint.clone(),
             key.clone(),
             bot,
-            pulses,
+            outgoing,
             self.send_event.clone(),
             self.assets.clone(),
         ));
-        self.bots.insert(key.clone(), BotTask { task, pulse });
+        self.bots.insert(
+            key.clone(),
+            BotTask {
+                task,
+                actions,
+                difficulty,
+                player: None,
+                pending: VecDeque::new(),
+            },
+        );
         Ok(())
     }
 
@@ -138,36 +170,87 @@ impl GameSession for WashoiSession {
         if self.reports.len() >= 2 * MAX_BOTS {
             return None;
         }
-        let report = self.events.try_recv().ok()?;
-        let (event, current) = match &report {
-            BotReport::Admitted { key, .. } => (
-                SessionEvent::Admitted(
-                    key.clone(),
+        match self.events.try_recv().ok()? {
+            SocketEvent::Admitted {
+                key,
+                entity_id,
+                player_id,
+            } => {
+                if let Some(bot) = self.bots.get_mut(&key) {
+                    let mut player = BotPlayer::new(entity_id).with_difficulty(bot.difficulty);
+                    if let Some(nav) = &self.assets.navigation {
+                        player = player.with_navigation(nav.clone());
+                    }
+                    if let Some(learned) = &self.assets.learned {
+                        player = player.with_learned_routes(learned.clone());
+                    }
+                    if let Some(sight) = &self.assets.sight {
+                        player = player.with_sight(sight.clone());
+                    }
+                    bot.player = Some(player);
+                    self.reports.push_back(BotReport::Admitted {
+                        key: key.clone(),
+                        player_id,
+                    });
+                }
+                Some(SessionEvent::Admitted(
+                    key,
                     Deadlines {
                         input: Some(Duration::ZERO),
                         decision: None,
                     },
-                ),
-                self.bots.contains_key(key),
-            ),
-            BotReport::Ended { key, .. } => (
-                SessionEvent::Ended(key.clone()),
-                self.bots.remove(key).is_some(),
-            ),
-        };
-        if current {
-            self.reports.push_back(report);
+                ))
+            }
+            SocketEvent::Snapshot(key, state) => {
+                if let Some(bot) = self.bots.get_mut(&key) {
+                    if bot.pending.len() >= MAX_PENDING_FRAMES {
+                        self.remove(&key);
+                        self.reports.push_back(BotReport::Ended {
+                            key: key.clone(),
+                            reason: "observation_backlog",
+                        });
+                        return Some(SessionEvent::Ended(key));
+                    }
+                    bot.pending.push_back((self.now, state));
+                }
+                Some(SessionEvent::WakeDecision(key))
+            }
+            SocketEvent::Ended(key, reason) => {
+                if self.bots.remove(&key).is_some() {
+                    self.reports.push_back(BotReport::Ended {
+                        key: key.clone(),
+                        reason,
+                    });
+                }
+                Some(SessionEvent::Ended(key))
+            }
         }
-        Some(event)
+    }
+
+    fn poll_event_at(&mut self, now: Duration) -> Option<SessionEvent> {
+        self.now = now;
+        self.poll_event()
     }
 
     fn update(&mut self, key: &EntityKey, kind: Update, now: Duration) -> Option<Duration> {
-        if kind == Update::Input {
-            let bot = self.bots.get(key)?;
-            let _ = bot.pulse.try_send(());
-            return now.checked_add(INPUT_PERIOD);
+        let bot = self.bots.get_mut(key)?;
+        let player = bot.player.as_mut()?;
+        match kind {
+            Update::Decision => {
+                let (received, state) = bot.pending.pop_front()?;
+                player.observe(&state, self.epoch + received);
+                // One frame per permit including its ordered events. A later
+                // grant resumes the queue, even without another network wake.
+                (!bot.pending.is_empty()).then_some(now)
+            }
+            Update::Input => {
+                // Reserve before advancing an exact maneuver or respawn timer.
+                if let Ok(slot) = bot.actions.try_reserve() {
+                    slot.send(InputBatch::from_player(player, self.epoch + now));
+                }
+                now.checked_add(INPUT_PERIOD)
+            }
         }
-        None
     }
 
     fn begin_shutdown(&mut self) {
@@ -187,8 +270,8 @@ async fn run_bot(
     endpoint: String,
     key: EntityKey,
     bot: SpawnBot,
-    mut pulses: mpsc::Receiver<()>,
-    events: mpsc::Sender<BotReport>,
+    actions: mpsc::Receiver<InputBatch>,
+    events: mpsc::Sender<SocketEvent>,
     assets: MapAssets,
 ) {
     let connection = connect(
@@ -209,33 +292,26 @@ async fn run_bot(
                 .map(|welcome| welcome.map.as_str());
             if assets.maps().any(|map| Some(map) != server_map) {
                 let _ = events
-                    .send(BotReport::Ended {
-                        key,
-                        reason: "navigation_map_mismatch",
-                    })
+                    .send(SocketEvent::Ended(key, "navigation_map_mismatch"))
                     .await;
                 return;
             }
-            let report = BotReport::Admitted {
+            let admitted = SocketEvent::Admitted {
                 key: key.clone(),
                 player_id: connection.identity.player_id.clone(),
+                entity_id: connection.identity.entity_id.clone(),
             };
-            if events.send(report).await.is_err() {
+            if events.send(admitted).await.is_err() {
                 return;
             }
-            let mut bot = BotPlayer::new(connection.identity.entity_id.clone())
-                .with_difficulty(bot.difficulty);
-            if let Some(navigation) = assets.navigation {
-                bot = bot.with_navigation(navigation);
-            }
-            if let Some(learned) = assets.learned {
-                bot = bot.with_learned_routes(learned);
-            }
-            if let Some(sight) = assets.sight {
-                bot = bot.with_sight(sight);
-            }
-            let pulses = futures_util::stream::poll_fn(|cx| pulses.poll_recv(cx));
-            match connection.play_on(bot, |_| true, pulses).await {
+            match connection
+                .exchange(actions, |state| {
+                    let event = SocketEvent::Snapshot(key.clone(), state);
+                    let events = &events;
+                    async move { events.send(event).await.is_ok() }
+                })
+                .await
+            {
                 Ok(()) | Err(AdmissionError::Disconnected) => "disconnected",
                 Err(AdmissionError::Protocol(_)) => "protocol_error",
                 Err(_) => "connection_error",
@@ -246,5 +322,5 @@ async fn run_bot(
         Err(AdmissionError::Protocol(_)) => "protocol_error",
         Err(_) => "admission_error",
     };
-    let _ = events.send(BotReport::Ended { key, reason }).await;
+    let _ = events.send(SocketEvent::Ended(key, reason)).await;
 }

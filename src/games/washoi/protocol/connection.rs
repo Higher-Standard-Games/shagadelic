@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use futures_util::{SinkExt, Stream, StreamExt};
+use futures_util::{SinkExt, StreamExt};
 use shagger_shared::net::{
     DecodeError,
     command::Command,
@@ -98,56 +98,109 @@ impl Connection<WashoiEvents> {
 
         let mut updates = interval(INPUT_PERIOD);
         updates.set_missed_tick_behavior(MissedTickBehavior::Skip);
-        let pulses = futures_util::stream::poll_fn(|cx| updates.poll_tick(cx).map(|_| Some(())));
-        self.play_on(bot, observe, pulses).await
-    }
-
-    pub(crate) async fn play_on(
-        &mut self,
-        mut bot: super::super::BotPlayer,
-        mut observe: impl FnMut(&GameState<SnapshotEvent>) -> bool,
-        mut pulses: impl Stream<Item = ()> + Unpin,
-    ) -> Result<(), AdmissionError> {
-        use tokio::time::Instant;
+        let mut bot = bot;
+        let mut observe = observe;
         let mut keys = super::keys::MovementKeys::default();
-
         loop {
             tokio::select! {
-                // Process a selected frame to completion before polling either
-                // branch again. A movement deadline cannot interrupt its ACK.
                 frame = self.socket.next() => {
-                    match frame.transpose()? {
-                        Some(Message::Binary(frame)) => {
-                            if let Some(state) = acknowledge(&mut self.socket, &mut self.snapshots, &frame).await? {
-                                bot.observe(&state, Instant::now());
-                                if !observe(&state) {
-                                    return Ok(());
-                                }
-                            }
+                    if matches!(frame, None | Some(Ok(Message::Close(_)))) { return Ok(()); }
+                    if let Some(state) = self.receive_frame(frame).await? {
+                        bot.observe(&state, tokio::time::Instant::now());
+                        if !observe(&state) {
+                            return Ok(());
                         }
-                        Some(Message::Ping(_)) => self.socket.flush().await?,
-                        Some(Message::Close(_)) | None => return Ok(()),
-                        Some(_) => {}
                     }
                 }
-                pulse = pulses.next() => {
-                    if pulse.is_none() {
-                        return Ok(());
-                    }
-                    let now = Instant::now();
-                    if bot.request_respawn(now) {
-                        self.socket.send(Message::binary(encode_request_spawn())).await?;
-                    }
-                    let exact = bot.uses_exact_movement();
-                    if exact {
-                        keys = super::keys::MovementKeys::default();
-                    }
-                    for input in bot.inputs(now) {
-                        let input = if exact { input } else { keys.apply(input) };
-                        self.send_input(input).await?;
-                    }
+                _ = updates.tick() => {
+                    let actions = InputBatch::from_player(&mut bot, tokio::time::Instant::now());
+                    self.send_batch(actions, &mut keys).await?;
                 }
             }
+        }
+    }
+
+    /// The hosted socket owns the codec, acknowledgments, and wire sequence.
+    /// Brain updates and command production run on the session scheduler.
+    pub(crate) async fn exchange<F: Future<Output = bool>>(
+        &mut self,
+        mut actions: tokio::sync::mpsc::Receiver<InputBatch>,
+        mut deliver: impl FnMut(GameState<SnapshotEvent>) -> F,
+    ) -> Result<(), AdmissionError> {
+        let mut keys = super::keys::MovementKeys::default();
+        loop {
+            tokio::select! {
+                frame = self.socket.next() => {
+                    if let Some(state) = self.receive_frame(frame).await?
+                        && !deliver(state).await {
+                        return Ok(());
+                    }
+                }
+                batch = actions.recv() => {
+                    let Some(batch) = batch else { return Ok(()) };
+                    self.send_batch(batch, &mut keys).await?;
+                }
+            }
+        }
+    }
+
+    async fn receive_frame(
+        &mut self,
+        frame: Option<Result<Message, WebSocketError>>,
+    ) -> Result<Option<GameState<SnapshotEvent>>, AdmissionError> {
+        match frame.transpose()? {
+            Some(Message::Binary(frame)) => {
+                acknowledge(&mut self.socket, &mut self.snapshots, &frame).await
+            }
+            Some(Message::Ping(_)) => {
+                self.socket.flush().await?;
+                Ok(None)
+            }
+            Some(Message::Close(_)) | None => Err(AdmissionError::Disconnected),
+            Some(_) => Ok(None),
+        }
+    }
+
+    async fn send_batch(
+        &mut self,
+        batch: InputBatch,
+        keys: &mut super::keys::MovementKeys,
+    ) -> Result<(), AdmissionError> {
+        if batch.respawn {
+            self.socket
+                .send(Message::binary(encode_request_spawn()))
+                .await?;
+        }
+        if batch.exact {
+            *keys = super::keys::MovementKeys::default();
+        }
+        for input in batch.inputs {
+            self.send_input(if batch.exact {
+                input
+            } else {
+                keys.apply(input)
+            })
+            .await?;
+        }
+        Ok(())
+    }
+}
+
+pub(crate) struct InputBatch {
+    inputs: Vec<PlayerInput>,
+    respawn: bool,
+    exact: bool,
+}
+
+impl InputBatch {
+    pub(crate) fn from_player(
+        bot: &mut super::super::BotPlayer,
+        now: tokio::time::Instant,
+    ) -> Self {
+        Self {
+            respawn: bot.request_respawn(now),
+            exact: bot.uses_exact_movement(),
+            inputs: bot.inputs(now).collect(),
         }
     }
 }
