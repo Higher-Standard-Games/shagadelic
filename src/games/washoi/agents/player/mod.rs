@@ -1,6 +1,7 @@
 //! The player bot: a Washoi agent that plays as a networked player.
 
 pub(in crate::games::washoi) mod combat;
+pub(in crate::games::washoi) mod look;
 pub(in crate::games::washoi) mod movement;
 pub(in crate::games::washoi) mod navigation;
 pub(in crate::games::washoi) mod strategy;
@@ -17,6 +18,7 @@ use crate::games::washoi::agents::player::combat::aim::{AimController, View};
 use crate::games::washoi::agents::player::combat::mood::{BotMood, Mistake};
 use crate::games::washoi::agents::player::combat::safety;
 use crate::games::washoi::agents::player::combat::{ALT_FIRE, Combat, Engagement, FIRE};
+use crate::games::washoi::agents::player::look::{self as looking, Look};
 use crate::games::washoi::agents::player::movement::chase::Chase;
 use crate::games::washoi::agents::player::movement::highground::{self, HighGround};
 use crate::games::washoi::agents::player::movement::strafe::{self, Body, CombatMovement};
@@ -74,6 +76,7 @@ pub struct BotPlayer {
     engagement: Option<Engagement>,
     moves: CombatMovement,
     chase: Chase,
+    look: Look,
     mood: BotMood,
     /// Where the bot and its living teammates were at the last decision,
     /// and whether the trigger was down on the aim.
@@ -123,6 +126,7 @@ impl BotPlayer {
             engagement: None,
             moves: CombatMovement::default(),
             chase: Chase::default(),
+            look: Look::default(),
             mood: BotMood::default(),
             position: None,
             allies: Vec::new(),
@@ -298,10 +302,56 @@ impl BotPlayer {
         } else {
             self.chase.reset();
         }
+        self.look_around(world, position);
     }
 
     /// `chase`: walk toward where the enemy should be, watch it, and fire
     /// into it within 200 units while the memory is above 0.7.
+    /// `BotLook`: note which major item spots are in sight, and while
+    /// roaming out of a fight, let the view glance into open space or at a
+    /// stale spot. Movement keeps its heading.
+    fn look_around(&mut self, world: &Observation, position: Option<super::super::Vec3>) {
+        let (Some(sight), Some(navigation), Some(position)) =
+            (self.sight.clone(), self.navigation.clone(), position)
+        else {
+            self.look.stop();
+            return;
+        };
+        let spots: Vec<(usize, [f64; 3])> = navigation
+            .pickups()
+            .into_iter()
+            .filter(|(pickup, _)| pickup.is_major())
+            .map(|(pickup, at)| (pickup.id, at))
+            .collect();
+        let view_yaw = self
+            .aim
+            .current()
+            .map_or(self.planned_input.yaw, |view| view.yaw);
+        self.look
+            .watch(world.tick, position, view_yaw, &spots, &sight);
+        let [x, _, z] = self.planned_input.direction;
+        let roaming = self.engagement.is_none()
+            && self.chasing.is_none()
+            && !self.exact_view
+            && self.respawn_at.is_none()
+            && (x != 0.0 || z != 0.0)
+            && self.planned_input.buttons & (FIRE | ALT_FIRE) == 0;
+        if !roaming {
+            self.look.stop();
+            return;
+        }
+        let travel = x.atan2(z);
+        self.planned_input.yaw = self.look.glance(
+            world.tick,
+            position,
+            travel,
+            view_yaw,
+            &spots,
+            &sight,
+            &mut self.random,
+        );
+    }
+
     /// `BotMood` around a fight: a new fight may roll a mistake, and an
     /// ended one clears all but forgetting. While a mistake lasts it bends
     /// the fight: a wild shot fires 5 degrees off to one side, the wrong
@@ -760,11 +810,19 @@ impl BotPlayer {
             && let Some((wanted, prefire)) = self.chasing
         {
             self.pressed_melee = false;
+            let wanted = if prefire {
+                wanted
+            } else {
+                View {
+                    pitch: (wanted.pitch + looking::CALM_PITCH).min(looking::CALM_MAX_PITCH),
+                    ..wanted
+                }
+            };
             let view = self.aim.step(
                 INPUT_PERIOD.as_secs_f64(),
                 wanted,
                 prefire,
-                false,
+                !prefire,
                 &mut self.random,
             );
             input.yaw = view.yaw;
@@ -776,9 +834,13 @@ impl BotPlayer {
         }
         let Some(fight) = self.engagement else {
             self.pressed_melee = false;
+            let calm = View {
+                pitch: (planned.pitch + looking::CALM_PITCH).min(looking::CALM_MAX_PITCH),
+                ..planned
+            };
             let view = self.aim.step(
                 INPUT_PERIOD.as_secs_f64(),
-                planned,
+                calm,
                 false,
                 true,
                 &mut self.random,

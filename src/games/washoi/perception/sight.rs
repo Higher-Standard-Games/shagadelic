@@ -169,12 +169,48 @@ impl Sight {
     }
 
     fn blocks(&self, shape: Shape, from: Point, to: Point, delta: Point) -> bool {
+        self.hit(shape, from, to, delta).is_some()
+    }
+
+    /// Where along the segment, from 0 to 1, a solid stops it.
+    fn hit(&self, shape: Shape, from: Point, to: Point, delta: Point) -> Option<f64> {
         match shape {
             Shape::Brush(first, end) => {
-                brush_blocks(&self.planes[first as usize..end as usize], from, to)
+                brush_hit(&self.planes[first as usize..end as usize], from, to)
             }
-            Shape::Triangle(corners) => triangle_blocks(corners, from, delta),
+            Shape::Triangle(corners) => triangle_hit(corners, from, delta),
         }
+    }
+
+    /// How far along the segment, from 0 to 1, sight reaches before static
+    /// collision stops it: 1 when clear, as a trace's `fraction` reports.
+    pub fn reach(&self, from: Point, to: Point) -> f64 {
+        if !from.iter().chain(&to).all(|value| value.is_finite()) {
+            return 0.0;
+        }
+        let delta = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
+        let inverse = delta.map(|d| 1.0 / d);
+        let mut nearest = 1.0f64;
+        let mut index = 0;
+        while let Some(node) = self.nodes.get(index) {
+            let crossed = node.bounds.crossed(from, inverse);
+            index = if node.count == 0 && !crossed {
+                node.first as usize
+            } else {
+                index + 1
+            };
+            if node.count == 0 || !crossed {
+                continue;
+            }
+            for solid in &self.solids[node.first as usize..(node.first + node.count) as usize] {
+                if solid.bounds.crossed(from, inverse)
+                    && let Some(at) = self.hit(solid.shape, from, to, delta)
+                {
+                    nearest = nearest.min(at);
+                }
+            }
+        }
+        nearest
     }
 
     fn build(&mut self) {
@@ -228,8 +264,8 @@ impl Sight {
 }
 
 /// `traceBrush` for a point: the segment is blocked if it enters the brush
-/// before leaving it, or never leaves it.
-fn brush_blocks(planes: &[[f64; 4]], from: Point, to: Point) -> bool {
+/// before leaving it, at the entry, or never leaves it, at once.
+fn brush_hit(planes: &[[f64; 4]], from: Point, to: Point) -> Option<f64> {
     let mut enter = -1.0f64;
     let mut leave = 1.0f64;
     let mut starts_out = false;
@@ -240,7 +276,7 @@ fn brush_blocks(planes: &[[f64; 4]], from: Point, to: Point) -> bool {
         starts_out |= start > 0.0;
         ends_out |= end > 0.0;
         if start > 0.0 && end > 0.0 {
-            return false;
+            return None;
         }
         if start <= 0.0 && end <= 0.0 {
             continue;
@@ -252,33 +288,33 @@ fn brush_blocks(planes: &[[f64; 4]], from: Point, to: Point) -> bool {
         }
     }
     if !starts_out {
-        return !ends_out;
+        return (!ends_out).then_some(0.0);
     }
-    enter < leave && enter > -1.0 && enter < 1.0
+    (enter < leave && enter > -1.0 && enter < 1.0).then_some(enter.max(0.0))
 }
 
 /// Möller–Trumbore, from either side.
-fn triangle_blocks([a, b, c]: [Point; 3], from: Point, delta: Point) -> bool {
+fn triangle_hit([a, b, c]: [Point; 3], from: Point, delta: Point) -> Option<f64> {
     let ab = sub(b, a);
     let ac = sub(c, a);
     let p = cross(delta, ac);
     let determinant = dot3(ab, p);
     if determinant.abs() < 1e-9 {
-        return false;
+        return None;
     }
     let inverse = 1.0 / determinant;
     let offset = sub(from, a);
     let u = dot3(offset, p) * inverse;
     if !(0.0..=1.0).contains(&u) {
-        return false;
+        return None;
     }
     let q = cross(offset, ab);
     let v = dot3(delta, q) * inverse;
     if v < 0.0 || u + v > 1.0 {
-        return false;
+        return None;
     }
     let t = dot3(ac, q) * inverse;
-    (0.0..1.0).contains(&t)
+    (0.0..1.0).contains(&t).then_some(t)
 }
 
 /// Q3 brushes carry their six axial bevel planes. A missing one leaves that
@@ -509,6 +545,10 @@ pub(in crate::games::washoi) mod tests {
         assert!(sight.clear([0.0, 0.0, 0.0], [50.0, 0.0, 0.0]));
         assert!(!sight.clear([0.0, 0.0, 0.0], [1.0, 0.0, 0.0]));
         assert!(!sight.clear([f64::NAN, 0.0, 0.0], [1.0, 0.0, 0.0]));
+        // The wall at x = -8 stops a ray from -50 a little past 0.42 of the way.
+        let reach = sight.reach([-50.0, 0.0, 0.0], [50.0, 0.0, 0.0]);
+        assert!((reach - 0.42).abs() < 0.01, "{reach}");
+        assert_eq!(sight.reach([-50.0, 150.0, 0.0], [50.0, 150.0, 0.0]), 1.0);
     }
 
     #[test]

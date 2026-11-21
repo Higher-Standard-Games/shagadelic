@@ -28,6 +28,8 @@ pub(in crate::games::washoi) enum PickupItem {
     Small,
     Mega,
     Ultra,
+    /// An armor shard, the one armor that is not a major item.
+    Shard,
     #[serde(other)]
     Other,
 }
@@ -50,6 +52,17 @@ impl PickupGoal {
     /// How long a taken item stays away, from Washoi
     /// `shared/items/ItemRespawn.ts` `itemRespawnSeconds` with its default
     /// weapon time. The TypeScript bot uses the same defaults.
+    /// `isMajorItem` in `goals/considerations/ItemFacts.ts`: powerups,
+    /// green, yellow, and red armor, Mega Health, and Ultra Health.
+    pub(in crate::games::washoi) fn is_major(self) -> bool {
+        match self.kind {
+            PickupKind::Powerup => true,
+            PickupKind::Armor => !matches!(self.item, Some(PickupItem::Shard)),
+            PickupKind::Health => matches!(self.item, Some(PickupItem::Mega | PickupItem::Ultra)),
+            PickupKind::Weapon | PickupKind::Ammo => false,
+        }
+    }
+
     pub(in crate::games::washoi) fn respawn(self) -> Duration {
         Duration::from_secs(match self.kind {
             PickupKind::Weapon | PickupKind::Ammo => 15,
