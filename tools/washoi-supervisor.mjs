@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { access, open } from "node:fs/promises";
+import { access } from "node:fs/promises";
 import { resolve } from "node:path";
 import { createInterface } from "node:readline";
 
@@ -225,30 +225,13 @@ async function mapAssets(map, { navigationDir, learnedRoutesDir }) {
     await access(path);
     return path;
   };
-  const [navigation, learned_routes_file, sight_file] = await Promise.all([
-    navigationDir ? optionalFile(resolve(navigationDir, name), async (path) => {
-      const file = await open(path, "r");
-      try {
-        const buffer = Buffer.alloc(MAX_RECORD_BYTES);
-        let length = 0;
-        while (length < buffer.length) {
-          const { bytesRead } = await file.read(buffer, length, buffer.length - length, null);
-          if (!bytesRead) break;
-          length += bytesRead;
-        }
-        if (length === buffer.length) throw new Error("navigation file exceeds control record limit");
-        const data = JSON.parse(buffer.toString("utf8", 0, length));
-        if (data?.map !== map) throw new Error("navigation file has the wrong map");
-        return data;
-      } finally {
-        await file.close();
-      }
-    }) : undefined,
+  const [navigation_file, learned_routes_file, sight_file] = await Promise.all([
+    navigationDir ? optionalFile(resolve(navigationDir, name), existing) : undefined,
     learnedRoutesDir ? optionalFile(resolve(learnedRoutesDir, name), existing) : undefined,
     // Baked by tools/bake-washoi-sight.mjs. The child checks its map.
     navigationDir ? optionalFile(resolve(navigationDir, map + ".sight"), existing) : undefined,
   ]);
-  return { navigation, learned_routes_file, sight_file };
+  return { washoi_map: map, navigation_file, learned_routes_file, sight_file };
 }
 
 async function optionalFile(path, use) {

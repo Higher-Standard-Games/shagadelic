@@ -1,6 +1,11 @@
 mod follower;
 mod graph;
 
+use std::{
+    io::{self, Read},
+    path::Path,
+};
+
 use serde::Deserialize;
 use shagger_shared::net::game_state::{Vec3, Velocity};
 
@@ -9,6 +14,7 @@ use super::{goals::PickupGoal, protocol::PlayerInput};
 pub(super) use follower::{RouteFollower, RouteObservation};
 
 const ENTRY_RADIUS: f64 = 48.0;
+const MAX_FILE: u64 = 4 * 1024 * 1024;
 const ARRIVAL_RADIUS: f64 = 16.0;
 const MAX_HEIGHT_DELTA: f64 = 40.0;
 const ANCHOR_RADIUS: f64 = 128.0;
@@ -101,6 +107,20 @@ impl TryFrom<RouteFile> for WashoiNavigation {
 }
 
 impl WashoiNavigation {
+    pub fn load(path: impl AsRef<Path>) -> io::Result<Self> {
+        let mut bytes = Vec::new();
+        std::fs::File::open(path)?
+            .take(MAX_FILE + 1)
+            .read_to_end(&mut bytes)?;
+        if bytes.len() as u64 > MAX_FILE {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "navigation file exceeds size limit",
+            ));
+        }
+        serde_json::from_slice(&bytes).map_err(io::Error::from)
+    }
+
     pub fn map(&self) -> &str {
         &self.map
     }

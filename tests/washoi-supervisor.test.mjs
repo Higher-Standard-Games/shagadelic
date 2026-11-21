@@ -51,8 +51,9 @@ test("map assets use the match map and reject a file labeled for a different map
   const file = join(directory, "washoi_dm2.json");
   const route = { entry: [0, 0, 0], waypoints: [[32, 0, 0]] };
   await writeFile(file, JSON.stringify({ map: "other", routes: [route] }));
-  await assert.rejects(supervisor.start("wrong", endpoint, "washoi_dm2"), /wrong map/);
-  await writeFile(file, JSON.stringify({ map: "washoi_dm2", routes: [route] }));
+  await assert.rejects(supervisor.start("wrong", endpoint, "washoi_dm2"));
+  // Padding makes a valid file larger than one control record.
+  await writeFile(file, JSON.stringify({ map: "washoi_dm2", routes: [route] }) + " ".repeat(70_000));
   await supervisor.start("correct", endpoint, "washoi_dm2");
   const sight = join(directory, "washoi_dm2.sight");
   await writeFile(sight, emptySight("other"));

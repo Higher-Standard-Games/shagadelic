@@ -14,7 +14,9 @@ struct Initialization {
     lobby_id: String,
     pilot: Option<Pilot>,
     washoi_endpoint: Option<String>,
+    washoi_map: Option<String>,
     navigation: Option<Navigation>,
+    navigation_file: Option<std::path::PathBuf>,
     learned_routes_file: Option<std::path::PathBuf>,
     sight_file: Option<std::path::PathBuf>,
 }
@@ -85,14 +87,18 @@ pub fn run(mut reader: impl BufRead + Send + 'static, writer: &mut impl Write) -
     #[cfg(not(feature = "washoi"))]
     if init.pilot.is_some()
         || init.washoi_endpoint.is_some()
+        || init.washoi_map.is_some()
         || init.navigation.is_some()
+        || init.navigation_file.is_some()
         || init.learned_routes_file.is_some()
         || init.sight_file.is_some()
     {
         return Err(invalid("Washoi support is disabled"));
     }
     #[cfg(feature = "washoi")]
-    if (init.navigation.is_some()
+    if (init.washoi_map.is_some()
+        || init.navigation.is_some()
+        || init.navigation_file.is_some()
         || init.learned_routes_file.is_some()
         || init.sight_file.is_some())
         && init.washoi_endpoint.is_none()
@@ -110,6 +116,12 @@ pub fn run(mut reader: impl BufRead + Send + 'static, writer: &mut impl Write) -
     }
 
     #[cfg(feature = "washoi")]
+    let navigation = match (init.navigation, init.navigation_file) {
+        (Some(_), Some(_)) => return Err(invalid("select either inline navigation or a file")),
+        (navigation, None) => navigation,
+        (None, Some(path)) => Some(Navigation::load(path)?),
+    };
+    #[cfg(feature = "washoi")]
     let learned = init
         .learned_routes_file
         .as_ref()
@@ -124,7 +136,8 @@ pub fn run(mut reader: impl BufRead + Send + 'static, writer: &mut impl Write) -
     #[cfg(feature = "washoi")]
     {
         let maps = [
-            init.navigation.as_ref().map(|navigation| navigation.map()),
+            init.washoi_map.as_deref(),
+            navigation.as_ref().map(|navigation| navigation.map()),
             learned.as_ref().map(|learned| learned.map()),
             sight.as_ref().map(|sight| sight.map()),
         ];
@@ -137,7 +150,7 @@ pub fn run(mut reader: impl BufRead + Send + 'static, writer: &mut impl Write) -
     }
 
     #[cfg(feature = "washoi")]
-    if let Some(navigation) = &init.navigation {
+    if let Some(navigation) = &navigation {
         navigation
             .validate_learned_links(learned.as_ref())
             .map_err(invalid)?;
@@ -162,7 +175,7 @@ pub fn run(mut reader: impl BufRead + Send + 'static, writer: &mut impl Write) -
             writer,
             endpoint,
             washoi::MapAssets {
-                navigation: init.navigation,
+                navigation,
                 learned,
                 sight,
             },

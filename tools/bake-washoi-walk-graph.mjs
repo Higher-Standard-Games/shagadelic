@@ -3,6 +3,11 @@ import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
 const args = process.argv.slice(2).filter((arg) => arg !== "--");
+const MAX_NODES = 1024;
+const MAX_ENTRIES = 64;
+const MAX_EDGES = 32768;
+const MAX_CORNERS = 32;
+const MAX_FILE_BYTES = 4 * 1024 * 1024;
 const learnedOption = args.indexOf("--learned");
 const learnedFile = learnedOption < 0 ? undefined : args.splice(learnedOption, 2)[1];
 const fromCache = args[0] === "--shag-cache";
@@ -68,7 +73,7 @@ async function authoredGraph(routes) {
       learned.set(goal, id);
     }
   }
-  if (nodes.length > 256 || entries.size > 32) throw new Error("Too many navigation nodes or entries");
+  if (nodes.length > MAX_NODES || entries.size > MAX_ENTRIES) throw new Error("Too many navigation nodes or entries");
   const canWalk = await walkTest();
   const edges = [];
   const points = nodes.map(point);
@@ -135,7 +140,7 @@ async function cachedGraph() {
   return { nodes, edges, entries, goals, pickup_goals: pickupGoals };
 }
 
-/** A tenth of a unit keeps a baked map within the 64 KiB control record. */
+/** Keep the navigation file compact with tenth-of-a-unit precision. */
 function rounded(point) {
   return point.map((value) => Math.round(value * 10) / 10);
 }
@@ -167,7 +172,7 @@ async function linkLearned(graph, json) {
   const landings = [];
   const usedIds = new Set(takeoffs.values());
   for (const route of json.routes) {
-    if (landings.length >= 16 || graph.nodes.length > 254) break;
+    if (landings.length >= 16 || graph.nodes.length + 2 > MAX_NODES) break;
     const start = coordinates(route.start);
     const end = coordinates(route.landing);
     if (typeof route.id !== "string" || !route.id.trim() || ![...start, ...end].every(Number.isFinite)) {
@@ -197,11 +202,16 @@ const graph = {
   ...(await (fromCache ? cachedGraph() : authoredGraph(data.routes))),
 };
 if (learnedFile) await linkLearned(graph, JSON.parse(await readFile(learnedFile, "utf8")));
-if (graph.nodes.length > 256 || graph.entries.length > 32) throw new Error("Too many navigation nodes or entries");
+if (graph.nodes.length > MAX_NODES || graph.entries.length > MAX_ENTRIES || graph.edges.length > MAX_EDGES) {
+  throw new Error("Too many navigation nodes, entries, or edges");
+}
+if (graph.edges.some((edge) => (edge[2]?.length ?? 0) > MAX_CORNERS)) {
+  throw new Error("Too many corners on a navigation edge");
+}
 const result = JSON.stringify({ map: data.map, graph });
 if (!graph.edges.length || !graph.entries.length || !graph.goals.length) {
   throw new Error("The graph needs walk edges, entry points, and goals");
 }
-if (Buffer.byteLength(result) > 60 * 1024) throw new Error("The graph is too large for an initialization record");
+if (Buffer.byteLength(result) + 1 > MAX_FILE_BYTES) throw new Error("The navigation file is too large");
 await writeFile(output, result + "\n");
 console.log(`Wrote ${graph.nodes.length} nodes and ${graph.edges.length} walk edges for ${data.map}`);

@@ -1,4 +1,7 @@
-use std::collections::BTreeMap;
+use std::{
+    cmp::Ordering,
+    collections::{BTreeMap, BinaryHeap},
+};
 
 use serde::Deserialize;
 
@@ -9,10 +12,11 @@ use super::{
     horizontal_distance,
 };
 
-const MAX_NODES: usize = 256;
-const MAX_ENTRIES: usize = 32;
+const MAX_NODES: usize = 1024;
+const MAX_ENTRIES: usize = 64;
+const MAX_EDGES: usize = 32768;
 const ROUTES_PER_ENTRY: usize = 3;
-const MAX_CORNERS: usize = 16;
+const MAX_CORNERS: usize = 32;
 
 /// Intermediate points of a walk edge, from the TypeScript nav cache `via`.
 type Corners = BTreeMap<(usize, usize), Vec<[f64; 3]>>;
@@ -59,6 +63,73 @@ struct PlannedGoal {
     distance: Vec<f32>,
 }
 
+struct Search {
+    queue: BinaryHeap<Visit>,
+    distances: Vec<f64>,
+    predecessor: Vec<Option<usize>>,
+}
+
+impl Search {
+    fn new(count: usize, start: usize) -> Self {
+        let mut distances = vec![f64::INFINITY; count];
+        distances[start] = 0.0;
+        Self {
+            queue: BinaryHeap::from([Visit {
+                node: start,
+                cost: 0.0,
+            }]),
+            distances,
+            predecessor: vec![None; count],
+        }
+    }
+
+    fn next(&mut self) -> Option<usize> {
+        while let Some(visit) = self.queue.pop() {
+            if visit.cost == self.distances[visit.node] {
+                return Some(visit.node);
+            }
+        }
+        None
+    }
+
+    fn extend(&mut self, from: usize, to: usize, travel: f64) {
+        let cost = self.distances[from] + travel;
+        if cost < self.distances[to] {
+            self.distances[to] = cost;
+            self.predecessor[to] = Some(from);
+            self.queue.push(Visit { node: to, cost });
+        }
+    }
+}
+
+struct Visit {
+    node: usize,
+    cost: f64,
+}
+
+impl Ord for Visit {
+    fn cmp(&self, other: &Self) -> Ordering {
+        other
+            .cost
+            .total_cmp(&self.cost)
+            .then_with(|| other.node.cmp(&self.node))
+    }
+}
+
+impl PartialOrd for Visit {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl PartialEq for Visit {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+
+impl Eq for Visit {}
+
 impl Planner {
     fn nearest_entry(&self, position: Vec3) -> Option<usize> {
         self.nodes
@@ -75,22 +146,15 @@ impl Planner {
 
     pub(super) fn plan_to(&self, position: Vec3, target: Vec3, radius: f64) -> Option<Route> {
         let start = self.nearest_entry(position)?;
-        let mut distances = vec![f64::INFINITY; self.nodes.len()];
-        let mut predecessor: Vec<Option<usize>> = vec![None; self.nodes.len()];
-        let mut settled = vec![false; self.nodes.len()];
-        distances[start] = 0.0;
-
-        while let Some(node) = (0..self.nodes.len())
-            .filter(|&node| !settled[node] && distances[node].is_finite())
-            .min_by(|&a, &b| distances[a].total_cmp(&distances[b]))
-        {
+        let mut search = Search::new(self.nodes.len(), start);
+        while let Some(node) = search.next() {
             let [x, y, z] = self.nodes[node];
             if (y - target.y).abs() <= MAX_HEIGHT_DELTA
                 && (x - target.x).hypot(z - target.z) <= radius
             {
                 let mut path = vec![node];
                 let mut current = node;
-                while let Some(previous) = predecessor[current] {
+                while let Some(previous) = search.predecessor[current] {
                     path.push(previous);
                     current = previous;
                 }
@@ -107,13 +171,12 @@ impl Planner {
                     pickup: None,
                 });
             }
-            settled[node] = true;
             for &next in &self.neighbors[node] {
-                let cost = distances[node] + edge_cost(&self.nodes, &self.corners, node, next);
-                if cost < distances[next] {
-                    distances[next] = cost;
-                    predecessor[next] = Some(node);
-                }
+                search.extend(
+                    node,
+                    next,
+                    edge_cost(&self.nodes, &self.corners, node, next),
+                );
             }
         }
         None
@@ -190,6 +253,8 @@ impl WalkGraph {
         if !(2..=MAX_NODES).contains(&count)
             || !(1..=MAX_ENTRIES).contains(&self.entries.len())
             || self.goals.is_empty()
+            || self.goals.len() > count
+            || self.edges.len() > MAX_EDGES
             || self.bsp_sha256.len() != 64
             || !self.bsp_sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
             || !self.nodes.iter().flatten().all(|value| value.is_finite())
@@ -310,30 +375,30 @@ impl WalkGraph {
         corners: &Corners,
         pickup: Option<PickupGoal>,
     ) -> PlannedGoal {
-        let count = self.nodes.len();
-        let mut distance = vec![f64::INFINITY; count];
-        let mut toward = vec![None; count];
-        let mut settled = vec![false; count];
-        distance[goal] = 0.0;
-        while let Some(node) = (0..count)
-            .filter(|&node| !settled[node] && distance[node].is_finite())
-            .min_by(|&a, &b| distance[a].total_cmp(&distance[b]))
-        {
-            settled[node] = true;
+        let mut search = Search::new(self.nodes.len(), goal);
+        while let Some(node) = search.next() {
             for &previous in &reverse[node] {
-                let cost = distance[node] + edge_cost(&self.nodes, corners, previous, node);
-                if cost < distance[previous] {
-                    distance[previous] = cost;
-                    // MAX_NODES keeps node indices within u16.
-                    toward[previous] = Some(node as u16);
-                }
+                search.extend(
+                    node,
+                    previous,
+                    edge_cost(&self.nodes, corners, previous, node),
+                );
             }
         }
         PlannedGoal {
             node: goal,
             pickup,
-            toward,
-            distance: distance.into_iter().map(|value| value as f32).collect(),
+            // MAX_NODES keeps node indices within u16.
+            toward: search
+                .predecessor
+                .into_iter()
+                .map(|node| node.map(|node| node as u16))
+                .collect(),
+            distance: search
+                .distances
+                .into_iter()
+                .map(|value| value as f32)
+                .collect(),
         }
     }
 
@@ -346,14 +411,8 @@ impl WalkGraph {
             pickups,
         } = walk;
         let mut routes = Vec::new();
-        let mut distances = vec![f64::INFINITY; self.nodes.len()];
-        let mut predecessor: Vec<Option<usize>> = vec![None; self.nodes.len()];
-        let mut settled = vec![false; self.nodes.len()];
-        distances[entry] = 0.0;
-        while let Some(node) = (0..self.nodes.len())
-            .filter(|&node| !settled[node] && distances[node].is_finite())
-            .min_by(|&a, &b| distances[a].total_cmp(&distances[b]))
-        {
+        let mut search = Search::new(self.nodes.len(), entry);
+        while let Some(node) = search.next() {
             let is_learned = learned[node].is_some();
             let category_full = if is_learned {
                 resumed_from.is_some()
@@ -371,7 +430,9 @@ impl WalkGraph {
             let allowed = is_learned || areas.allows(entry, node);
             if node != entry && self.goals.contains(&node) && allowed && !category_full {
                 let mut path = vec![node];
-                while let Some(previous) = predecessor[*path.last().expect("path has a node")] {
+                while let Some(previous) =
+                    search.predecessor[*path.last().expect("path has a node")]
+                {
                     path.push(previous);
                 }
                 path.reverse();
@@ -390,13 +451,8 @@ impl WalkGraph {
                     break;
                 }
             }
-            settled[node] = true;
             for &next in &neighbors[node] {
-                let cost = distances[node] + edge_cost(&self.nodes, corners, node, next);
-                if cost < distances[next] {
-                    distances[next] = cost;
-                    predecessor[next] = Some(node);
-                }
+                search.extend(node, next, edge_cost(&self.nodes, corners, node, next));
             }
         }
         routes
