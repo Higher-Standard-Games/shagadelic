@@ -29,8 +29,20 @@ const MIN_STEP_SPEED: f64 = 30.0;
 
 pub(super) struct ObjectiveWalk {
     route: Route,
+    edges: Vec<ObjectiveEdge>,
     next: usize,
     arrival: f64,
+}
+
+struct ObjectiveEdge {
+    nodes: (usize, usize),
+    end: usize,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct ObjectiveRecovery {
+    pub(super) anchor: Option<usize>,
+    pub(super) avoid: Option<(usize, usize)>,
 }
 
 impl ObjectiveWalk {
@@ -42,6 +54,25 @@ impl ObjectiveWalk {
             velocity,
             self.arrival,
         )
+    }
+
+    pub(super) fn blocked_edge(&self) -> Option<ObjectiveRecovery> {
+        let (previous, edge) = self
+            .edges
+            .iter()
+            .scan(0, |previous, edge| {
+                let start = *previous;
+                *previous = edge.end;
+                Some((start, edge))
+            })
+            .find(|&(start, edge)| start < self.next && self.next <= edge.end)?;
+        // Backtracking directly to the start is safe only on the first
+        // straight leg of this edge, before any corners.
+        let anchor = (self.next == previous + 1).then_some(edge.nodes.0);
+        Some(ObjectiveRecovery {
+            anchor,
+            avoid: Some(edge.nodes),
+        })
     }
 }
 
@@ -130,14 +161,16 @@ impl WashoiNavigation {
         position: Vec3,
         target: Vec3,
         radius: f64,
+        recovery: Option<ObjectiveRecovery>,
     ) -> Option<ObjectiveWalk> {
         let arrival = ARRIVAL_RADIUS.min(radius / 2.0);
-        let route = self
-            .planner
-            .as_ref()?
-            .plan_to(position, target, radius - arrival)?;
+        let (route, edges) =
+            self.planner
+                .as_ref()?
+                .plan_to(position, target, radius - arrival, recovery)?;
         Some(ObjectiveWalk {
             route,
+            edges,
             next: 0,
             arrival,
         })

@@ -10,7 +10,7 @@ use tokio::time::Instant;
 
 use super::{
     WashoiNavigation,
-    navigation::ObjectiveWalk,
+    navigation::{ObjectiveRecovery, ObjectiveWalk},
     protocol::{PlayerInput, SnapshotEvent},
 };
 
@@ -20,6 +20,7 @@ const HEIGHT_TOLERANCE: f64 = 40.0;
 const ESCORT_REPLAN_DISTANCE: f64 = 48.0;
 const RETRY: Duration = Duration::from_millis(350);
 const STALL: Duration = Duration::from_millis(850);
+const BLOCKED_FOR: Duration = Duration::from_secs(5);
 
 #[derive(Debug, PartialEq)]
 struct Directive {
@@ -45,6 +46,7 @@ pub(super) struct Orders {
     destination: Option<Vec3>,
     via: usize,
     walk: Option<(Vec3, ObjectiveWalk)>,
+    blocked: Option<(ObjectiveRecovery, Instant)>,
     retry_at: Option<Instant>,
     progress: Option<(Vec3, Instant)>,
 }
@@ -56,7 +58,7 @@ impl Orders {
             .as_ref()
             .is_some_and(|order| order.expires <= f64::from(world.tick))
         {
-            *self = Self::default();
+            self.clear_order();
         }
         let addressed = world.events.iter().rev().find_map(|event| match event {
             SnapshotEvent::AgentDirectives {
@@ -81,7 +83,7 @@ impl Orders {
             let same_route = matches!((&self.directive, &latest), (Some(a), Some((_, b)))
                 if a.id == b.id && a.target == b.target && a.radius == b.radius && a.via == b.via);
             if !same_route {
-                *self = Self::default();
+                self.clear_order();
             }
             if let Some((destination, order)) = latest {
                 self.directive = Some(order);
@@ -93,6 +95,13 @@ impl Orders {
                 .as_ref()
                 .and_then(|order| order.target.position(world, own_entity));
         }
+    }
+
+    fn clear_order(&mut self) {
+        *self = Self {
+            blocked: self.blocked,
+            ..Self::default()
+        };
     }
 
     pub(super) fn input(
@@ -148,14 +157,23 @@ impl Orders {
             if !near(position, previous, 8.0) {
                 self.progress = Some((position, now));
             } else if now - at >= STALL {
+                if let Some(edge) = self.walk.as_ref().and_then(|(_, walk)| walk.blocked_edge()) {
+                    self.blocked = Some((edge, now + BLOCKED_FOR));
+                }
                 self.walk = None;
                 self.progress = None;
                 self.retry_at = Some(now + RETRY);
             }
         }
         if self.walk.is_none() && self.retry_at.is_none_or(|at| now >= at) {
+            let recovery = self.blocked.map(|(mut edge, until)| {
+                if now >= until {
+                    edge.avoid = None;
+                }
+                edge
+            });
             self.walk = navigation
-                .and_then(|map| map.objective_walk(position, target, radius))
+                .and_then(|map| map.objective_walk(position, target, radius, recovery))
                 .map(|walk| (target, walk));
             self.progress = self.walk.as_ref().map(|_| (position, now));
             self.retry_at = Some(now + RETRY);
@@ -484,5 +502,50 @@ mod tests {
                 .input(Some(&navigation), origin, None, start)
                 .is_none()
         );
+    }
+
+    #[test]
+    fn backtracks_to_a_known_node_and_avoids_a_stalled_edge() {
+        let navigation = serde_json::from_str(
+            r#"{"map":"snd","graph":{
+                "bsp_sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                "nodes":[[0,0,0],[200,0,0],[0,0,100]],
+                "edges":[[0,1],[0,2],[2,1]],"entries":[0],"goals":[1]
+            }}"#,
+        )
+        .unwrap();
+        let world = GameState {
+            tick: 1,
+            events: vec![SnapshotEvent::AgentDirectives {
+                entity_id: "bot".into(),
+                directives: json::parse(
+                    r#"[{"id":"site","kind":"move_to",
+                         "target":{"type":"position","position":{"x":200,"y":0,"z":0},"radius":24},
+                         "priority":1,"expiresAtTick":1000,"interrupt":"never"}]"#,
+                )
+                .unwrap(),
+            }],
+            ..GameState::default()
+        };
+        let start = Instant::now();
+        let origin = Vec3::default();
+        let blocked = Vec3::new(80.0, 0.0, 0.0);
+        let mut orders = Orders::default();
+        orders.observe(&world, "bot");
+        for (ms, position, expected) in [
+            (0, origin, Some([1.0, 0.0, 0.0])),
+            (300, blocked, Some([1.0, 0.0, 0.0])),
+            (1200, blocked, None),
+            (1600, blocked, Some([-1.0, 0.0, 0.0])),
+            (1850, origin, Some([0.0, 0.0, 1.0])),
+        ] {
+            let input = orders.input(
+                Some(&navigation),
+                position,
+                None,
+                start + Duration::from_millis(ms),
+            );
+            assert_eq!(input.map(|input| input.direction), expected);
+        }
     }
 }

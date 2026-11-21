@@ -8,8 +8,8 @@ use serde::Deserialize;
 use shagger_shared::net::game_state::Vec3;
 
 use super::{
-    ANCHOR_RADIUS, ARRIVAL_RADIUS, ENTRY_RADIUS, MAX_HEIGHT_DELTA, PickupGoal, Route,
-    horizontal_distance,
+    ANCHOR_RADIUS, ARRIVAL_RADIUS, ENTRY_RADIUS, MAX_HEIGHT_DELTA, ObjectiveEdge,
+    ObjectiveRecovery, PickupGoal, Route, horizontal_distance,
 };
 
 const MAX_NODES: usize = 1024;
@@ -144,8 +144,20 @@ impl Planner {
             .map(|(node, _)| node)
     }
 
-    pub(super) fn plan_to(&self, position: Vec3, target: Vec3, radius: f64) -> Option<Route> {
-        let start = self.nearest_entry(position)?;
+    pub(super) fn plan_to(
+        &self,
+        position: Vec3,
+        target: Vec3,
+        radius: f64,
+        recovery: Option<ObjectiveRecovery>,
+    ) -> Option<(Route, Vec<ObjectiveEdge>)> {
+        let start = self.nearest_entry(position).or_else(|| {
+            let node = recovery?.anchor?;
+            let point = *self.nodes.get(node)?;
+            (horizontal_distance(position, point) <= ANCHOR_RADIUS
+                && (point[1] - position.y).abs() <= MAX_HEIGHT_DELTA)
+                .then_some(node)
+        })?;
         let mut search = Search::new(self.nodes.len(), start);
         while let Some(node) = search.next() {
             let [x, y, z] = self.nodes[node];
@@ -160,18 +172,29 @@ impl Planner {
                 }
                 path.reverse();
                 let mut waypoints = vec![self.nodes[start]];
+                let mut edges = Vec::with_capacity(path.len() - 1);
                 for pair in path.windows(2) {
                     walk_edge(&mut waypoints, &self.nodes, &self.corners, pair[0], pair[1]);
+                    edges.push(ObjectiveEdge {
+                        nodes: (pair[0], pair[1]),
+                        end: waypoints.len() - 1,
+                    });
                 }
-                return Some(Route {
-                    entry: self.nodes[start],
-                    waypoints,
-                    learned_route: None,
-                    resumed_from: None,
-                    pickup: None,
-                });
+                return Some((
+                    Route {
+                        entry: self.nodes[start],
+                        waypoints,
+                        learned_route: None,
+                        resumed_from: None,
+                        pickup: None,
+                    },
+                    edges,
+                ));
             }
             for &next in &self.neighbors[node] {
+                if recovery.and_then(|edge| edge.avoid) == Some((node, next)) {
+                    continue;
+                }
                 search.extend(
                     node,
                     next,
