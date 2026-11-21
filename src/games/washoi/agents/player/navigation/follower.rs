@@ -6,7 +6,7 @@ use shagger_shared::net::game_state::{Vec3, Velocity};
 
 use crate::games::washoi::agents::player::navigation::traversal::{Outcome, Traversal};
 use crate::games::washoi::agents::player::navigation::{
-    MAX_HEIGHT_DELTA, PlayerInput, Route, WashoiNavigation, horizontal_distance,
+    MAX_HEIGHT_DELTA, PlayerInput, Route, WashoiNavigation, horizontal_distance, local_walk,
     sprint_on_long_legs,
 };
 use crate::games::washoi::{Difficulty, Sight, agents::player::strategy::goals::OwnVitals};
@@ -175,6 +175,59 @@ impl RouteFollower {
                 self.active = None;
             }
         }
+    }
+
+    /// The heading of the route ahead when it is a lane to slide down,
+    /// after TypeScript `BotTraversal.laneOpen`: the next 520 units of the
+    /// walk stay within 64 units of the line to the next waypoint, widening
+    /// past 320, with no maneuver or change of floor on the way, and a
+    /// straight 320-unit run along it is walkable.
+    pub(in crate::games::washoi) fn slide_lane(
+        &self,
+        navigation: &WashoiNavigation,
+        position: Vec3,
+        sight: Option<&Sight>,
+    ) -> Option<f64> {
+        const RUN: f64 = 320.0;
+        const REACH: f64 = 520.0;
+        const LANE: f64 = 64.0;
+        let sight = sight?;
+        let active = self.active.as_ref()?;
+        if self.exact || active.traversal.is_some() {
+            return None;
+        }
+        let route = active.route.get(navigation);
+        let first = *route.waypoints.get(active.next)?;
+        let (dx, dz) = (first[0] - position.x, first[2] - position.z);
+        let length = dx.hypot(dz);
+        if length < 1.0 {
+            return None;
+        }
+        let (dx, dz) = (dx / length, dz / length);
+        for next in active.next..route.waypoints.len() {
+            let [x, y, z] = route.waypoints[next];
+            let along = (x - position.x) * dx + (z - position.z) * dz;
+            if along >= REACH {
+                break;
+            }
+            let lateral = ((x - position.x) * dz - (z - position.z) * dx).abs();
+            if lateral > LANE + (along - RUN).max(0.0)
+                || route.maneuver_at(next).is_some()
+                || (y - position.y).abs() > MAX_HEIGHT_DELTA
+            {
+                return None;
+            }
+        }
+        let ahead = |distance: f64| {
+            Vec3::new(
+                position.x + dx * distance,
+                position.y,
+                position.z + dz * distance,
+            )
+        };
+        let middle = ahead(RUN / 2.0);
+        (local_walk(sight, position, middle) && local_walk(sight, middle, ahead(RUN)))
+            .then(|| dx.atan2(dz))
     }
 
     pub(in crate::games::washoi) fn traversing(&self) -> bool {

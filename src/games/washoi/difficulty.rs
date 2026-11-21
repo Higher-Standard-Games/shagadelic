@@ -82,6 +82,16 @@ impl Difficulty {
         }
     }
 
+    /// `strafeJumpSkill`, as the route slide's jump cancel reads it.
+    pub(in crate::games::washoi) fn strafe_jump_skill(self) -> f64 {
+        match self {
+            Self::Easy => 0.1,
+            Self::Medium => 0.4,
+            Self::Hard => 0.7,
+            Self::Insane => 0.9,
+        }
+    }
+
     /// How far off a remembered take time may be, from `itemTimingSkill`
     /// as `BotPerception._believeItems` scales it.
     pub(in crate::games::washoi) fn item_timing_error(self) -> std::time::Duration {

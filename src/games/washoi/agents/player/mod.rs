@@ -33,6 +33,7 @@ use crate::games::washoi::agents::player::movement::strafe::{self, Body, CombatM
 use crate::games::washoi::agents::player::movement::territory::Territory;
 use crate::games::washoi::agents::player::navigation::{
     RouteFollower, RouteObservation,
+    slide::{RouteSlide, SlideView},
     unstick::{Unstick, UnstickView},
 };
 use crate::games::washoi::agents::player::strategy::candidates::{Candidate, GoalTarget};
@@ -114,6 +115,7 @@ pub struct BotPlayer {
     /// Whether the last decision had a fight, to see fights start and end.
     fighting: bool,
     unstick: Unstick,
+    slide: RouteSlide,
     /// A ledge to fight from with a splash weapon, and the walk there.
     high_ground: HighGround,
     climb: Chase,
@@ -251,6 +253,7 @@ impl BotPlayer {
                 .is_ok_and(|mode| mode == "verbose"),
             last_goal: None,
             pair_costs: std::collections::HashMap::new(),
+            slide: RouteSlide::default(),
             high_ground: HighGround::default(),
             climb: Chase::default(),
             ordered: false,
@@ -1087,8 +1090,23 @@ impl BotPlayer {
                     },
                 );
                 if self.route.exact() {
+                    self.slide.reset();
                     return true;
                 }
+                // Fast down a straight, plain walk, crouch-slide
+                // (`navigation::slide`). A fight's movement replaces it.
+                let lane = self
+                    .route
+                    .slide_lane(navigation, position, self.sight.as_deref());
+                self.planned_input = self.slide.filter(
+                    &SlideView {
+                        tick: world.tick,
+                        velocity: own.and_then(|entity| entity.velocity),
+                        lane,
+                        strafe_jump_skill: self.difficulty.strafe_jump_skill(),
+                    },
+                    self.planned_input,
+                );
                 if let Some(library) = &self.learned
                     && let Some(id) = self.route.takeoff(navigation)
                     && self.traversal.begin_approach(library, id, position, now)
