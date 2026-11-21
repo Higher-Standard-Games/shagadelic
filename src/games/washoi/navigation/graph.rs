@@ -13,6 +13,8 @@ pub(super) struct WalkGraph {
     edges: Vec<[usize; 2]>,
     entries: Vec<usize>,
     goals: Vec<usize>,
+    #[serde(default)]
+    learned_goals: Vec<(usize, String)>,
 }
 
 impl WalkGraph {
@@ -33,6 +35,13 @@ impl WalkGraph {
             return Err("invalid navigation graph nodes, anchors or BSP hash");
         }
         let mut neighbors = vec![Vec::new(); count];
+        let mut learned = vec![None; count];
+        for (goal, id) in &self.learned_goals {
+            if !self.goals.contains(goal) || id.trim().is_empty() || learned[*goal].is_some() {
+                return Err("invalid or duplicate learned goal");
+            }
+            learned[*goal] = Some(id.as_str());
+        }
         for [from, to] in self.edges.iter().copied() {
             if from >= count || to >= count || from == to {
                 return Err("invalid navigation graph edge");
@@ -47,7 +56,7 @@ impl WalkGraph {
         let routes: Vec<_> = self
             .entries
             .iter()
-            .flat_map(|&entry| self.routes_from(entry, &neighbors))
+            .flat_map(|&entry| self.routes_from(entry, &neighbors, &learned))
             .collect();
         if routes.is_empty() {
             return Err("navigation graph has no reachable goals");
@@ -55,7 +64,12 @@ impl WalkGraph {
         Ok(routes)
     }
 
-    fn routes_from(&self, entry: usize, neighbors: &[Vec<usize>]) -> Vec<Route> {
+    fn routes_from(
+        &self,
+        entry: usize,
+        neighbors: &[Vec<usize>],
+        learned: &[Option<&str>],
+    ) -> Vec<Route> {
         let mut routes = Vec::new();
         let mut distances = vec![f64::INFINITY; self.nodes.len()];
         let mut predecessor: Vec<Option<usize>> = vec![None; self.nodes.len()];
@@ -76,6 +90,7 @@ impl WalkGraph {
                 routes.push(Route {
                     entry: self.nodes[entry],
                     waypoints,
+                    learned_route: learned[node].map(str::to_owned),
                 });
                 if routes.len() == ROUTES_PER_ENTRY {
                     break;

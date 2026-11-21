@@ -26,6 +26,7 @@ pub struct BotPlayer {
     planned_input: PlayerInput,
     learned: Option<Arc<LearnedRoutes>>,
     traversal: Traversal,
+    linked_takeoffs: bool,
 }
 
 impl BotPlayer {
@@ -41,6 +42,7 @@ impl BotPlayer {
             route: RouteFollower::default(),
             learned: None,
             traversal: Traversal::default(),
+            linked_takeoffs: false,
             planned_input: PlayerInput {
                 direction: [0.0, 0.0, 1.0],
                 ..PlayerInput::default()
@@ -61,6 +63,7 @@ impl BotPlayer {
     }
 
     pub fn with_navigation(mut self, navigation: Arc<WashoiNavigation>) -> Self {
+        self.linked_takeoffs = navigation.has_learned_links();
         self.navigation = Some(navigation);
         self.planned_input = PlayerInput::default();
         self
@@ -94,7 +97,12 @@ impl BotPlayer {
         } else if let Some(library) = &self.learned
             && let Some(entity) = own
         {
-            self.traversal.observe(library, entity, now);
+            if let Some(input) = self.traversal.approach(library, entity, now) {
+                self.planned_input = input;
+                return;
+            }
+            self.traversal
+                .observe(library, entity, now, !self.linked_takeoffs);
             if self.traversal.active() {
                 self.planned_input = PlayerInput::default();
                 self.route = RouteFollower::default();
@@ -110,6 +118,11 @@ impl BotPlayer {
                     .all(f64::is_finite)
             {
                 self.planned_input = self.route.steer(navigation, position, now);
+                if let Some(library) = &self.learned
+                    && let Some(id) = self.route.takeoff(navigation)
+                {
+                    self.traversal.begin_approach(library, id, position, now);
+                }
             }
         }
     }

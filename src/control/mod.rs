@@ -119,6 +119,13 @@ pub fn run(mut reader: impl BufRead + Send + 'static, writer: &mut impl Write) -
         ));
     }
 
+    #[cfg(feature = "washoi")]
+    if let Some(navigation) = &init.navigation {
+        navigation
+            .validate_learned_links(learned.as_ref())
+            .map_err(invalid)?;
+    }
+
     emit(
         writer,
         &Event::Ready {

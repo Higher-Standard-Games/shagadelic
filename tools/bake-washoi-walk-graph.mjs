@@ -32,13 +32,22 @@ async function authoredGraph(routes) {
   }
   const entries = new Set();
   const goals = new Set();
+  const learned = new Map();
   for (const route of routes) {
     if (!Array.isArray(route.waypoints) || !route.waypoints.length) {
       throw new Error("Each route needs at least one waypoint");
     }
     entries.add(node(route.entry));
     for (const point of route.waypoints) node(point);
-    goals.add(node(route.waypoints.at(-1)));
+    const goal = node(route.waypoints.at(-1));
+    goals.add(goal);
+    if (route.learned_route !== undefined) {
+      const id = route.learned_route;
+      if (typeof id !== "string" || !id.trim() || (learned.has(goal) && learned.get(goal) !== id)) {
+        throw new Error("The waypoint needs one valid learned route ID");
+      }
+      learned.set(goal, id);
+    }
   }
   if (nodes.length > 256 || entries.size > 32) throw new Error("Too many navigation nodes or entries");
   const { BotVision } = await import(resolve("src/games/fps/bot/BotVision.ts"));
@@ -63,7 +72,10 @@ async function authoredGraph(routes) {
       if (vision.isWalkable(origin, target)) edges.push([from, to]);
     }
   }
-  return { nodes, edges, entries: [...entries], goals: [...goals] };
+  return {
+    nodes, edges, entries: [...entries], goals: [...goals],
+    ...(learned.size ? { learned_goals: [...learned] } : {}),
+  };
 }
 
 async function cachedGraph() {

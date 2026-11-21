@@ -37,6 +37,17 @@ pub(in crate::games::washoi) struct RouteFollower {
 }
 
 impl RouteFollower {
+    pub(in crate::games::washoi) fn takeoff<'a>(
+        &self,
+        navigation: &'a WashoiNavigation,
+    ) -> Option<&'a str> {
+        let active = self.active.as_ref()?;
+        let route = &navigation.routes[active.index];
+        (active.next >= route.waypoints.len() - 1)
+            .then_some(route.learned_route.as_deref())
+            .flatten()
+    }
+
     pub(in crate::games::washoi) fn steer(
         &mut self,
         navigation: &WashoiNavigation,

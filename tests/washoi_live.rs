@@ -17,6 +17,9 @@ async fn washoi_replays_the_existing_learned_route() {
     let raw: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
     let route = &raw["routes"][0];
+    let start = &route["start"];
+    let [start_x, start_y, start_z] = ["x", "y", "z"].map(|axis| start[axis].as_f64().unwrap());
+    let approach = std::env::var_os("SHAGADELIC_TEST_WASHOI_APPROACH").is_some();
     let landing = &route["landing"];
     let coordinate = |axis| landing[axis].as_f64().unwrap();
     let [x, y, z] = [coordinate("x"), coordinate("y"), coordinate("z")];
@@ -35,31 +38,56 @@ async fn washoi_replays_the_existing_learned_route() {
     .unwrap();
     assert_eq!(connection.welcome.as_ref().unwrap().map, library.map());
     let entity = connection.identity.entity_id.clone();
+    let mut bot = BotPlayer::new(entity.clone()).with_learned_routes(library.clone());
+    if approach {
+        let authored = serde_json::json!({
+            "map":library.map(),
+            "routes":[{
+                "entry":[start_x,start_y,start_z + 48.0],
+                "waypoints":[[start_x,start_y,start_z]],
+                "learned_route":route["id"],
+            }],
+        });
+        let navigation: WashoiNavigation =
+            match std::env::var_os("SHAGADELIC_TEST_WASHOI_WALK_GRAPH") {
+                Some(path) => {
+                    serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+                }
+                None => serde_json::from_value(authored).unwrap(),
+            };
+        navigation.validate_learned_links(Some(&library)).unwrap();
+        bot = bot.with_navigation(Arc::new(navigation));
+    }
     let mut landed = false;
     let mut last = None;
+    let mut saw_offset_spawn = false;
     let result = tokio::time::timeout(
         deadline,
-        connection.play(
-            BotPlayer::new(entity.clone()).with_learned_routes(library),
-            |state| {
-                if let Some(entity) = state.entities.get(&entity)
-                    && let (Some(position), Some(velocity)) = (entity.position, entity.velocity)
-                {
-                    last = Some((position, state.acked_input_seq));
-                    landed = u64::from(state.acked_input_seq) + 1 >= ticks
-                        && velocity.grounded
-                        && (position.x - x).hypot(position.z - z) <= 64.0
-                        && (position.y - y).abs() <= 48.0;
+        connection.play(bot, |state| {
+            if let Some(entity) = state.entities.get(&entity)
+                && let (Some(position), Some(velocity)) = (entity.position, entity.velocity)
+            {
+                if last.is_none() {
+                    saw_offset_spawn = (position.x - start_x).hypot(position.z - start_z) > 32.0;
                 }
-                !landed
-            },
-        ),
+                last = Some((position, state.acked_input_seq));
+                landed = u64::from(state.acked_input_seq) + 1 >= ticks
+                    && velocity.grounded
+                    && (position.x - x).hypot(position.z - z) <= 64.0
+                    && (position.y - y).abs() <= 48.0;
+            }
+            !landed
+        }),
     )
     .await;
     assert!(
         landed,
         "no learned landing near {:?}, last {last:?}: {result:?}",
         [x, y, z]
+    );
+    assert!(
+        !approach || saw_offset_spawn,
+        "fixture did not start the bot away from takeoff"
     );
 }
 

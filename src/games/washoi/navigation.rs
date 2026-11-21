@@ -32,6 +32,7 @@ struct RouteFile {
 struct Route {
     entry: [f64; 3],
     waypoints: Vec<[f64; 3]>,
+    learned_route: Option<String>,
 }
 
 impl TryFrom<RouteFile> for WashoiNavigation {
@@ -66,6 +67,29 @@ impl TryFrom<RouteFile> for WashoiNavigation {
 impl WashoiNavigation {
     pub fn map(&self) -> &str {
         &self.map
+    }
+
+    pub(super) fn has_learned_links(&self) -> bool {
+        self.routes
+            .iter()
+            .any(|route| route.learned_route.is_some())
+    }
+
+    pub fn validate_learned_links(
+        &self,
+        library: Option<&super::LearnedRoutes>,
+    ) -> Result<(), &'static str> {
+        for route in &self.routes {
+            if let Some(id) = &route.learned_route
+                && !library.is_some_and(|library| {
+                    let [x, y, z] = *route.waypoints.last().expect("validated route");
+                    library.matches_takeoff(id, Vec3::new(x, y, z))
+                })
+            {
+                return Err("learned route link must end near a known takeoff");
+            }
+        }
+        Ok(())
     }
 
     fn route_at(&self, position: Vec3, allowed: impl Fn(&Route) -> bool) -> Option<usize> {
