@@ -109,6 +109,7 @@ impl Connection<WashoiEvents> {
         mut pulses: impl Stream<Item = ()> + Unpin,
     ) -> Result<(), AdmissionError> {
         use tokio::time::Instant;
+        let mut keys = super::keys::MovementKeys::default();
 
         loop {
             tokio::select! {
@@ -137,7 +138,12 @@ impl Connection<WashoiEvents> {
                     if bot.request_respawn(now) {
                         self.socket.send(Message::binary(encode_request_spawn())).await?;
                     }
+                    let exact = bot.uses_exact_movement();
+                    if exact {
+                        keys = super::keys::MovementKeys::default();
+                    }
                     for input in bot.inputs(now) {
+                        let input = if exact { input } else { keys.apply(input) };
                         self.send_input(input).await?;
                     }
                 }

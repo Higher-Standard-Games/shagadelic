@@ -137,6 +137,8 @@ The first playable behavior can choose a simple movement plan and exercise the i
 
 ## Behavior and skills
 
+**Virtual movement keys.** Ordinary bot steering selects forward, back, strafe, or a diagonal in the sent view's coordinate frame. Each client holds a chord for at least three logical input ticks through small turns. Stops and reversals take effect immediately. The encoder produces the world-space direction and movement button bits from the same keys and preserves the other action bits. Precise takeoff approaches and recorded traversal keep their existing command directions and timing.
+
 Keep these three inputs to decision-making distinct.
 
 | Concept | Washoi examples |

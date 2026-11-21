@@ -3,6 +3,7 @@
 mod admission;
 mod connection;
 mod events;
+mod keys;
 mod snapshot;
 
 pub use admission::{Admission, AdmissionEvent};

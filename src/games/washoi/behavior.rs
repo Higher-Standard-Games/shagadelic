@@ -79,6 +79,10 @@ impl BotPlayer {
         self.traversal.landing_result()
     }
 
+    pub(crate) fn uses_exact_movement(&self) -> bool {
+        self.traversal.active() || matches!(self.traversal, Traversal::Approaching { .. })
+    }
+
     pub fn with_navigation(mut self, navigation: Arc<WashoiNavigation>) -> Self {
         self.linked_takeoffs = navigation.has_learned_links();
         self.navigation = Some(navigation);
