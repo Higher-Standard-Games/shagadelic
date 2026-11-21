@@ -15,9 +15,12 @@ const MAX_BLOCKS: usize = 16;
 const LOCAL_PICKUP_RADIUS: f64 = 24.0;
 // Washoi takes a beneficial item on the first tick a player overlaps it. An
 // item that stays after this wait is one the bot can't take, such as full
-// ammo or a new weapon that needs USE to swap.
-const PICKUP_DWELL: Duration = Duration::from_millis(400);
+// ammo or a new weapon that needs USE to swap. A bot at a plain goal also
+// waits this long before choosing its next one.
+const ARRIVAL_DWELL: Duration = Duration::from_millis(400);
 const DECLINED_PICKUP: Duration = Duration::from_secs(15);
+// Planning visits every goal, so a bot with nowhere to go retries slowly.
+const REPLAN_DELAY: Duration = Duration::from_millis(250);
 
 #[derive(Clone, Copy)]
 pub(in crate::games::washoi) struct RouteObservation<'a> {
@@ -41,8 +44,22 @@ struct Progress {
     updated: Instant,
 }
 
+enum RouteSlot {
+    Shared(usize),
+    Planned(Box<Route>),
+}
+
+impl RouteSlot {
+    fn get<'a>(&'a self, navigation: &'a WashoiNavigation) -> &'a Route {
+        match self {
+            Self::Shared(index) => &navigation.routes[*index],
+            Self::Planned(route) => route,
+        }
+    }
+}
+
 struct ActiveRoute {
-    index: usize,
+    route: RouteSlot,
     next: usize,
     progress: Option<Progress>,
     arrived: Option<Instant>,
@@ -54,6 +71,7 @@ pub(in crate::games::washoi) struct RouteFollower {
     last_position: Option<Vec3>,
     blocked: Vec<(Leg, Instant)>,
     pickup_unavailable: BTreeMap<usize, Instant>,
+    replan_at: Option<Instant>,
 }
 
 impl RouteFollower {
@@ -63,14 +81,15 @@ impl RouteFollower {
     pub(in crate::games::washoi) fn detach(&mut self) {
         self.active = None;
         self.last_position = None;
+        self.replan_at = None;
     }
 
     pub(in crate::games::washoi) fn takeoff<'a>(
-        &self,
+        &'a self,
         navigation: &'a WashoiNavigation,
     ) -> Option<&'a str> {
         let active = self.active.as_ref()?;
-        let route = &navigation.routes[active.index];
+        let route = active.route.get(navigation);
         (active.next >= route.waypoints.len() - 1)
             .then_some(route.learned_route.as_deref())
             .flatten()
@@ -118,7 +137,20 @@ impl RouteFollower {
                     route.resumed_from.as_deref() == Some(id) && unblocked(route)
                 })
             });
-            let Some(index) = continued.or_else(|| {
+            let score = |route: &Route| {
+                route.pickup.map_or(0.0, |pickup| {
+                    let travel = route
+                        .waypoints
+                        .iter()
+                        .fold((route.entry, 0.0), |(from, total), &to| {
+                            let distance = (to[0] - from[0]).hypot(to[2] - from[2]);
+                            (to, total + distance)
+                        })
+                        .1;
+                    pickup.value(vitals, difficulty) / (1.0 + travel / 512.0)
+                })
+            };
+            let shared = continued.or_else(|| {
                 navigation.select_route(
                     position,
                     |route| {
@@ -126,64 +158,75 @@ impl RouteFollower {
                             && (allow_takeoff || route.learned_route.is_none())
                             && unblocked(route)
                     },
-                    |route| {
-                        route.pickup.map_or(0.0, |pickup| {
-                            let travel = route
-                                .waypoints
-                                .iter()
-                                .fold((route.entry, 0.0), |(from, total), &to| {
-                                    let distance = (to[0] - from[0]).hypot(to[2] - from[2]);
-                                    (to, total + distance)
-                                })
-                                .1;
-                            pickup.value(vitals, difficulty) / (1.0 + travel / 512.0)
-                        })
-                    },
+                    score,
                 )
-            }) else {
-                return PlayerInput::default();
+            });
+            let route = match shared {
+                Some(index) => RouteSlot::Shared(index),
+                None => {
+                    if self.replan_at.is_some_and(|at| now < at) {
+                        return PlayerInput::default();
+                    }
+                    let Some(route) = navigation.plan(position, unblocked, score) else {
+                        self.replan_at = Some(now + REPLAN_DELAY);
+                        return PlayerInput::default();
+                    };
+                    RouteSlot::Planned(Box::new(route))
+                }
             };
+            self.replan_at = None;
             self.active = Some(ActiveRoute {
-                index,
+                route,
                 next: 0,
                 progress: None,
                 arrived: None,
             });
         }
 
-        let active = self.active.as_mut().expect("route selected");
-        let input = navigation.steer(active.index, &mut active.next, position);
-        let route = &navigation.routes[active.index];
-        let Some(&goal) = route.waypoints.get(active.next) else {
+        let ActiveRoute {
+            route,
+            next,
+            progress,
+            arrived,
+        } = self.active.as_mut().expect("route selected");
+        let route = route.get(navigation);
+        let input = WashoiNavigation::steer(route, next, position);
+        let Some(&goal) = route.waypoints.get(*next) else {
+            let Some(&target) = route.waypoints.last() else {
+                return input;
+            };
+            if horizontal_distance(position, target) > LOCAL_PICKUP_RADIUS
+                || (target[1] - position.y).abs() > LOCAL_PICKUP_RADIUS
+            {
+                return input;
+            }
             // Learn availability only at the end of a route within pickup
             // range. The server's full-map mask is broader than bot knowledge.
-            if let Some(pickup) = route.pickup
-                && let Some(&target) = route.waypoints.last()
-                && horizontal_distance(position, target) <= LOCAL_PICKUP_RADIUS
-                && (target[1] - position.y).abs() <= LOCAL_PICKUP_RADIUS
-            {
-                let recheck = if pickup_active.get(pickup.id) == Some(&false) {
-                    Some(difficulty.pickup_recheck())
-                } else {
-                    let arrived = *active.arrived.get_or_insert(now);
-                    (now - arrived >= PICKUP_DWELL).then_some(DECLINED_PICKUP)
-                };
-                if let Some(recheck) = recheck {
-                    self.pickup_unavailable.insert(pickup.id, now + recheck);
-                    self.active = None;
-                }
+            let taken = route
+                .pickup
+                .filter(|pickup| pickup_active.get(pickup.id) == Some(&false));
+            let waited = now - *arrived.get_or_insert(now) >= ARRIVAL_DWELL;
+            if let Some(pickup) = taken {
+                self.pickup_unavailable
+                    .insert(pickup.id, now + difficulty.pickup_recheck());
+            } else if waited && let Some(pickup) = route.pickup {
+                self.pickup_unavailable
+                    .insert(pickup.id, now + DECLINED_PICKUP);
+            }
+            if taken.is_some() || waited {
+                self.active = None;
             }
             return input;
         };
         let distance = horizontal_distance(position, goal);
-        let progress = active.progress.get_or_insert(Progress {
-            next: active.next,
+        let progress = progress.get_or_insert(Progress {
+            next: *next,
             distance,
             updated: now,
         });
-        if active.next != progress.next || distance + MIN_PROGRESS <= progress.distance {
+        if *next != progress.next || distance + MIN_PROGRESS <= progress.distance {
             *progress = Progress {
-                next: active.next,
+                next: *next,
                 distance,
                 updated: now,
             };
@@ -192,8 +235,7 @@ impl RouteFollower {
             if self.blocked.len() == MAX_BLOCKS {
                 self.blocked.remove(0);
             }
-            self.blocked
-                .push((route.leg(active.next), now + RETRY_DELAY));
+            self.blocked.push((route.leg(*next), now + RETRY_DELAY));
             self.active = None;
             // Leave a neutral update between abandoning one segment and
             // driving toward a new anchor.
@@ -321,7 +363,7 @@ mod tests {
             follower.steer(&nav, weapon, observation(now)).direction,
             [0.0; 3]
         );
-        let waited = now + PICKUP_DWELL;
+        let waited = now + ARRIVAL_DWELL;
         assert_eq!(
             follower.steer(&nav, weapon, observation(waited)).direction,
             [0.0; 3]
@@ -363,18 +405,83 @@ mod tests {
             [0.0, 0.0, 1.0]
         );
         let landing = Vec3::new(200.0, 0.0, 200.0);
+        let slot = |follower: &RouteFollower| {
+            matches!(
+                follower.active.as_ref().map(|active| &active.route),
+                Some(RouteSlot::Shared(_))
+            )
+        };
+        // Another recording's landing doesn't take the baked continuation,
+        // but the bot still plans a walk from the nearest graph node.
         assert_eq!(
             follower
                 .steer(&graph, landing, observe(now, false, Some("other")))
                 .direction,
-            [0.0; 3]
+            [-1.0, 0.0, 0.0]
         );
+        assert!(!slot(&follower));
+        follower.detach();
         assert_eq!(
             follower
                 .steer(&graph, landing, observe(now, false, Some("jump")))
                 .direction,
             [-1.0, 0.0, 0.0]
         );
+        assert!(slot(&follower));
+    }
+
+    #[test]
+    fn replans_from_any_graph_node_and_moves_on_from_a_plain_goal() {
+        let graph: WashoiNavigation = serde_json::from_str(
+            r#"{
+            "map":"test","graph":{
+                "bsp_sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                "nodes":[[0,0,0],[200,0,0],[200,0,200],[0,0,200]],
+                "edges":[[0,1],[1,2],[2,3],[3,0]],"entries":[0],"goals":[2,3]
+            }
+        }"#,
+        )
+        .unwrap();
+        let now = Instant::now();
+        let mut follower = RouteFollower::default();
+        // Node 1 isn't an entry, so only the planner can start here. The
+        // nearer goal wins when neither holds a pickup.
+        let side = Vec3::new(200.0, 0.0, 0.0);
+        assert_eq!(
+            follower
+                .steer(&graph, side, observe(now, false, None))
+                .direction,
+            [0.0, 0.0, 1.0]
+        );
+        let goal = Vec3::new(200.0, 0.0, 200.0);
+        let at_goal = |now| observe(now, false, None);
+        let halfway = Vec3::new(200.0, 0.0, 100.0);
+        assert_eq!(
+            follower.steer(&graph, halfway, at_goal(now)).direction,
+            [0.0, 0.0, 1.0]
+        );
+        assert_eq!(
+            follower.steer(&graph, goal, at_goal(now)).direction,
+            [0.0; 3]
+        );
+        let waited = now + ARRIVAL_DWELL;
+        assert_eq!(
+            follower.steer(&graph, goal, at_goal(waited)).direction,
+            [0.0; 3]
+        );
+        assert_eq!(
+            follower.steer(&graph, goal, at_goal(waited)).direction,
+            [-1.0, 0.0, 0.0]
+        );
+
+        // Away from every node, the bot waits before planning again.
+        let mut lost = RouteFollower::default();
+        let nowhere = Vec3::new(100.0, 0.0, 100.0);
+        assert_eq!(
+            lost.steer(&graph, nowhere, at_goal(now)).direction,
+            [0.0; 3]
+        );
+        assert!(lost.replan_at.is_some_and(|at| at > now));
     }
 
     #[test]

@@ -18,6 +18,7 @@ const MAX_HEIGHT_DELTA: f64 = 40.0;
 pub struct WashoiNavigation {
     map: String,
     routes: Vec<Route>,
+    planner: Option<graph::Planner>,
 }
 
 #[derive(Deserialize)]
@@ -43,10 +44,13 @@ impl TryFrom<RouteFile> for WashoiNavigation {
     type Error = &'static str;
 
     fn try_from(file: RouteFile) -> Result<Self, Self::Error> {
-        let routes = match file.graph {
-            Some(graph) if file.routes.is_empty() => graph.routes()?,
+        let (routes, planner) = match file.graph {
+            Some(graph) if file.routes.is_empty() => {
+                let (routes, planner) = graph.routes()?;
+                (routes, Some(planner))
+            }
             Some(_) => return Err("configure authored routes or a graph"),
-            None => file.routes,
+            None => (file.routes, None),
         };
         if file.map.trim().is_empty() || routes.is_empty() {
             return Err("navigation needs a map and at least one route");
@@ -64,6 +68,7 @@ impl TryFrom<RouteFile> for WashoiNavigation {
         Ok(Self {
             map: file.map,
             routes,
+            planner,
         })
     }
 }
@@ -104,6 +109,17 @@ impl WashoiNavigation {
         Ok(())
     }
 
+    /// Plan from the nearest graph node when no precomputed route attaches.
+    /// Authored route files have no graph to plan over.
+    fn plan(
+        &self,
+        position: Vec3,
+        accept: impl Fn(&Route) -> bool,
+        score: impl Fn(&Route) -> f64,
+    ) -> Option<Route> {
+        self.planner.as_ref()?.plan(position, accept, score)
+    }
+
     fn route_at(&self, position: Vec3, allowed: impl Fn(&Route) -> bool) -> Option<usize> {
         self.select_route(position, allowed, |_| 0.0)
     }
@@ -139,8 +155,8 @@ impl WashoiNavigation {
             .map(|(index, _, _)| index)
     }
 
-    pub(super) fn steer(&self, route: usize, next: &mut usize, position: Vec3) -> PlayerInput {
-        let waypoints = &self.routes[route].waypoints;
+    fn steer(route: &Route, next: &mut usize, position: Vec3) -> PlayerInput {
+        let waypoints = &route.waypoints;
         while let Some(&waypoint) = waypoints.get(*next) {
             if (waypoint[1] - position.y).abs() > MAX_HEIGHT_DELTA {
                 break;
@@ -204,20 +220,17 @@ mod tests {
         assert_eq!(routes.route_at(Vec3::new(100.0, 0.0, 0.0), |_| true), None);
         let mut next = 0;
         assert_eq!(
-            routes
-                .steer(route, &mut next, Vec3::new(0.0, 0.0, 0.0))
+            WashoiNavigation::steer(&routes.routes[route], &mut next, Vec3::new(0.0, 0.0, 0.0))
                 .direction,
             [1.0, 0.0, 0.0]
         );
         assert_eq!(
-            routes
-                .steer(route, &mut next, Vec3::new(40.0, 0.0, 0.0))
+            WashoiNavigation::steer(&routes.routes[route], &mut next, Vec3::new(40.0, 0.0, 0.0))
                 .direction,
             [0.0, 0.0, 1.0]
         );
         assert_eq!(
-            routes
-                .steer(route, &mut next, Vec3::new(40.0, 0.0, 40.0))
+            WashoiNavigation::steer(&routes.routes[route], &mut next, Vec3::new(40.0, 0.0, 40.0))
                 .direction,
             [0.0; 3]
         );
