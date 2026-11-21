@@ -19,6 +19,10 @@ const ARRIVAL_RADIUS: f64 = 16.0;
 const MAX_HEIGHT_DELTA: f64 = 40.0;
 const ANCHOR_RADIUS: f64 = 128.0;
 const LOCAL_WALK_RADIUS: f64 = 128.0;
+const SPRINT_LEG_DISTANCE: f64 = 128.0;
+const SPRINT_HEIGHT_DELTA: f64 = 16.0;
+// Washoi engine/network/components/InputComponent.ts.
+const SPRINT: u16 = 1 << 6;
 // Washoi `shared/server/simulation/physics/constants.ts`.
 const GRAVITY: f64 = 800.0;
 const RUN_SPEED: f64 = 320.0;
@@ -48,13 +52,22 @@ pub(super) struct ObjectiveRecovery {
 
 impl ObjectiveWalk {
     pub(super) fn steer(&mut self, position: Vec3, velocity: Option<Velocity>) -> PlayerInput {
-        WashoiNavigation::steer_with_arrival(
+        let mut input = WashoiNavigation::steer_with_arrival(
             &self.route,
             &mut self.next,
             position,
             velocity,
             self.arrival,
-        )
+        );
+        if input.direction != [0.0; 3]
+            && velocity.is_some_and(|velocity| velocity.grounded)
+            && let Some(&waypoint) = self.route.waypoints.get(self.next)
+            && (position.y - waypoint[1]).abs() <= SPRINT_HEIGHT_DELTA
+            && horizontal_distance(position, waypoint) >= SPRINT_LEG_DISTANCE
+        {
+            input.buttons |= SPRINT;
+        }
+        input
     }
 
     pub(super) fn blocked_edge(&self) -> Option<ObjectiveRecovery> {
@@ -390,6 +403,36 @@ fn horizontal_distance(position: Vec3, target: [f64; 3]) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn objective_walk_releases_sprint_before_a_ledge() {
+        let mut walk = ObjectiveWalk {
+            route: Route {
+                entry: [0.0; 3],
+                waypoints: vec![[240.0, 0.0, 0.0], [320.0, -100.0, 0.0]],
+                learned_route: None,
+                resumed_from: None,
+                pickup: None,
+            },
+            edges: Vec::new(),
+            next: 0,
+            arrival: ARRIVAL_RADIUS,
+        };
+        let grounded = Some(Velocity {
+            grounded: true,
+            ..Velocity::default()
+        });
+        let start = Vec3::default();
+        assert_ne!(walk.steer(start, grounded).buttons & SPRINT, 0);
+        assert_eq!(
+            walk.steer(Vec3::new(135.0, 0.0, 0.0), grounded).buttons & SPRINT,
+            0
+        );
+        assert_eq!(
+            walk.steer(Vec3::new(240.0, 0.0, 0.0), grounded).buttons & SPRINT,
+            0
+        );
+    }
 
     #[test]
     fn joins_sparse_graphs_to_objectives_with_checked_local_connections() {
