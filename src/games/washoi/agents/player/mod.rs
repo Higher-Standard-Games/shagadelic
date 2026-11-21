@@ -22,6 +22,7 @@ use crate::games::washoi::agents::player::combat::safety;
 use crate::games::washoi::agents::player::combat::{ALT_FIRE, Combat, Engagement, FIRE};
 use crate::games::washoi::agents::player::look::{self as looking, Look};
 use crate::games::washoi::agents::player::movement::chase::Chase;
+use crate::games::washoi::agents::player::movement::escape::Escape;
 use crate::games::washoi::agents::player::movement::highground::{self, HighGround};
 use crate::games::washoi::agents::player::movement::strafe::{self, Body, CombatMovement};
 use crate::games::washoi::agents::player::movement::territory::Territory;
@@ -117,6 +118,9 @@ pub struct BotPlayer {
     /// The ground held in a Duel, and the walk there.
     territory: Territory,
     territory_walk: Chase,
+    /// The way out of a fight a fading strategy leaves, and the walk there.
+    escape: Escape,
+    escape_walk: Chase,
     /// `BotOptions.trace`: a record of each decision.
     tracing: bool,
     trace: Option<trace::DecisionTrace>,
@@ -191,6 +195,8 @@ impl BotPlayer {
             strategist,
             territory: Territory::default(),
             territory_walk: Chase::default(),
+            escape: Escape::default(),
+            escape_walk: Chase::default(),
             tracing: false,
             trace: None,
             arbitrated: false,
@@ -359,8 +365,13 @@ impl BotPlayer {
         self.allies = self.combat.allies(world, &self.entity_id);
         match (self.engagement, self.sight.clone(), position) {
             (Some(fight), Some(sight), Some(position)) => {
-                // Fading keeps to the route, to health, aim still on the enemy.
-                if !self.should_fade(world) {
+                // `RETREAT`: out of the enemy's sight first, then to health
+                // on the route, the aim still on the enemy.
+                if self.should_fade(world) {
+                    self.fade(world, fight, &sight, position, now);
+                } else {
+                    self.escape.reset();
+                    self.escape_walk.reset();
                     self.fight_moves(world, fight, &sight, position, now);
                 }
                 // A guard answers the fight from the ground it was sent to hold.
@@ -1157,6 +1168,44 @@ impl BotPlayer {
         self.combat
             .enemy_estimate(enemy, world.tick)
             .is_none_or(|(stack, uncertainty)| uncertainty > 0.5 || own <= stack)
+    }
+
+    /// `BotRoam.retreat` while the enemy is in sight: walk to the escape
+    /// point. Out of sight, or with nowhere hidden, the route's walk to the
+    /// arbiter's goal stands.
+    fn fade(
+        &mut self,
+        world: &Observation,
+        fight: Engagement,
+        sight: &Sight,
+        position: super::super::Vec3,
+        now: SimTime,
+    ) {
+        let Some(navigation) = self.navigation.clone() else {
+            return;
+        };
+        if !fight.in_sight {
+            self.escape.reset();
+            return;
+        }
+        let Some(point) = self.escape.point(
+            world.tick,
+            position,
+            fight.target,
+            navigation.nodes(),
+            sight,
+        ) else {
+            return;
+        };
+        let velocity = world.body(&self.entity_id).and_then(|body| body.velocity);
+        if let Some(input) =
+            self.escape_walk
+                .steer(&navigation, sight, position, velocity, point, now)
+        {
+            self.planned_input.direction = input.direction;
+            self.planned_input.buttons = (self.planned_input.buttons & (FIRE | ALT_FIRE))
+                | (input.buttons & !(FIRE | ALT_FIRE));
+        }
     }
 
     /// `MatchRead.update`, then `Strategist.update`.
