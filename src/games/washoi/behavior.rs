@@ -4,7 +4,7 @@ use crate::games::washoi::{Controls, Observation, SimTime};
 
 use super::aim::{AimController, View};
 use super::chase::Chase;
-use super::combat::{Combat, Engagement, FIRE};
+use super::combat::{ALT_FIRE, Combat, Engagement, FIRE};
 use super::goals::OwnVitals;
 use super::highground::HighGround;
 use super::navigation::{RouteFollower, RouteObservation};
@@ -200,9 +200,10 @@ impl BotPlayer {
                     world,
                     &self.entity_id,
                     position,
-                    self.aim
-                        .current()
-                        .map_or(self.planned_input.yaw, |view| view.yaw),
+                    self.aim.current().unwrap_or(View {
+                        yaw: self.planned_input.yaw,
+                        pitch: self.planned_input.pitch,
+                    }),
                     sight,
                     self.difficulty.aim(),
                 )
@@ -216,6 +217,12 @@ impl BotPlayer {
             _ => {
                 self.combat.disengage();
                 self.moves.reset();
+                if !self.exact_view
+                    && self.respawn_at.is_none()
+                    && self.combat.carry_charge(world.tick)
+                {
+                    self.planned_input.buttons |= ALT_FIRE;
+                }
             }
         }
         self.chasing = None;

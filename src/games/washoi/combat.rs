@@ -13,7 +13,7 @@ use shagger_shared::{json::Value, net::game_state::Vec3};
 
 use super::{
     Observation, Sight,
-    aim::View,
+    aim::{self, View},
     combos::{Combos, Situation},
     cover::{self, CoverPeek},
     difficulty::AimSkill,
@@ -32,6 +32,10 @@ const PREDICTED_SHOT_SPEED: f64 = 1400.0;
 const SPLASH_DROP: f64 = 20.0;
 /// `states/BotFight.ts` `MELEE_RANGE`.
 const MELEE_RANGE: f64 = 150.0;
+/// `CHARGE_RELEASE_CONE`, `CHARGE_AIM_GRACE_TICKS`, `CHARGE_CARRY_TICKS`.
+const CHARGE_RELEASE_CONE: f64 = 12.0 * std::f64::consts::PI / 180.0;
+const CHARGE_AIM_GRACE_TICKS: u32 = 63;
+const CHARGE_CARRY_TICKS: u32 = 250;
 /// `COVER_MIN_RANGE`: closer fights are fought in the open.
 const COVER_MIN_RANGE: f64 = 350.0;
 /// `BotVision.ts` enemy memory, in server ticks at 125 Hz: a visual track
@@ -63,6 +67,8 @@ pub(super) struct Combat {
     perception: Perception,
     combos: Combos,
     cover: CoverPeek,
+    /// A charge being held for a blast.
+    charge: Option<Charge>,
     /// When the bot last fired, for peeking between shots.
     fired_tick: Option<u32>,
     /// Combo rolls, seeded per bot.
@@ -72,6 +78,13 @@ pub(super) struct Combat {
     /// from the one chosen; keying it by weapon also covers a switch between
     /// two snapshots.
     ads_since: Option<(&'static str, u32)>,
+}
+
+struct Charge {
+    weapon: &'static str,
+    target: String,
+    start: u32,
+    release: u32,
 }
 
 struct Track {
@@ -186,10 +199,11 @@ impl Combat {
         world: &Observation,
         own: &str,
         position: Vec3,
-        view_yaw: f64,
+        sent: View,
         sight: &Sight,
         skill: AimSkill,
     ) -> Option<Engagement> {
+        let view_yaw = sent.yaw;
         let team = world
             .players
             .iter()
@@ -319,7 +333,29 @@ impl Combat {
             yaw: delta[0].atan2(delta[2]),
             pitch: -delta[1].atan2(horizontal),
         };
-        let mut buttons = self.buttons(profile, has_ammo, selected_out, distance, world.tick);
+        // `updateChargedFire`: beyond swing reach, a charged weapon holds
+        // alt-fire for a blast and lets go on the aim.
+        let charging = match profile.charge {
+            Some(span) if distance >= MELEE_RANGE && selected_out => self.charged(
+                world.tick,
+                enemy.entity,
+                profile.id,
+                span,
+                has_ammo,
+                sent,
+                view,
+                skill,
+            ),
+            _ => {
+                self.charge = None;
+                false
+            }
+        };
+        let mut buttons = if charging {
+            ALT_FIRE
+        } else {
+            self.buttons(profile, has_ammo, selected_out, distance, world.tick)
+        };
         // `peekFromCover`: ranged fights on the ground with the weapon out.
         let peek = if !profile.melee && distance >= COVER_MIN_RANGE && grounded && selected_out {
             self.peek(
@@ -410,6 +446,68 @@ impl Combat {
             skill.dodge,
             &mut self.random,
         )
+    }
+
+    /// Hold or let go of a charge against `target`. A charge starts only
+    /// when the bot means to fire, and once started it is held through a
+    /// moment's hesitation, because letting go before the minimum cancels it.
+    #[allow(clippy::too_many_arguments)]
+    fn charged(
+        &mut self,
+        tick: u32,
+        target: &str,
+        weapon: &'static str,
+        (min, max): (u32, u32),
+        wants_fire: bool,
+        sent: View,
+        wanted: View,
+        skill: AimSkill,
+    ) -> bool {
+        let current = self
+            .charge
+            .as_ref()
+            .filter(|charge| charge.target == target && charge.weapon == weapon);
+        let Some(charge) = current else {
+            if !wants_fire {
+                self.charge = None;
+                return false;
+            }
+            let hold = 0.35 + skill.prediction * 0.4 + (self.random.next() - 0.5) * 0.15;
+            let ticks =
+                (f64::from(min) + f64::from(max - min) * hold.clamp(0.0, 1.0)).round() as u32;
+            self.charge = Some(Charge {
+                weapon,
+                target: target.to_owned(),
+                start: tick,
+                release: tick + ticks.max(min),
+            });
+            return true;
+        };
+        // Release on the aim: a blast let go while the view is still turning
+        // misses. After the grace it goes anyway.
+        let off = aim::wrap(wanted.yaw - sent.yaw)
+            .abs()
+            .max((wanted.pitch - sent.pitch).abs());
+        let release = charge.release;
+        if tick >= release
+            && (off <= CHARGE_RELEASE_CONE || tick >= release + CHARGE_AIM_GRACE_TICKS)
+        {
+            self.charge = None;
+            return false;
+        }
+        true
+    }
+
+    /// `carryCharge`: out of a fight, a charge is still held for up to two
+    /// seconds while its weapon stays out, to let go when the enemy is back.
+    pub(super) fn carry_charge(&mut self, tick: u32) -> bool {
+        let carried = self.charge.as_ref().is_some_and(|charge| {
+            charge.weapon == self.weapon && tick.wrapping_sub(charge.start) < CHARGE_CARRY_TICKS
+        });
+        if !carried {
+            self.charge = None;
+        }
+        carried
     }
 
     /// `fight`'s buttons. Aiming down sights tightens the shot, and a weapon
@@ -519,6 +617,7 @@ impl Combat {
         self.combos.reset();
         self.cover.reset();
         self.fired_tick = None;
+        self.charge = None;
     }
 }
 
@@ -578,6 +677,10 @@ mod tests {
 
     /// The bot looks down -z, at every foe in these tests, for longer than
     /// it takes to notice one, then engages.
+    fn toward(yaw: f64) -> View {
+        View { yaw, pitch: 0.0 }
+    }
+
     fn engaged(
         combat: &mut Combat,
         world: &Observation,
@@ -587,8 +690,8 @@ mod tests {
         let facing = std::f64::consts::PI;
         let mut before = world.clone();
         before.tick = world.tick.wrapping_sub(30);
-        combat.engage(&before, "me", me, facing, &sight(), skill);
-        combat.engage(world, "me", me, facing, &sight(), skill)
+        combat.engage(&before, "me", me, toward(facing), &sight(), skill);
+        combat.engage(world, "me", me, toward(facing), &sight(), skill)
     }
 
     #[test]
@@ -762,7 +865,7 @@ mod tests {
         let facing = std::f64::consts::PI;
         for tick in [0, 10] {
             world.tick = tick;
-            combat.engage(&world, "me", me(0.0), facing, &sight, skill);
+            combat.engage(&world, "me", me(0.0), toward(facing), &sight, skill);
         }
         // Just fired the bolt: step right into cover.
         let shot = SnapshotEvent::WeaponFire {
@@ -783,7 +886,7 @@ mod tests {
         combat.observe(&[shot], "me", 40);
         world.tick = 40;
         let out = combat
-            .engage(&world, "me", me(0.0), facing, &sight, skill)
+            .engage(&world, "me", me(0.0), toward(facing), &sight, skill)
             .unwrap();
         assert_eq!((out.peek, out.in_sight), (Some(1), true));
         // Behind the wall the foe is out of sight, but the fight goes on:
@@ -791,7 +894,7 @@ mod tests {
         world.tick = 48;
         world.body_or_insert("me").position = Some(me(-112.0));
         let ducked = combat
-            .engage(&world, "me", me(-112.0), facing, &sight, skill)
+            .engage(&world, "me", me(-112.0), toward(facing), &sight, skill)
             .unwrap();
         assert_eq!((ducked.in_sight, ducked.buttons), (false, 0));
         assert!(ducked.peek.is_some());
@@ -799,7 +902,7 @@ mod tests {
         world.tick = 400;
         assert!(
             combat
-                .engage(&world, "me", me(-112.0), facing, &sight, skill)
+                .engage(&world, "me", me(-112.0), toward(facing), &sight, skill)
                 .is_none()
         );
     }
@@ -876,15 +979,69 @@ mod tests {
             0,
         );
         assert_eq!(engaged(&mut combat, &world, me, skill).unwrap().buttons, 0);
-        // The blade swings only within reach.
+        // The blade swings only within reach. Farther, it charges a blast.
         combat.observe(&[armed("blade", &["blade"], &[])], "me", 0);
         let far = engaged(&mut combat, &world, me, skill).unwrap();
-        assert!(far.melee && far.buttons == 0);
+        assert!(far.melee && far.buttons == ALT_FIRE);
         world.body_mut("foe").unwrap().position = Some(Vec3::new(0.0, 0.0, -200.0));
         assert_eq!(
             engaged(&mut combat, &world, me, skill).unwrap().buttons,
             FIRE
         );
+    }
+
+    #[test]
+    fn charges_the_blade_out_of_reach_and_lets_go_on_the_aim() {
+        let me = Vec3::new(0.0, 0.0, -100.0);
+        let mut world = world(&[
+            ("me", "", [0.0, 0.0, -100.0]),
+            ("foe", "", [0.0, 0.0, -500.0]),
+        ]);
+        let skill = Difficulty::Medium.aim();
+        let mut combat = Combat::seeded(Random::new(5));
+        combat.observe(&[armed("blade", &["blade"], &[])], "me", 0);
+        let facing = toward(std::f64::consts::PI);
+        // Noticed by tick 30; the charge starts then.
+        for tick in [0, 30] {
+            world.tick = tick;
+            combat.engage(&world, "me", me, facing, &sight(), skill);
+        }
+        // Held at least the 63-tick minimum, at most the 125-tick maximum
+        // plus the half-second grace, then let go with the view on the aim.
+        let mut released = None;
+        for tick in 31..=30 + 125 + 63 {
+            world.tick = tick;
+            let fight = combat
+                .engage(&world, "me", me, facing, &sight(), skill)
+                .unwrap();
+            if fight.buttons & ALT_FIRE == 0 {
+                released = Some(tick);
+                break;
+            }
+        }
+        let released = released.expect("let go");
+        assert!(
+            (30 + 63..=30 + 125).contains(&released),
+            "released at {released}"
+        );
+        // Looking away past the 12° cone, it holds through the grace.
+        let mut held = Combat::seeded(Random::new(5));
+        held.observe(&[armed("blade", &["blade"], &[])], "me", 0);
+        let away = toward(std::f64::consts::PI + 0.5);
+        for tick in [0, 30] {
+            world.tick = tick;
+            held.engage(&world, "me", me, away, &sight(), skill);
+        }
+        world.tick = released;
+        assert_eq!(
+            held.engage(&world, "me", me, away, &sight(), skill)
+                .unwrap()
+                .buttons,
+            ALT_FIRE
+        );
+        // Out of the fight, the charge is carried for up to two seconds.
+        assert!(held.carry_charge(released + 10));
+        assert!(!held.carry_charge(30 + 250));
     }
 
     #[test]

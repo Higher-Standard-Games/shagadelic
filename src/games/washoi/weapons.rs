@@ -19,6 +19,9 @@ pub(super) struct Profile {
     pub(super) ads_ready_ticks: u32,
     /// `fireIntervalTicks`: server ticks between shots.
     pub(super) fire_interval_ticks: u32,
+    /// `chargeMinTicks` and `chargeMaxTicks` of an alt-fire charged
+    /// projectile, in server ticks.
+    pub(super) charge: Option<(u32, u32)>,
 }
 
 impl Profile {
@@ -61,12 +64,15 @@ const fn profile(
             None => 0,
         },
         fire_interval_ticks: 100,
+        charge: None,
     }
 }
 
+/// Alt-fire charges a blast that flies at 2,500 u/s, so it aims with lead.
 const BLADE: Profile = Profile {
     melee: true,
-    ..profile("blade", 0.0, false, 160.0, (0.0, 100.0), None).every(63)
+    charge: Some((63, 125)),
+    ..profile("blade", 2500.0, false, 160.0, (0.0, 100.0), None).every(63)
 };
 
 const PROFILES: [Profile; 8] = [
