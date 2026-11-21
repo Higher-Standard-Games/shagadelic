@@ -117,11 +117,23 @@ impl BotPlayer {
                     .into_iter()
                     .all(f64::is_finite)
             {
-                self.planned_input = self.route.steer(navigation, position, now);
+                let landed = self
+                    .learned
+                    .as_ref()
+                    .and_then(|library| self.traversal.landed_id(library));
+                self.planned_input = self.route.steer(
+                    navigation,
+                    position,
+                    now,
+                    self.learned.is_some() && self.traversal.landing_result().is_none(),
+                    landed,
+                );
                 if let Some(library) = &self.learned
                     && let Some(id) = self.route.takeoff(navigation)
+                    && self.traversal.begin_approach(library, id, position, now)
                 {
-                    self.traversal.begin_approach(library, id, position, now);
+                    self.route = RouteFollower::default();
+                    self.planned_input = PlayerInput::default();
                 }
             }
         }

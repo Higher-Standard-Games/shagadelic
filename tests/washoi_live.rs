@@ -20,6 +20,7 @@ async fn washoi_replays_the_existing_learned_route() {
     let start = &route["start"];
     let [start_x, start_y, start_z] = ["x", "y", "z"].map(|axis| start[axis].as_f64().unwrap());
     let approach = std::env::var_os("SHAGADELIC_TEST_WASHOI_APPROACH").is_some();
+    let require_continuation = std::env::var_os("SHAGADELIC_TEST_WASHOI_CONTINUE").is_some();
     let landing = &route["landing"];
     let coordinate = |axis| landing[axis].as_f64().unwrap();
     let [x, y, z] = [coordinate("x"), coordinate("y"), coordinate("z")];
@@ -59,6 +60,7 @@ async fn washoi_replays_the_existing_learned_route() {
         bot = bot.with_navigation(Arc::new(navigation));
     }
     let mut landed = false;
+    let mut continued = false;
     let mut last = None;
     let mut saw_offset_spawn = false;
     let result = tokio::time::timeout(
@@ -71,12 +73,16 @@ async fn washoi_replays_the_existing_learned_route() {
                     saw_offset_spawn = (position.x - start_x).hypot(position.z - start_z) > 32.0;
                 }
                 last = Some((position, state.acked_input_seq));
-                landed = u64::from(state.acked_input_seq) + 1 >= ticks
+                landed |= u64::from(state.acked_input_seq) + 1 >= ticks
                     && velocity.grounded
                     && (position.x - x).hypot(position.z - z) <= 64.0
                     && (position.y - y).abs() <= 48.0;
+                continued |= landed
+                    && velocity.grounded
+                    && (position.x - (x - 72.0)).hypot(position.z - z) <= 10.0
+                    && (position.y - y).abs() <= 16.0;
             }
-            !landed
+            !(landed && (!require_continuation || continued))
         }),
     )
     .await;
@@ -84,6 +90,10 @@ async fn washoi_replays_the_existing_learned_route() {
         landed,
         "no learned landing near {:?}, last {last:?}: {result:?}",
         [x, y, z]
+    );
+    assert!(
+        !require_continuation || continued,
+        "no walking continuation reached after landing, last {last:?}: {result:?}"
     );
     assert!(
         !approach || saw_offset_spawn,

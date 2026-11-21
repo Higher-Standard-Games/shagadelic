@@ -15,6 +15,8 @@ pub(super) struct WalkGraph {
     goals: Vec<usize>,
     #[serde(default)]
     learned_goals: Vec<(usize, String)>,
+    #[serde(default)]
+    learned_landings: Vec<(usize, String)>,
 }
 
 impl WalkGraph {
@@ -33,6 +35,13 @@ impl WalkGraph {
                 .any(|&node| node >= count)
         {
             return Err("invalid navigation graph nodes, anchors or BSP hash");
+        }
+        if self.learned_landings.len() > MAX_ENTRIES
+            || self.learned_landings.iter().any(|(node, id)| {
+                *node >= count || !self.learned_goals.iter().any(|(_, goal)| goal == id)
+            })
+        {
+            return Err("invalid learned landing anchor");
         }
         let mut neighbors = vec![Vec::new(); count];
         let mut learned = vec![None; count];
@@ -56,7 +65,15 @@ impl WalkGraph {
         let routes: Vec<_> = self
             .entries
             .iter()
-            .flat_map(|&entry| self.routes_from(entry, &neighbors, &learned))
+            .map(|&entry| (entry, None))
+            .chain(
+                self.learned_landings
+                    .iter()
+                    .map(|(entry, id)| (*entry, Some(id.as_str()))),
+            )
+            .flat_map(|(entry, resumed_from)| {
+                self.routes_from(entry, &neighbors, &learned, resumed_from)
+            })
             .collect();
         if routes.is_empty() {
             return Err("navigation graph has no reachable goals");
@@ -69,6 +86,7 @@ impl WalkGraph {
         entry: usize,
         neighbors: &[Vec<usize>],
         learned: &[Option<&str>],
+        resumed_from: Option<&str>,
     ) -> Vec<Route> {
         let mut routes = Vec::new();
         let mut distances = vec![f64::INFINITY; self.nodes.len()];
@@ -79,7 +97,20 @@ impl WalkGraph {
             .filter(|&node| !settled[node] && distances[node].is_finite())
             .min_by(|&a, &b| distances[a].total_cmp(&distances[b]))
         {
-            if node != entry && self.goals.contains(&node) {
+            let is_learned = learned[node].is_some();
+            let category_full = if is_learned {
+                resumed_from.is_some()
+                    || routes
+                        .iter()
+                        .any(|route: &Route| route.learned_route.is_some())
+            } else {
+                routes
+                    .iter()
+                    .filter(|route: &&Route| route.learned_route.is_none())
+                    .count()
+                    >= ROUTES_PER_ENTRY
+            };
+            if node != entry && self.goals.contains(&node) && !category_full {
                 let mut waypoints = vec![self.nodes[node]];
                 let mut previous = predecessor[node].expect("reachable goal has predecessor");
                 while previous != entry {
@@ -91,8 +122,9 @@ impl WalkGraph {
                     entry: self.nodes[entry],
                     waypoints,
                     learned_route: learned[node].map(str::to_owned),
+                    resumed_from: resumed_from.map(str::to_owned),
                 });
-                if routes.len() == ROUTES_PER_ENTRY {
+                if routes.len() == ROUTES_PER_ENTRY + usize::from(resumed_from.is_none()) {
                     break;
                 }
             }

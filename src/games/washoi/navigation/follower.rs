@@ -53,6 +53,8 @@ impl RouteFollower {
         navigation: &WashoiNavigation,
         position: Vec3,
         now: Instant,
+        allow_takeoff: bool,
+        landed_id: Option<&str>,
     ) -> PlayerInput {
         self.blocked.retain(|(_, until)| now < *until);
         if self
@@ -68,9 +70,21 @@ impl RouteFollower {
             self.active = None;
         }
         if self.active.is_none() {
-            let Some(index) = navigation.route_at(position, |route| {
+            let unblocked = |route: &Route| {
                 (0..route.waypoints.len())
                     .all(|next| !self.blocked.iter().any(|(leg, _)| *leg == route.leg(next)))
+            };
+            let continued = landed_id.and_then(|id| {
+                navigation.route_at(position, |route| {
+                    route.resumed_from.as_deref() == Some(id) && unblocked(route)
+                })
+            });
+            let Some(index) = continued.or_else(|| {
+                navigation.route_at(position, |route| {
+                    route.resumed_from.is_none()
+                        && (allow_takeoff || route.learned_route.is_none())
+                        && unblocked(route)
+                })
             }) else {
                 return PlayerInput::default();
             };
@@ -134,6 +148,47 @@ mod tests {
     use super::*;
 
     #[test]
+    fn graph_continuation_requires_the_matching_landing() {
+        let graph: WashoiNavigation = serde_json::from_str(
+            r#"{
+            "map":"test","graph":{
+                "bsp_sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                "nodes":[[0,0,0],[0,0,40],[60,0,0],[200,0,200],[160,0,200]],
+                "edges":[[0,1],[0,2],[3,4]],"entries":[0],"goals":[1,2,4],
+                "learned_goals":[[2,"jump"]],"learned_landings":[[3,"jump"]]
+            }
+        }"#,
+        )
+        .unwrap();
+        let now = Instant::now();
+        let mut follower = RouteFollower::default();
+        let start = Vec3::new(0.0, 0.0, 0.0);
+        assert_eq!(
+            follower.steer(&graph, start, now, true, None).direction,
+            [1.0, 0.0, 0.0]
+        );
+        assert_eq!(follower.takeoff(&graph), Some("jump"));
+        follower = RouteFollower::default();
+        assert_eq!(
+            follower.steer(&graph, start, now, false, None).direction,
+            [0.0, 0.0, 1.0]
+        );
+        let landing = Vec3::new(200.0, 0.0, 200.0);
+        assert_eq!(
+            follower
+                .steer(&graph, landing, now, false, Some("other"))
+                .direction,
+            [0.0; 3]
+        );
+        assert_eq!(
+            follower
+                .steer(&graph, landing, now, false, Some("jump"))
+                .direction,
+            [-1.0, 0.0, 0.0]
+        );
+    }
+
+    #[test]
     fn switches_after_a_stall_and_reattaches_after_displacement() {
         let nav = serde_json::from_str(
             r#"{"map":"test","routes":[
@@ -147,18 +202,23 @@ mod tests {
         let start = Instant::now();
         let anchor = Vec3::new(0.0, 0.0, 0.0);
         assert_eq!(
-            follower.steer(&nav, anchor, start).direction,
+            follower.steer(&nav, anchor, start, true, None).direction,
             [1.0, 0.0, 0.0]
         );
         let stalled = start + STALL_TIMEOUT;
-        assert_eq!(follower.steer(&nav, anchor, stalled).direction, [0.0; 3]);
         assert_eq!(
-            follower.steer(&nav, anchor, stalled).direction,
+            follower.steer(&nav, anchor, stalled, true, None).direction,
+            [0.0; 3]
+        );
+        assert_eq!(
+            follower.steer(&nav, anchor, stalled, true, None).direction,
             [0.0, 0.0, 1.0]
         );
         let displaced = Vec3::new(200.0, 0.0, 0.0);
         assert_eq!(
-            follower.steer(&nav, displaced, stalled).direction,
+            follower
+                .steer(&nav, displaced, stalled, true, None)
+                .direction,
             [-1.0, 0.0, 0.0]
         );
     }

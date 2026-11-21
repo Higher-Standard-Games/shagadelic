@@ -132,6 +132,12 @@ impl LearnedRoutes {
             .iter()
             .any(|route| route.id == id && route.start.near(position, START_RADIUS, START_HEIGHT))
     }
+
+    pub(super) fn matches_landing(&self, id: &str, position: Vec3) -> bool {
+        self.routes
+            .iter()
+            .any(|route| route.id == id && route.landing.near(position, START_RADIUS, START_HEIGHT))
+    }
 }
 
 #[derive(Default)]
@@ -154,9 +160,10 @@ pub(super) enum Traversal {
         route: usize,
         until: Instant,
     },
-    Finished {
-        landed: bool,
+    Landed {
+        route: usize,
     },
+    Failed,
 }
 
 impl Traversal {
@@ -166,7 +173,7 @@ impl Traversal {
         id: &str,
         position: Vec3,
         now: Instant,
-    ) {
+    ) -> bool {
         if matches!(self, Self::Waiting)
             && let Some(route) = library.approach_target(id, position)
         {
@@ -175,7 +182,9 @@ impl Traversal {
                 until: now + APPROACH_TIMEOUT,
                 settling: false,
             };
+            return true;
         }
+        false
     }
 
     pub(super) fn approach(
@@ -199,7 +208,7 @@ impl Traversal {
             ..PlayerInput::default()
         };
         if now >= *until {
-            *self = Self::Finished { landed: false };
+            *self = Self::Failed;
             return Some(input);
         }
         let (Some(position), Some(velocity)) = (entity.position, entity.velocity) else {
@@ -213,7 +222,7 @@ impl Traversal {
             .start
             .near(position, APPROACH_RADIUS, APPROACH_HEIGHT)
         {
-            *self = Self::Finished { landed: false };
+            *self = Self::Failed;
             return Some(input);
         }
         if !velocity.grounded || velocity.is_sliding {
@@ -270,9 +279,9 @@ impl Traversal {
             }
             Self::Landing { route, until } => {
                 if velocity.grounded && library.routes[route].landing.near(position, 64.0, 48.0) {
-                    *self = Self::Finished { landed: true };
+                    *self = Self::Landed { route };
                 } else if now >= until {
-                    *self = Self::Finished { landed: false };
+                    *self = Self::Failed;
                 }
             }
             _ => {}
@@ -297,7 +306,7 @@ impl Traversal {
         let learned = &library.routes[*route];
         let owed = 1 + (now - *started).as_millis() / INPUT_PERIOD.as_millis();
         if owed.saturating_sub(*sent as u128) > MAX_BACKLOG as u128 {
-            *self = Self::Finished { landed: false };
+            *self = Self::Failed;
             return Some(Vec::new());
         }
         let due = (owed.min(learned.ticks as u128) as usize).saturating_sub(*sent);
@@ -332,7 +341,7 @@ impl Traversal {
             self,
             Self::Approaching { .. } | Self::Playing { .. } | Self::Landing { .. }
         ) {
-            *self = Self::Finished { landed: false };
+            *self = Self::Failed;
         }
     }
 
@@ -351,10 +360,17 @@ impl Traversal {
     }
 
     pub(super) fn landing_result(&self) -> Option<bool> {
-        if let Self::Finished { landed } = self {
-            Some(*landed)
-        } else {
-            None
+        match self {
+            Self::Landed { .. } => Some(true),
+            Self::Failed => Some(false),
+            _ => None,
+        }
+    }
+
+    pub(super) fn landed_id<'a>(&self, library: &'a LearnedRoutes) -> Option<&'a str> {
+        match self {
+            Self::Landed { route } => Some(library.routes[*route].id.as_str()),
+            _ => None,
         }
     }
 }

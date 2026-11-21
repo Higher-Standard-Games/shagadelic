@@ -33,6 +33,8 @@ struct Route {
     entry: [f64; 3],
     waypoints: Vec<[f64; 3]>,
     learned_route: Option<String>,
+    #[serde(default)]
+    resumed_from: Option<String>,
 }
 
 impl TryFrom<RouteFile> for WashoiNavigation {
@@ -88,6 +90,14 @@ impl WashoiNavigation {
             {
                 return Err("learned route link must end near a known takeoff");
             }
+            if let Some(id) = &route.resumed_from
+                && !library.is_some_and(|library| {
+                    let [x, y, z] = route.entry;
+                    library.matches_landing(id, Vec3::new(x, y, z))
+                })
+            {
+                return Err("learned continuation must start near a known landing");
+            }
         }
         Ok(())
     }
@@ -100,7 +110,14 @@ impl WashoiNavigation {
             .filter(|(_, route)| (route.entry[1] - position.y).abs() <= MAX_HEIGHT_DELTA)
             .map(|(index, route)| (index, horizontal_distance(position, route.entry)))
             .filter(|(_, distance)| *distance <= ENTRY_RADIUS)
-            .min_by(|(_, a), (_, b)| a.total_cmp(b))
+            .min_by(|(a_index, a), (b_index, b)| {
+                a.total_cmp(b).then_with(|| {
+                    self.routes[*b_index]
+                        .learned_route
+                        .is_some()
+                        .cmp(&self.routes[*a_index].learned_route.is_some())
+                })
+            })
             .map(|(index, _)| index)
     }
 
