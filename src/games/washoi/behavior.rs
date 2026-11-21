@@ -6,7 +6,7 @@ use super::aim::{AimController, View};
 use super::chase::Chase;
 use super::combat::{ALT_FIRE, Combat, Engagement, FIRE};
 use super::goals::OwnVitals;
-use super::highground::HighGround;
+use super::highground::{self, HighGround};
 use super::navigation::{RouteFollower, RouteObservation};
 use super::orders::Orders;
 use super::protocol::{PlayerInput, SnapshotEvent};
@@ -369,6 +369,17 @@ impl BotPlayer {
         } else {
             [0.0; 3]
         };
+        if body.grounded {
+            let walkable = |to: super::Vec3| super::navigation::local_walk(sight, position, to);
+            let floor_below = |from: [f64; 3], to: [f64; 3]| !sight.clear(from, to);
+            self.planned_input.direction = highground::keep_upper_ground(
+                self.planned_input.direction,
+                position,
+                fight.target,
+                &walkable,
+                &floor_below,
+            );
+        }
         if moves.jump {
             self.planned_input.buttons |= JUMP;
         }

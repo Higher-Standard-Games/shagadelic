@@ -105,6 +105,56 @@ fn distance(a: Vec3, b: Vec3) -> f64 {
     (a.x - b.x).hypot(a.z - b.z).hypot(a.y - b.y)
 }
 
+/// `keepUpperGround`: a grounded bot this far above the enemy keeps to its
+/// ledge.
+const UPPER_GROUND: f64 = 64.0;
+/// How far ahead a heading must stay walkable, and how far below the end
+/// floor must be.
+const EDGE_LOOKAHEAD: f64 = 96.0;
+const EDGE_FLOOR_DEPTH: f64 = 64.0;
+
+/// `keepUpperGround`: with the bot on the ground at least 64 units above the
+/// enemy, the movement that stays up. The wanted heading is kept when 96
+/// units along it are walkable with floor beneath. Otherwise the first of a
+/// quarter turn either way or a reversal that is, at full speed. Without
+/// one, the wanted move stands.
+pub(super) fn keep_upper_ground(
+    direction: [f64; 3],
+    position: Vec3,
+    enemy: Vec3,
+    walkable: &dyn Fn(Vec3) -> bool,
+    floor_below: &dyn Fn([f64; 3], [f64; 3]) -> bool,
+) -> [f64; 3] {
+    let [x, _, z] = direction;
+    if position.y - enemy.y < UPPER_GROUND || (x == 0.0 && z == 0.0) {
+        return direction;
+    }
+    let heading = x.atan2(z);
+    for turn in [
+        0.0,
+        std::f64::consts::FRAC_PI_2,
+        -std::f64::consts::FRAC_PI_2,
+        std::f64::consts::PI,
+    ] {
+        let yaw = heading + turn;
+        let (dx, dz) = (yaw.sin(), yaw.cos());
+        let ahead = Vec3::new(
+            position.x + dx * EDGE_LOOKAHEAD,
+            position.y,
+            position.z + dz * EDGE_LOOKAHEAD,
+        );
+        let below = [ahead.x, ahead.y - EDGE_FLOOR_DEPTH, ahead.z];
+        if !walkable(ahead) || !floor_below([ahead.x, ahead.y, ahead.z], below) {
+            continue;
+        }
+        if turn == 0.0 {
+            return direction;
+        }
+        return [dx, 0.0, dz];
+    }
+    direction
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -148,6 +198,32 @@ mod tests {
         assert_eq!(
             HighGround::default().spot(0, &nodes, me, far, 1.0, &sees, &walks, &mut random),
             None
+        );
+    }
+
+    #[test]
+    fn keeps_to_the_ledge_above_the_enemy() {
+        // A ledge that ends 50 units ahead (+z) and runs on to either side.
+        let walkable = |to: Vec3| to.z <= 50.0;
+        let floor = |_: [f64; 3], _: [f64; 3]| true;
+        let up = Vec3::new(0.0, 200.0, 0.0);
+        let enemy = Vec3::new(0.0, 24.0, 400.0);
+        // Walking off the front turns along the ledge: a quarter turn, to +x.
+        let turned = keep_upper_ground([0.0, 0.0, 1.0], up, enemy, &walkable, &floor);
+        assert!((turned[0] - 1.0).abs() < 1e-9 && turned[2].abs() < 1e-9);
+        // A safe heading, a bot not above the enemy, or a stop is left alone.
+        assert_eq!(
+            keep_upper_ground([1.0, 0.0, 0.0], up, enemy, &walkable, &floor),
+            [1.0, 0.0, 0.0]
+        );
+        let level = Vec3::new(0.0, 24.0, 0.0);
+        assert_eq!(
+            keep_upper_ground([0.0, 0.0, 1.0], level, enemy, &walkable, &floor),
+            [0.0, 0.0, 1.0]
+        );
+        assert_eq!(
+            keep_upper_ground([0.0; 3], up, enemy, &walkable, &floor),
+            [0.0; 3]
         );
     }
 }
