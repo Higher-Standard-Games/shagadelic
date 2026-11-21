@@ -141,6 +141,8 @@ The first playable behavior can choose a simple movement plan and exercise the i
 
 **Gametype orders.** A bot accepts its own `move_to`, `hold_area`, and `defend` orders, checks their server-tick expiry, and follows any lane waypoints through the shared walking graph. It stops in the target radius and can look at the server's watch point. S&D's `escort` order tracks an allied carrier from the current snapshot and replans as the carrier moves. A stalled route avoids the blocked directed edge for five seconds and can return to the last confirmed node when it stalls on the first straight leg. Missing targets and unreachable positions fall back to ordinary movement, with a bounded retry rate for pathfinding. Hunt orders, guard patrols, combat interruption rules, and full S&D round behavior remain open.
 
+With the map's baked sight geometry, objective routes can attach to nearby graph nodes and finish at off-graph targets such as a planted bomb. These connectors are limited to 128 units and require sampled static clearance and floor support. Washoi still simulates player movement and collisions on the server. Moving platforms and dynamic blockers are outside the static check.
+
 Keep these three inputs to decision-making distinct.
 
 | Concept | Washoi examples |

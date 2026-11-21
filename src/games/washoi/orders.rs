@@ -9,7 +9,7 @@ use shagger_shared::{
 use tokio::time::Instant;
 
 use super::{
-    WashoiNavigation,
+    Sight, WashoiNavigation,
     navigation::{ObjectiveRecovery, ObjectiveWalk},
     protocol::{PlayerInput, SnapshotEvent},
 };
@@ -114,6 +114,7 @@ impl Orders {
     pub(super) fn input(
         &mut self,
         navigation: Option<&WashoiNavigation>,
+        sight: Option<&Sight>,
         position: Vec3,
         velocity: Option<Velocity>,
         now: Instant,
@@ -168,7 +169,7 @@ impl Orders {
                 edge
             });
             self.walk = navigation
-                .and_then(|map| map.objective_walk(position, target, radius, recovery))
+                .and_then(|map| map.objective_walk(position, target, radius, recovery, sight))
                 .map(|walk| (target, walk));
             self.retry_at = Some(now + RETRY);
         }
@@ -359,7 +360,7 @@ mod tests {
         orders.observe(&state, "bot");
         assert!(
             orders
-                .input(Some(&navigation), origin, None, start)
+                .input(Some(&navigation), None, origin, None, start)
                 .is_none()
         );
         state.events.push(SnapshotEvent::AgentDirectives {
@@ -369,7 +370,7 @@ mod tests {
         orders.observe(&state, "bot");
         assert_eq!(
             orders
-                .input(Some(&navigation), origin, None, start)
+                .input(Some(&navigation), None, origin, None, start)
                 .unwrap()
                 .direction,
             [1.0, 0.0, 0.0]
@@ -377,14 +378,14 @@ mod tests {
         let corner = Vec3::new(64.0, 0.0, 0.0);
         assert_eq!(
             orders
-                .input(Some(&navigation), corner, None, start)
+                .input(Some(&navigation), None, corner, None, start)
                 .unwrap()
                 .direction,
             [0.0, 0.0, 1.0]
         );
         let destination = Vec3::new(64.0, 0.0, 64.0);
         let hold = orders
-            .input(Some(&navigation), destination, None, start)
+            .input(Some(&navigation), None, destination, None, start)
             .unwrap();
         assert_eq!(hold.direction, [0.0; 3]);
         assert_eq!(hold.yaw, std::f64::consts::PI);
@@ -394,7 +395,7 @@ mod tests {
         orders.observe(&state, "bot");
         assert!(
             orders
-                .input(Some(&navigation), destination, None, start)
+                .input(Some(&navigation), None, destination, None, start)
                 .is_none()
         );
     }
@@ -486,7 +487,7 @@ mod tests {
         orders.observe(&world, "bot");
         assert_eq!(
             orders
-                .input(Some(&navigation), origin, None, start)
+                .input(Some(&navigation), None, origin, None, start)
                 .unwrap()
                 .direction,
             [1.0, 0.0, 0.0]
@@ -497,7 +498,7 @@ mod tests {
         orders.observe(&world, "bot");
         assert_eq!(
             orders
-                .input(Some(&navigation), origin, None, start)
+                .input(Some(&navigation), None, origin, None, start)
                 .unwrap()
                 .direction,
             [0.0, 0.0, 1.0]
@@ -512,7 +513,7 @@ mod tests {
         orders.observe(&world, "bot");
         assert!(
             orders
-                .input(Some(&navigation), origin, None, start)
+                .input(Some(&navigation), None, origin, None, start)
                 .is_none()
         );
         world.events.pop();
@@ -520,7 +521,7 @@ mod tests {
         orders.observe(&world, "bot");
         assert!(
             orders
-                .input(Some(&navigation), origin, None, start)
+                .input(Some(&navigation), None, origin, None, start)
                 .is_none()
         );
     }
@@ -564,6 +565,7 @@ mod tests {
         ] {
             let input = orders.input(
                 Some(&navigation),
+                None,
                 position,
                 None,
                 start + Duration::from_millis(ms),

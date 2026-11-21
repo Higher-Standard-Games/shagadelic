@@ -9,7 +9,7 @@ use std::{
 use serde::Deserialize;
 use shagger_shared::net::game_state::{Vec3, Velocity};
 
-use super::{goals::PickupGoal, protocol::PlayerInput};
+use super::{Sight, goals::PickupGoal, protocol::PlayerInput};
 
 pub(super) use follower::{RouteFollower, RouteObservation};
 
@@ -18,6 +18,7 @@ const MAX_FILE: u64 = 4 * 1024 * 1024;
 const ARRIVAL_RADIUS: f64 = 16.0;
 const MAX_HEIGHT_DELTA: f64 = 40.0;
 const ANCHOR_RADIUS: f64 = 128.0;
+const LOCAL_WALK_RADIUS: f64 = 128.0;
 // Washoi `shared/server/simulation/physics/constants.ts`.
 const GRAVITY: f64 = 800.0;
 const RUN_SPEED: f64 = 320.0;
@@ -168,12 +169,16 @@ impl WashoiNavigation {
         target: Vec3,
         radius: f64,
         recovery: Option<ObjectiveRecovery>,
+        sight: Option<&Sight>,
     ) -> Option<ObjectiveWalk> {
         let arrival = ARRIVAL_RADIUS.min(radius / 2.0);
-        let (route, edges) =
-            self.planner
-                .as_ref()?
-                .plan_to(position, target, radius - arrival, recovery)?;
+        let (route, edges) = self.planner.as_ref()?.plan_to(
+            position,
+            target,
+            radius - arrival,
+            recovery,
+            |from, to| sight.is_some_and(|map| local_walk(map, from, to)),
+        )?;
         Some(ObjectiveWalk {
             route,
             edges,
@@ -345,6 +350,37 @@ impl WashoiNavigation {
     }
 }
 
+/// A short connector on the present floor. The sight geometry supplies
+/// clearance and support samples, while the game server runs player physics.
+fn local_walk(sight: &Sight, from: Vec3, to: Vec3) -> bool {
+    let (dx, dz) = (to.x - from.x, to.z - from.z);
+    let distance = dx.hypot(dz);
+    if !(1.0..=LOCAL_WALK_RADIUS).contains(&distance) || (from.y - to.y).abs() > MAX_HEIGHT_DELTA {
+        return false;
+    }
+    let (sx, sz) = (dz / distance, -dx / distance);
+    let steps = (distance / 16.0).ceil() as u32;
+    for side in [-14.0, 0.0, 14.0] {
+        let from_x = from.x + sx * side;
+        let from_z = from.z + sz * side;
+        for height in [-6.0, 16.0] {
+            let y = from.y + height;
+            if !sight.clear([from_x, y, from_z], [from_x + dx, y, from_z + dz]) {
+                return false;
+            }
+        }
+        for step in 0..=steps {
+            let t = f64::from(step) / f64::from(steps);
+            let x = from_x + dx * t;
+            let z = from_z + dz * t;
+            if sight.clear([x, from.y - 6.0, z], [x, from.y - 40.0, z]) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
 fn horizontal_distance(position: Vec3, target: [f64; 3]) -> f64 {
     (target[0] - position.x).hypot(target[2] - position.z)
 }
@@ -352,6 +388,36 @@ fn horizontal_distance(position: Vec3, target: [f64; 3]) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn joins_sparse_graphs_to_objectives_with_checked_local_connections() {
+        let map: WashoiNavigation = serde_json::from_str(
+            r#"{"map":"test","graph":{
+                "bsp_sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                "nodes":[[0,0,0],[64,0,0]],"edges":[[0,1]],"entries":[0],"goals":[1]
+            }}"#,
+        )
+        .unwrap();
+        let planner = map.planner.unwrap();
+        let start = Vec3::new(-64.0, 0.0, 0.0);
+        let target = Vec3::new(124.0, 0.0, 0.0);
+        assert!(
+            planner
+                .plan_to(start, target, 12.0, None, |_, _| false)
+                .is_none()
+        );
+
+        let (route, _) = planner
+            .plan_to(start, target, 12.0, None, |a, b| {
+                // Only the entry and final node have a clear, supported connection.
+                (a.x, b.x) == (-64.0, 0.0) || (a.x, b.x) == (64.0, 118.0)
+            })
+            .unwrap();
+        assert_eq!(
+            route.waypoints,
+            [[0.0, 0.0, 0.0], [64.0, 0.0, 0.0], [118.0, 0.0, 0.0]]
+        );
+    }
 
     #[test]
     fn baked_graph_uses_the_detour_instead_of_the_blocked_shortcut() {

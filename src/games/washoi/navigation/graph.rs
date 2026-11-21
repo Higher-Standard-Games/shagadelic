@@ -150,20 +150,44 @@ impl Planner {
         target: Vec3,
         radius: f64,
         recovery: Option<ObjectiveRecovery>,
+        local_walk: impl Fn(Vec3, Vec3) -> bool,
     ) -> Option<(Route, Vec<ObjectiveEdge>)> {
-        let start = self.nearest_entry(position).or_else(|| {
-            let node = recovery?.anchor?;
-            let point = *self.nodes.get(node)?;
-            (horizontal_distance(position, point) <= ANCHOR_RADIUS
-                && (point[1] - position.y).abs() <= MAX_HEIGHT_DELTA)
-                .then_some(node)
-        })?;
+        let start = self
+            .nearest_entry(position)
+            .or_else(|| {
+                let node = recovery?.anchor?;
+                let point = *self.nodes.get(node)?;
+                (horizontal_distance(position, point) <= ANCHOR_RADIUS
+                    && (point[1] - position.y).abs() <= MAX_HEIGHT_DELTA)
+                    .then_some(node)
+            })
+            .or_else(|| {
+                self.nodes
+                    .iter()
+                    .enumerate()
+                    .filter(|&(_, &[x, y, z])| local_walk(position, Vec3::new(x, y, z)))
+                    .min_by(|(_, a), (_, b)| {
+                        horizontal_distance(position, **a)
+                            .total_cmp(&horizontal_distance(position, **b))
+                    })
+                    .map(|(node, _)| node)
+            })?;
         let mut search = Search::new(self.nodes.len(), start);
         while let Some(node) = search.next() {
             let [x, y, z] = self.nodes[node];
-            if (y - target.y).abs() <= MAX_HEIGHT_DELTA
-                && (x - target.x).hypot(z - target.z) <= radius
-            {
+            let distance = (x - target.x).hypot(z - target.z);
+            let same_floor = (y - target.y).abs() <= MAX_HEIGHT_DELTA;
+            let close = same_floor && distance <= radius;
+            // Aim inside the requested radius without steering all the
+            // way to a target that may sit near the edge of the room.
+            let tail = if same_floor && !close {
+                let t = 1.0 - radius / (2.0 * distance);
+                let end = Vec3::new(x + (target.x - x) * t, y, z + (target.z - z) * t);
+                local_walk(Vec3::new(x, y, z), end).then_some([end.x, end.y, end.z])
+            } else {
+                None
+            };
+            if close || tail.is_some() {
                 let mut path = vec![node];
                 let mut current = node;
                 while let Some(previous) = search.predecessor[current] {
@@ -180,6 +204,7 @@ impl Planner {
                         end: waypoints.len() - 1,
                     });
                 }
+                waypoints.extend(tail);
                 return Some((
                     Route {
                         entry: self.nodes[start],

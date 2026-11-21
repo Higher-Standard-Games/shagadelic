@@ -145,9 +145,13 @@ impl BotPlayer {
         if self.respawn_at.is_none()
             && let Some(entity) = own
             && let Some(position) = entity.position
-            && let Some(input) =
-                self.orders
-                    .input(self.navigation.as_deref(), position, entity.velocity, now)
+            && let Some(input) = self.orders.input(
+                self.navigation.as_deref(),
+                self.sight.as_deref(),
+                position,
+                entity.velocity,
+                now,
+            )
         {
             self.route.detach();
             self.planned_input = input;
