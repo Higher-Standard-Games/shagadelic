@@ -61,7 +61,8 @@ fn replays_exact_inputs_and_remembers_a_one_tick_death() {
                     dead: true,
                 });
             }
-            bot.observe_at(&world, now);
+            bot.observe_at(world.clone(), now);
+            bot.decide(now);
         }
         assert_eq!(
             bot.request_respawn_at(now),
@@ -71,6 +72,7 @@ fn replays_exact_inputs_and_remembers_a_one_tick_death() {
         );
         let inputs: Vec<_> = bot
             .inputs_at(now)
+            .into_iter()
             .map(|i| ExpectedInput(i.direction, i.yaw, i.pitch, i.buttons, i.weapon_slot))
             .collect();
         assert_eq!(inputs, step.inputs, "at {} ms", step.ms);

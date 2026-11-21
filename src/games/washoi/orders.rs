@@ -432,8 +432,9 @@ mod tests {
             world.tick += 1;
             world.body_or_insert("bot").position = Some(Vec3::new(x, 0.0, 0.0));
             let now = start + Duration::from_millis(16 * step);
-            bot.observe_at(&world, now);
-            let mut inputs = bot.inputs_at(now);
+            bot.observe_at(world.clone(), now);
+            bot.decide(now);
+            let mut inputs = bot.inputs_at(now).into_iter();
             assert_eq!(inputs.next().unwrap().direction, direction);
             assert!(inputs.all(|input| input.direction == direction));
         }

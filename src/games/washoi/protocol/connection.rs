@@ -110,7 +110,11 @@ impl Connection<WashoiEvents> {
                 frame = self.socket.next() => {
                     if matches!(frame, None | Some(Ok(Message::Close(_)))) { return Ok(()); }
                     if let Some(state) = self.receive_frame(frame).await? {
-                        bot.observe_at(&super::observe(&state), now());
+                        {
+                            let now = now();
+                            bot.observe_at(super::observe(&state), now);
+                            bot.decide(now);
+                        }
                         if !observe(&state) {
                             return Ok(());
                         }
@@ -192,18 +196,7 @@ pub(crate) struct InputBatch {
 impl InputBatch {
     pub(crate) fn from_player(bot: &mut super::super::BotPlayer, now: SimTime) -> Self {
         let respawn = bot.request_respawn_at(now);
-        let exact = bot.uses_exact_movement();
-        let controls = bot
-            .inputs_at(now)
-            .map(|input| Controls {
-                direction: input.direction,
-                yaw: input.yaw,
-                pitch: input.pitch,
-                buttons: input.buttons,
-                weapon_slot: input.weapon_slot,
-                exact,
-            })
-            .collect();
+        let controls = bot.inputs_at(now);
         Self { controls, respawn }
     }
 }

@@ -237,7 +237,8 @@ impl GameSession for WashoiSession {
         match kind {
             Update::Decision => {
                 let (received, observation) = bot.pending.pop_front()?;
-                player.observe_at(&observation, received);
+                player.observe_at(observation, received);
+                player.decide(received);
                 // One frame per permit including its ordered events. A later
                 // grant resumes the queue, even without another network wake.
                 (!bot.pending.is_empty()).then_some(now)

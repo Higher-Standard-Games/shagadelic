@@ -1,6 +1,6 @@
-use std::{sync::Arc, time::Duration};
+use std::{collections::VecDeque, sync::Arc, time::Duration};
 
-use crate::games::washoi::{Observation, SimTime};
+use crate::games::washoi::{Controls, Observation, SimTime};
 
 use super::aim::{AimController, View};
 use super::chase::Chase;
@@ -21,11 +21,19 @@ const MAX_BURST: u64 = 4;
 const MAX_DEBT: u64 = 25;
 const MAX_OBSERVATION_AGE: Duration = Duration::from_millis(500);
 const RESPAWN_DELAY: Duration = Duration::from_millis(2500);
+/// Events kept for the next decision. A burst beyond this drops the oldest,
+/// counted in `dropped_events`.
+const MAX_PENDING_EVENTS: usize = 4096;
 
 /// The pilot walks forward or follows an authored route while alive, and
 /// fights enemies in sight when it has the map's sight file.
 pub struct BotPlayer {
     entity_id: String,
+    /// The latest observation without its events, and every event since the
+    /// last decision with its snapshot tick, in order.
+    latest: Option<Observation>,
+    pending: VecDeque<(u32, SnapshotEvent)>,
+    dropped_events: u64,
     respawn_at: Option<SimTime>,
     own_entity_present: bool,
     last_snapshot: Option<SimTime>,
@@ -61,6 +69,9 @@ impl BotPlayer {
         Self {
             random: Random::for_bot(&entity_id),
             entity_id,
+            latest: None,
+            pending: VecDeque::new(),
+            dropped_events: 0,
             respawn_at: None,
             own_entity_present: false,
             last_snapshot: None,
@@ -114,7 +125,7 @@ impl BotPlayer {
         self.traversal.landing_result()
     }
 
-    pub(crate) fn uses_exact_movement(&self) -> bool {
+    fn uses_exact_movement(&self) -> bool {
         self.route.exact()
             || self.traversal.active()
             || matches!(self.traversal, Traversal::Approaching { .. })
@@ -127,9 +138,47 @@ impl BotPlayer {
         self
     }
 
-    /// One snapshot's observation at simulation time `now`. The brain
-    /// plans on it at once.
-    pub fn observe_at(&mut self, world: &Observation, now: SimTime) {
+    /// Take one snapshot's observation, received at `now`. This only keeps
+    /// it: the latest bodies, players, and pickups replace the previous
+    /// ones, and its events join the queue for the next `decide`.
+    pub fn observe_at(&mut self, mut observation: Observation, now: SimTime) {
+        self.last_snapshot = Some(now);
+        let tick = observation.tick;
+        for event in observation.events.drain(..) {
+            if self.pending.len() == MAX_PENDING_EVENTS {
+                self.pending.pop_front();
+                self.dropped_events += 1;
+            }
+            self.pending.push_back((tick, event));
+        }
+        self.latest = Some(observation);
+    }
+
+    /// Events dropped from bursts longer than the pending queue.
+    pub fn dropped_events(&self) -> u64 {
+        self.dropped_events
+    }
+
+    /// Choose what to do from the latest observation and, in order, every
+    /// event since the last decision. Without a new observation it plans
+    /// again on the same view.
+    pub fn decide(&mut self, now: SimTime) {
+        let Some(mut world) = self.latest.take() else {
+            return;
+        };
+        debug_assert!(
+            self.pending
+                .iter()
+                .zip(self.pending.iter().skip(1))
+                .all(|((a, _), (b, _))| a <= b)
+        );
+        world.events = self.pending.drain(..).map(|(_, event)| event).collect();
+        self.decide_on(&world, now);
+        world.events.clear();
+        self.latest = Some(world);
+    }
+
+    fn decide_on(&mut self, world: &Observation, now: SimTime) {
         self.combat.observe(&world.events, &self.entity_id);
         self.exact_view = self.plan(world, now);
         let position = world
@@ -314,7 +363,6 @@ impl BotPlayer {
                 _ => {}
             }
         }
-        self.last_snapshot = Some(now);
         let own = world.body(&self.entity_id);
         self.own_entity_present = own.is_some();
         self.orders.observe(world, &self.entity_id);
@@ -418,8 +466,24 @@ impl BotPlayer {
             .is_some_and(|at| now - at <= MAX_OBSERVATION_AGE)
     }
 
-    /// The commands due by `now`, paced at the Washoi input period.
-    pub fn inputs_at(&mut self, now: SimTime) -> impl Iterator<Item = PlayerInput> {
+    /// The controls due by `now`, paced at the Washoi input period. Recorded
+    /// traversals and precise approaches come out `exact`.
+    pub fn inputs_at(&mut self, now: SimTime) -> Vec<Controls> {
+        let exact = self.uses_exact_movement();
+        self.paced_inputs(now)
+            .into_iter()
+            .map(|input| Controls {
+                direction: input.direction,
+                yaw: input.yaw,
+                pitch: input.pitch,
+                buttons: input.buttons,
+                weapon_slot: input.weapon_slot,
+                exact,
+            })
+            .collect()
+    }
+
+    fn paced_inputs(&mut self, now: SimTime) -> Vec<PlayerInput> {
         let ready =
             self.respawn_at.is_none() && self.own_entity_present && self.has_fresh_snapshot(now);
         let mut learned = None;
@@ -445,7 +509,7 @@ impl BotPlayer {
             });
         }
         commands.extend((0..count).map(|_| self.next_command()));
-        commands.into_iter()
+        commands
     }
 
     /// One planned command, with the view turned by the aim controller and
@@ -537,15 +601,15 @@ mod tests {
     fn input_debt_is_bounded_and_stale_observations_stop_movement() {
         let start = SimTime::ZERO;
         let mut bot = BotPlayer::new("bot".into());
-        assert_eq!(bot.inputs_at(start).count(), 0);
+        assert_eq!(bot.inputs_at(start).len(), 0);
         bot.last_snapshot = Some(start);
         bot.own_entity_present = true;
-        assert_eq!(bot.inputs_at(start).count(), 1);
-        assert_eq!(bot.inputs_at(start + Duration::from_millis(4)).count(), 0);
-        assert_eq!(bot.inputs_at(start + Duration::from_millis(40)).count(), 4);
-        assert_eq!(bot.inputs_at(start + Duration::from_millis(48)).count(), 2);
-        assert_eq!(bot.inputs_at(start + Duration::from_millis(300)).count(), 1);
-        assert_eq!(bot.inputs_at(start + Duration::from_millis(501)).count(), 0);
+        assert_eq!(bot.inputs_at(start).len(), 1);
+        assert_eq!(bot.inputs_at(start + Duration::from_millis(4)).len(), 0);
+        assert_eq!(bot.inputs_at(start + Duration::from_millis(40)).len(), 4);
+        assert_eq!(bot.inputs_at(start + Duration::from_millis(48)).len(), 2);
+        assert_eq!(bot.inputs_at(start + Duration::from_millis(300)).len(), 1);
+        assert_eq!(bot.inputs_at(start + Duration::from_millis(501)).len(), 0);
     }
 
     #[test]
@@ -576,11 +640,12 @@ mod tests {
         }
         let start = SimTime::ZERO;
         let mut fired = 0;
-        let mut last = PlayerInput::default();
+        let mut last = Controls::default();
         for step in 0..150u64 {
             let now = start + INPUT_PERIOD * step as u32;
             world.tick = step as u32;
-            bot.observe_at(&world, now);
+            bot.observe_at(world.clone(), now);
+            bot.decide(now);
             for input in bot.inputs_at(now) {
                 fired += usize::from(input.buttons & FIRE != 0);
                 last = input;
@@ -594,8 +659,13 @@ mod tests {
         world.body_mut("foe").unwrap().position = Some(Vec3::new(0.0, 34.0, 500.0));
         let now = start + INPUT_PERIOD * 150;
         world.tick = 150;
-        bot.observe_at(&world, now);
-        assert!(bot.inputs_at(now).all(|input| input.buttons & FIRE == 0));
+        bot.observe_at(world.clone(), now);
+        bot.decide(now);
+        assert!(
+            bot.inputs_at(now)
+                .into_iter()
+                .all(|input| input.buttons & FIRE == 0)
+        );
     }
 
     #[test]
@@ -639,19 +709,71 @@ mod tests {
         let start = SimTime::ZERO;
         // Ahead along the walk, so in view; noticed after 18 ticks.
         world.tick = 100;
-        bot.observe_at(&world, start);
+        bot.observe_at(world.clone(), start);
+        bot.decide(start);
         world.tick = 120;
-        bot.observe_at(&world, start + Duration::from_millis(160));
+        bot.observe_at(world.clone(), start + Duration::from_millis(160));
+        bot.decide(start + Duration::from_millis(160));
         assert!(bot.engagement.is_some());
         // Behind the wall now, so the bot walks toward where it was seen.
         world.body_mut("foe").unwrap().position = Some(Vec3::new(300.0, 24.0, 150.0));
         world.tick = 130;
-        bot.observe_at(&world, start + Duration::from_millis(240));
+        bot.observe_at(world.clone(), start + Duration::from_millis(240));
+        bot.decide(start + Duration::from_millis(240));
         assert!(bot.engagement.is_none());
         let (view, prefire) = bot.chasing.expect("chasing");
         assert!((view.yaw - std::f64::consts::FRAC_PI_2).abs() < 1e-6);
         assert!(!prefire);
         assert_eq!(bot.planned_input.direction, [1.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn one_decision_applies_a_burst_of_events_in_order_on_the_latest_view() {
+        use crate::games::washoi::Vec3;
+        let state = |dead: bool| SnapshotEvent::CombatState {
+            entity_id: "bot".into(),
+            health: if dead { 0 } else { 100 },
+            armor: 0,
+            dead,
+        };
+        let frame = |tick: u32, x: f64, events: Vec<SnapshotEvent>| {
+            let mut world = Observation {
+                tick,
+                events,
+                ..Observation::default()
+            };
+            world.body_or_insert("bot").position = Some(Vec3::new(x, 0.0, 0.0));
+            world
+        };
+        let start = SimTime::ZERO;
+        // Died, then came back, inside one burst: the bot ends alive.
+        let mut bot = BotPlayer::new("bot".into());
+        bot.observe_at(frame(1, 0.0, vec![state(true)]), start);
+        bot.observe_at(frame(2, 10.0, vec![state(false)]), start);
+        bot.observe_at(frame(3, 20.0, Vec::new()), start);
+        assert_eq!(bot.pending.len(), 2);
+        assert!(bot.respawn_at.is_none(), "observing alone decides nothing");
+        bot.decide(start);
+        assert!(bot.respawn_at.is_none() && bot.pending.is_empty());
+        let latest = bot.latest.as_ref().unwrap();
+        assert_eq!(latest.tick, 3);
+        assert_eq!(
+            latest.body("bot").unwrap().position,
+            Some(Vec3::new(20.0, 0.0, 0.0))
+        );
+        assert!(latest.events.is_empty());
+        // The other order ends dead and starts the respawn delay.
+        let mut bot = BotPlayer::new("bot".into());
+        bot.observe_at(frame(1, 0.0, vec![state(false)]), start);
+        bot.observe_at(frame(2, 0.0, vec![state(true)]), start);
+        bot.decide(start);
+        assert_eq!(bot.respawn_at, Some(start + RESPAWN_DELAY));
+        // A burst past the queue drops its oldest events, and says so.
+        let mut bot = BotPlayer::new("bot".into());
+        let many = (0..MAX_PENDING_EVENTS + 3).map(|_| state(false)).collect();
+        bot.observe_at(frame(1, 0.0, many), start);
+        assert_eq!(bot.pending.len(), MAX_PENDING_EVENTS);
+        assert_eq!(bot.dropped_events(), 3);
     }
 
     #[test]
@@ -666,11 +788,13 @@ mod tests {
             armor: 0,
             dead: true,
         });
-        bot.observe_at(&world, start);
-        assert_eq!(bot.inputs_at(start).count(), 0);
+        bot.observe_at(world.clone(), start);
+        bot.decide(start);
+        assert_eq!(bot.inputs_at(start).len(), 0);
         let due = start + RESPAWN_DELAY;
         assert!(!bot.request_respawn_at(due));
-        bot.observe_at(&world, due);
+        bot.observe_at(world.clone(), due);
+        bot.decide(due);
         assert!(bot.request_respawn_at(due));
         assert!(!bot.request_respawn_at(due));
         world.events[0] = SnapshotEvent::CombatState {
@@ -679,8 +803,9 @@ mod tests {
             armor: 0,
             dead: false,
         };
-        bot.observe_at(&world, due);
-        assert_eq!(bot.inputs_at(due).count(), 1);
+        bot.observe_at(world.clone(), due);
+        bot.decide(due);
+        assert_eq!(bot.inputs_at(due).len(), 1);
     }
 }
 
