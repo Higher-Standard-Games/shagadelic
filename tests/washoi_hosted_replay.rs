@@ -120,7 +120,7 @@ async fn send_snapshot(socket: &mut Socket, entity: &str, tick: u32, death: bool
 }
 
 #[tokio::test]
-async fn hosted_brain_obeys_decision_budget_and_replays_the_golden_actions() {
+async fn hosted_brain_obeys_decision_budget_and_replays_the_golden_actions_and_bursts() {
     timeout(Duration::from_secs(5), async {
         let trace: Trace =
             serde_json::from_str(include_str!("fixtures/washoi_decision_replay.json")).unwrap();
@@ -181,11 +181,21 @@ async fn hosted_brain_obeys_decision_budget_and_replays_the_golden_actions() {
             );
         }
 
+        // A burst: a one-tick death, then a snapshot without it. Under a zero
+        // decision budget both are observed and nothing is planned.
         send_snapshot(&mut socket, &trace.entity_id, 11, true).await;
         send_snapshot(&mut socket, &trace.entity_id, 12, false).await;
-        advance(&mut session, 24, 0, 0);
+        let mut observed = 0;
+        while observed < 2 {
+            let progress = advance(&mut session, 24, 0, 0);
+            assert_eq!(progress.decisions, 0);
+            observed += progress.events;
+            tokio::task::yield_now().await;
+        }
+        // One decision covers both, in order. The respawn request below shows
+        // it saw the death that the latest view no longer carries.
         assert_eq!(advance(&mut session, 24, 0, 1).decisions, 1);
-        assert_eq!(advance(&mut session, 32, 0, 1).decisions, 1);
+        assert_eq!(advance(&mut session, 32, 0, 1).decisions, 0);
         send_snapshot(&mut socket, &trace.entity_id, 160, false).await;
         advance(&mut session, 2523, 0, 1);
         advance(&mut session, 2524, 1, 0);

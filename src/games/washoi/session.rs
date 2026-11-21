@@ -10,7 +10,7 @@ use tokio::{sync::mpsc, task::JoinHandle};
 use crate::runtime::{Deadlines, EntityKey, GameSession, SessionEvent, Update};
 
 use super::{
-    BotPlayer, Difficulty, LearnedRoutes, Observation, Sight, SimTime, WashoiNavigation,
+    BotPlayer, Difficulty, LearnedRoutes, Sight, SimTime, WashoiNavigation,
     behavior::INPUT_PERIOD,
     protocol::{self, AdmissionError, InputBatch, SnapshotEvent, WashoiEvents, connect},
 };
@@ -55,10 +55,6 @@ impl MapAssets {
     }
 }
 
-// Retain the entity positions and server tick that gave each transient event
-// its meaning (for example a sound or a jump-pad contact).
-const MAX_PENDING_FRAMES: usize = 32;
-
 enum SocketEvent {
     Admitted {
         key: EntityKey,
@@ -74,7 +70,6 @@ struct BotTask {
     actions: mpsc::Sender<InputBatch>,
     difficulty: Difficulty,
     player: Option<BotPlayer>,
-    pending: VecDeque<(SimTime, Observation)>,
 }
 
 /// One lobby. Each connection handles I/O while the session owns its bot brain.
@@ -152,7 +147,6 @@ impl GameSession for WashoiSession {
                 actions,
                 difficulty,
                 player: None,
-                pending: VecDeque::new(),
             },
         );
         Ok(())
@@ -200,17 +194,11 @@ impl GameSession for WashoiSession {
                 ))
             }
             SocketEvent::Snapshot(key, state) => {
-                if let Some(bot) = self.bots.get_mut(&key) {
-                    if bot.pending.len() >= MAX_PENDING_FRAMES {
-                        self.remove(&key);
-                        self.reports.push_back(BotReport::Ended {
-                            key: key.clone(),
-                            reason: "observation_backlog",
-                        });
-                        return Some(SessionEvent::Ended(key));
-                    }
-                    let received = SimTime::from_elapsed(self.now);
-                    bot.pending.push_back((received, protocol::observe(&state)));
+                // Observing only stores the latest view and queues its events
+                // in order, so it runs on arrival. Planning waits for a
+                // budgeted decision.
+                if let Some(player) = self.bots.get_mut(&key).and_then(|bot| bot.player.as_mut()) {
+                    player.observe_at(protocol::observe(&state), SimTime::from_elapsed(self.now));
                 }
                 Some(SessionEvent::WakeDecision(key))
             }
@@ -236,12 +224,10 @@ impl GameSession for WashoiSession {
         let player = bot.player.as_mut()?;
         match kind {
             Update::Decision => {
-                let (received, observation) = bot.pending.pop_front()?;
-                player.observe_at(observation, received);
-                player.decide(received);
-                // One frame per permit including its ordered events. A later
-                // grant resumes the queue, even without another network wake.
-                (!bot.pending.is_empty()).then_some(now)
+                // One decision covers every observation since the last one.
+                // The next snapshot wakes the following decision.
+                player.decide(SimTime::from_elapsed(now));
+                None
             }
             Update::Input => {
                 // Reserve before advancing an exact maneuver or respawn timer.
