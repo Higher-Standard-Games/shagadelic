@@ -1,6 +1,6 @@
 #![cfg(feature = "washoi")]
 
-use shagadelic::games::washoi::protocol::{SnapshotEvent, SnapshotReceiver, WashoiEvents};
+use shagadelic::games::washoi::protocol::{SnapshotEvent, SnapshotReceiver, WashoiEvents, observe};
 use shagger_shared::net::snapshot::NoEvents;
 
 fn empty_snapshot(tick: u32, baseline: Option<u32>) -> Vec<u8> {
@@ -26,6 +26,9 @@ fn washoi_events_survive_snapshot_decoding_in_wire_order() {
         [SnapshotEvent::CombatState { entity_id, health: 100, dead: false, .. }, SnapshotEvent::MatchState(_)]
             if entity_id == "e"
     ));
+    let observation = observe(&snapshot.state);
+    assert_eq!(observation.tick, 1);
+    assert_eq!(observation.events, snapshot.state.events);
 }
 
 #[test]
