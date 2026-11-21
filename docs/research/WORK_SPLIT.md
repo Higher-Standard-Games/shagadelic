@@ -19,6 +19,18 @@ Shared files: `behavior.rs`, `mod.rs`, `difficulty.rs`, `navigation.rs`, `naviga
 - `origin` is `github.com/Higher-Standard-Games/shagadelic`. Push only when the user asks.
 - Update this file when ownership changes, and the design doc when a contract or milestone changes.
 
+## Current handoff: Washoi brain separation
+
+The gameplay ownership above describes the parity work. For the architecture milestone, use the assignments below. The baseline includes the perception changes in `17db763`. Capture their behavior before changing the brain or switching the live scheduler.
+
+| Session | First deliverable | File ownership during the refactor |
+| --- | --- | --- |
+| A | Define Washoi-owned observations and actions with B. Port the production brain to those types and caller-supplied simulation time. Preserve perception, chase memory, skill priority, and exact maneuvers. | Own the new game-domain types, `behavior.rs`, its gameplay helpers, and the Washoi module exports. |
+| B | Map reconstructed snapshots and ordered events into A's observation contract and actions into paced wire inputs. Move decision execution under the scheduler's decision budget. | Own `session.rs`, `protocol/`, and any necessary host or runtime changes. Keep socket admission, ACKs, backpressure, removal, and lobby shutdown working. |
+| C, if available | Capture a short reference trace on the pre-refactor baseline. Include elapsed times, a transient event and an exact input sequence. Then replay the same fixture through the synchronous brain and compare outputs with the live path. | Own replay fixtures and independent integration tests. If a test needs a private hook, ask the owning session to expose it. B owns this verification if C is unavailable. |
+
+A and B first agree on observation, ordered event, action, and time semantics against the trace. B can exercise burst delivery with a zero decision budget while A ports gameplay. Wire the production paths together after the replay matches. Finish with a private lobby smoke covering admission, movement, traversal, combat, and shutdown. Keep HUNCH training and waypoint schema changes for their own milestones.
+
 ## Handover for session B: traversal and lobby wiring
 
 ### 1. Jump, jump pad, and teleporter edges
