@@ -1,6 +1,6 @@
 use serde::Deserialize;
 
-use super::Route;
+use super::{PickupGoal, Route};
 
 const MAX_NODES: usize = 256;
 const MAX_ENTRIES: usize = 32;
@@ -17,6 +17,8 @@ pub(super) struct WalkGraph {
     learned_goals: Vec<(usize, String)>,
     #[serde(default)]
     learned_landings: Vec<(usize, String)>,
+    #[serde(default)]
+    pickup_goals: Vec<(usize, PickupGoal)>,
 }
 
 impl WalkGraph {
@@ -44,6 +46,12 @@ impl WalkGraph {
             return Err("invalid learned landing anchor");
         }
         let mut neighbors = vec![Vec::new(); count];
+        let mut pickups = vec![None; count];
+        for (goal, pickup) in &self.pickup_goals {
+            if !self.goals.contains(goal) || pickups[*goal].replace(*pickup).is_some() {
+                return Err("invalid or duplicate pickup goal");
+            }
+        }
         let mut learned = vec![None; count];
         for (goal, id) in &self.learned_goals {
             if !self.goals.contains(goal) || id.trim().is_empty() || learned[*goal].is_some() {
@@ -72,7 +80,7 @@ impl WalkGraph {
                     .map(|(entry, id)| (*entry, Some(id.as_str()))),
             )
             .flat_map(|(entry, resumed_from)| {
-                self.routes_from(entry, &neighbors, &learned, resumed_from)
+                self.routes_from(entry, &neighbors, &learned, &pickups, resumed_from)
             })
             .collect();
         if routes.is_empty() {
@@ -86,6 +94,7 @@ impl WalkGraph {
         entry: usize,
         neighbors: &[Vec<usize>],
         learned: &[Option<&str>],
+        pickups: &[Option<PickupGoal>],
         resumed_from: Option<&str>,
     ) -> Vec<Route> {
         let mut routes = Vec::new();
@@ -123,6 +132,7 @@ impl WalkGraph {
                     waypoints,
                     learned_route: learned[node].map(str::to_owned),
                     resumed_from: resumed_from.map(str::to_owned),
+                    pickup: pickups[node],
                 });
                 if routes.len() == ROUTES_PER_ENTRY + usize::from(resumed_from.is_none()) {
                     break;

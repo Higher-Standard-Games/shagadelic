@@ -98,14 +98,20 @@ async function cachedGraph() {
   const entries = [];
   const goals = [];
   const nodes = [];
-  for (const { id, position, type } of original) {
+  const pickupGoals = [];
+  const pickupById = new Map(map.pickups.map((pickup) => [pickup.id, pickup]));
+  for (const { id, position, type, pickupId } of original) {
     if (type !== "spawn" && type !== "item" && type !== "floor") continue;
     // BotNavGraph.walkOrigin lifts floor and item nodes to the standing origin.
     const index = nodes.length;
     standing.set(id, index);
     nodes.push([position.x, position.y + (type === "spawn" ? 0 : 24), position.z]);
     if (type === "spawn") entries.push(index);
-    if (type === "item") goals.push(index);
+    if (type === "item") {
+      goals.push(index);
+      const pickup = pickupById.get(pickupId);
+      if (pickup) pickupGoals.push([index, { id: pickup.id, kind: pickup.type }]);
+    }
   }
   const edges = [];
   for (const edge of transitions) {
@@ -114,7 +120,11 @@ async function cachedGraph() {
     if (edge.type !== "walk" || edge.via?.length || from === undefined || to === undefined) continue;
     if (Math.abs(nodes[from][1] - nodes[to][1]) <= 32) edges.push([from, to]);
   }
-  return { nodes, edges, entries, goals };
+  for (const [node] of pickupGoals) {
+    if (entries.length >= 32) break;
+    entries.push(node);
+  }
+  return { nodes, edges, entries, goals, pickup_goals: pickupGoals };
 }
 
 function reachable(anchors, edges, reverse = false) {

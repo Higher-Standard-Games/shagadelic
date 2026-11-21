@@ -1,4 +1,5 @@
 mod behavior;
+mod goals;
 mod learned;
 mod navigation;
 pub mod protocol;

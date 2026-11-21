@@ -21,7 +21,7 @@ The current milestone is an **opt-in, playable Washoi bot service**. The bundled
 | Gameplay | Movement, death, and respawn | Partial | The bot can walk or steer to authored waypoints. A live Washoi fixture confirmed the respawn request and waypoint arrival after respawn. Advanced movement remains open. |
 | Gameplay | Team and difficulty settings | Partial | The join path accepts a team preference and a seat ticket. Difficulty profiles and team decision behavior have yet to be ported. |
 | Gameplay | Map loading, navigation, and traversal | Partial | Includes baked pathfinding, stall recovery, and automatic links to recorded maneuvers. On `washoi_dm2`, the bot walked to a takeoff, landed the recorded jump, and reached a separate walking goal. Runtime collision checks and routes that chain several maneuvers remain open. |
-| Gameplay | Perception, combat, and skills | Planned | Port visibility, target memory, aiming, weapon and item decisions, and team tactics. Add goal and skill scoring with replayable decision traces. |
+| Gameplay | Perception, combat, and skills | Partial | Pickup goals use the bot's own health and armor, route distance, and locally observed availability. Visibility, target memory, aiming, weapon decisions, team tactics, and replayable decision traces remain open. |
 | Gameplay | Game-mode parity | Planned | Duel covers basic live admission. Full Duel, Amphi, FFA, and S&D behavior needs scenario coverage. |
 | Rollout | Ratings and match reports | Planned | Rust bot matches run unrated on the integration branches. Rating identity and match report parity are required before enabling rated play. |
 | Extensibility | Additional games and protocol adapters | Planned | The embeddable session boundary has tests. Washoi is the only real integration, and the generic protocol adapter interface remains a design sketch. |
@@ -241,6 +241,8 @@ node node_modules/vite-node/vite-node.mjs <SHAGADELIC>/tools/bake-washoi-walk-gr
 ```
 
 This mode reused the existing `washoi_dm2` cache to generate 84 nodes and 188 walking edges. Use its output as the `navigation` object. Corner and traversal edges will need support for their intermediate waypoints and execution rules.
+
+The cache importer also preserves stable pickup IDs and item categories from the authoritative map table. It adds pickup nodes as possible re-entry points within the graph's entry limit. Among pickup paths from the chosen entry, the bot scores health and armor need, pickup type, and walking distance. The bot consults availability only after reaching the item's waypoint and remembers a missing item for four seconds. It can then choose another reachable pickup. A live `washoi_dm2` fixture damaged the bot and verified that it recovered health when the server marked pickup 5 inactive. Pickup timing, weapon ownership checks, and goal choice between combat and resource collection remain open.
 
 The demo workflow is a separate source. `training_demo` recordings processed by `bot:learn` produce `config/bot-routes/<map>.json`. Those records carry a start pose, landing, and run-length-encoded commands for deterministic maneuvers. `config/bot-lanes/<map>.json`, written by `bot:lanes`, can feed S&D tactics when that layer is implemented.
 

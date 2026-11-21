@@ -4,9 +4,9 @@ mod graph;
 use serde::Deserialize;
 use shagger_shared::net::game_state::Vec3;
 
-use super::protocol::PlayerInput;
+use super::{goals::PickupGoal, protocol::PlayerInput};
 
-pub(super) use follower::RouteFollower;
+pub(super) use follower::{RouteFollower, RouteObservation};
 
 const ENTRY_RADIUS: f64 = 48.0;
 const ARRIVAL_RADIUS: f64 = 16.0;
@@ -35,6 +35,8 @@ struct Route {
     learned_route: Option<String>,
     #[serde(default)]
     resumed_from: Option<String>,
+    #[serde(default)]
+    pickup: Option<PickupGoal>,
 }
 
 impl TryFrom<RouteFile> for WashoiNavigation {
@@ -103,22 +105,38 @@ impl WashoiNavigation {
     }
 
     fn route_at(&self, position: Vec3, allowed: impl Fn(&Route) -> bool) -> Option<usize> {
+        self.select_route(position, allowed, |_| 0.0)
+    }
+
+    fn select_route(
+        &self,
+        position: Vec3,
+        allowed: impl Fn(&Route) -> bool,
+        score: impl Fn(&Route) -> f64,
+    ) -> Option<usize> {
         self.routes
             .iter()
             .enumerate()
             .filter(|(_, route)| allowed(route))
             .filter(|(_, route)| (route.entry[1] - position.y).abs() <= MAX_HEIGHT_DELTA)
-            .map(|(index, route)| (index, horizontal_distance(position, route.entry)))
-            .filter(|(_, distance)| *distance <= ENTRY_RADIUS)
-            .min_by(|(a_index, a), (b_index, b)| {
-                a.total_cmp(b).then_with(|| {
-                    self.routes[*b_index]
-                        .learned_route
-                        .is_some()
-                        .cmp(&self.routes[*a_index].learned_route.is_some())
-                })
+            .filter_map(|(index, route)| {
+                let distance = horizontal_distance(position, route.entry);
+                (distance <= ENTRY_RADIUS).then(|| (index, distance, score(route)))
             })
-            .map(|(index, _)| index)
+            .min_by(
+                |(a_index, a_distance, a_score), (b_index, b_distance, b_score)| {
+                    a_distance
+                        .total_cmp(b_distance)
+                        .then_with(|| {
+                            self.routes[*b_index]
+                                .learned_route
+                                .is_some()
+                                .cmp(&self.routes[*a_index].learned_route.is_some())
+                        })
+                        .then_with(|| b_score.total_cmp(a_score))
+                },
+            )
+            .map(|(index, _, _)| index)
     }
 
     pub(super) fn steer(&self, route: usize, next: &mut usize, position: Vec3) -> PlayerInput {

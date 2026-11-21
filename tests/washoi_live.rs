@@ -8,6 +8,67 @@ use shagadelic::games::washoi::{
 };
 
 #[tokio::test]
+#[ignore = "requires the local washoi_dm2 health-pickup fixture"]
+async fn washoi_bot_collects_health_from_a_pickup_goal() {
+    let endpoint = std::env::var("SHAGADELIC_TEST_WASHOI").expect("local Washoi endpoint");
+    let navigation: WashoiNavigation = serde_json::from_value(serde_json::json!({
+        "map":"washoi_dm2",
+        "routes":[{
+            "entry":[268,169.03125,112],"waypoints":[[284,171.03125,36]],
+            "pickup":{"id":5,"kind":"health"}
+        }]
+    }))
+    .unwrap();
+    let deadline = Duration::from_secs(8);
+    let mut connection = connect(
+        &endpoint,
+        "SHAGADELIC pickup".into(),
+        None,
+        None,
+        deadline,
+        WashoiEvents,
+        |_| {},
+    )
+    .await
+    .unwrap();
+    let entity = connection.identity.entity_id.clone();
+    let mut damage = None;
+    let mut recovered = false;
+    let result = tokio::time::timeout(
+        deadline,
+        connection.play(
+            BotPlayer::new(entity.clone()).with_navigation(Arc::new(navigation)),
+            |state| {
+                for event in &state.events {
+                    if let SnapshotEvent::CombatState {
+                        entity_id,
+                        health,
+                        dead: false,
+                        ..
+                    } = event
+                        && *entity_id == entity
+                    {
+                        if let Some(low) = damage {
+                            recovered |=
+                                *health > low && state.pickup_active_mask.get(5) == Some(&false);
+                        }
+                        if *health < 100 {
+                            damage = Some(damage.map_or(*health, |low: u16| low.min(*health)));
+                        }
+                    }
+                }
+                !recovered
+            },
+        ),
+    )
+    .await;
+    assert!(
+        recovered,
+        "health pickup was not confirmed after damage {damage:?}: {result:?}"
+    );
+}
+
+#[tokio::test]
 #[ignore = "requires a Washoi fixture that spawns the bot at the first learned route"]
 async fn washoi_replays_the_existing_learned_route() {
     let endpoint = std::env::var("SHAGADELIC_TEST_WASHOI").expect("local Washoi endpoint");

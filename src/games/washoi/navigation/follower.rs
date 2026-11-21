@@ -1,15 +1,28 @@
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use shagger_shared::net::game_state::Vec3;
 use tokio::time::Instant;
 
 use super::{PlayerInput, Route, WashoiNavigation, horizontal_distance};
+use crate::games::washoi::goals::OwnVitals;
 
 const STALL_TIMEOUT: Duration = Duration::from_millis(800);
 const RETRY_DELAY: Duration = Duration::from_secs(5);
 const MIN_PROGRESS: f64 = 8.0;
 const DISPLACEMENT: f64 = 128.0;
 const MAX_BLOCKS: usize = 16;
+const PICKUP_RECHECK: Duration = Duration::from_secs(4);
+const LOCAL_PICKUP_RADIUS: f64 = 24.0;
+
+#[derive(Clone, Copy)]
+pub(in crate::games::washoi) struct RouteObservation<'a> {
+    pub(in crate::games::washoi) now: Instant,
+    pub(in crate::games::washoi) vitals: OwnVitals,
+    pub(in crate::games::washoi) pickup_active: &'a [bool],
+    pub(in crate::games::washoi) allow_takeoff: bool,
+    pub(in crate::games::washoi) landed_id: Option<&'a str>,
+}
 
 #[derive(Clone, Copy, PartialEq)]
 struct Leg {
@@ -34,6 +47,7 @@ pub(in crate::games::washoi) struct RouteFollower {
     active: Option<ActiveRoute>,
     last_position: Option<Vec3>,
     blocked: Vec<(Leg, Instant)>,
+    pickup_unavailable: BTreeMap<usize, Instant>,
 }
 
 impl RouteFollower {
@@ -52,11 +66,17 @@ impl RouteFollower {
         &mut self,
         navigation: &WashoiNavigation,
         position: Vec3,
-        now: Instant,
-        allow_takeoff: bool,
-        landed_id: Option<&str>,
+        observation: RouteObservation<'_>,
     ) -> PlayerInput {
+        let RouteObservation {
+            now,
+            vitals,
+            pickup_active,
+            allow_takeoff,
+            landed_id,
+        } = observation;
         self.blocked.retain(|(_, until)| now < *until);
+        self.pickup_unavailable.retain(|_, until| now < *until);
         if self
             .last_position
             .replace(position)
@@ -71,8 +91,12 @@ impl RouteFollower {
         }
         if self.active.is_none() {
             let unblocked = |route: &Route| {
-                (0..route.waypoints.len())
-                    .all(|next| !self.blocked.iter().any(|(leg, _)| *leg == route.leg(next)))
+                let available = route
+                    .pickup
+                    .is_none_or(|pickup| !self.pickup_unavailable.contains_key(&pickup.id));
+                available
+                    && (0..route.waypoints.len())
+                        .all(|next| !self.blocked.iter().any(|(leg, _)| *leg == route.leg(next)))
             };
             let continued = landed_id.and_then(|id| {
                 navigation.route_at(position, |route| {
@@ -80,11 +104,27 @@ impl RouteFollower {
                 })
             });
             let Some(index) = continued.or_else(|| {
-                navigation.route_at(position, |route| {
-                    route.resumed_from.is_none()
-                        && (allow_takeoff || route.learned_route.is_none())
-                        && unblocked(route)
-                })
+                navigation.select_route(
+                    position,
+                    |route| {
+                        route.resumed_from.is_none()
+                            && (allow_takeoff || route.learned_route.is_none())
+                            && unblocked(route)
+                    },
+                    |route| {
+                        route.pickup.map_or(0.0, |pickup| {
+                            let travel = route
+                                .waypoints
+                                .iter()
+                                .fold((route.entry, 0.0), |(from, total), &to| {
+                                    let distance = (to[0] - from[0]).hypot(to[2] - from[2]);
+                                    (to, total + distance)
+                                })
+                                .1;
+                            pickup.value(vitals) / (1.0 + travel / 512.0)
+                        })
+                    },
+                )
             }) else {
                 return PlayerInput::default();
             };
@@ -99,6 +139,18 @@ impl RouteFollower {
         let input = navigation.steer(active.index, &mut active.next, position);
         let route = &navigation.routes[active.index];
         let Some(&goal) = route.waypoints.get(active.next) else {
+            // Learn availability only at the end of a route within pickup
+            // range. The server's full-map mask is broader than bot knowledge.
+            if let Some(pickup) = route.pickup
+                && let Some(&target) = route.waypoints.last()
+                && horizontal_distance(position, target) <= LOCAL_PICKUP_RADIUS
+                && (target[1] - position.y).abs() <= LOCAL_PICKUP_RADIUS
+                && pickup_active.get(pickup.id) == Some(&false)
+            {
+                self.pickup_unavailable
+                    .insert(pickup.id, now + PICKUP_RECHECK);
+                self.active = None;
+            }
             return input;
         };
         let distance = horizontal_distance(position, goal);
@@ -147,6 +199,65 @@ impl Route {
 mod tests {
     use super::*;
 
+    fn observe(now: Instant, allow_takeoff: bool, landed_id: Option<&str>) -> RouteObservation<'_> {
+        RouteObservation {
+            now,
+            vitals: OwnVitals::default(),
+            pickup_active: &[],
+            allow_takeoff,
+            landed_id,
+        }
+    }
+
+    #[test]
+    fn low_health_prefers_recovery_and_only_notices_missing_pickups_locally() {
+        let nav: WashoiNavigation = serde_json::from_str(
+            r#"{"map":"test","routes":[
+            {"entry":[0,0,0],"waypoints":[[40,0,0]],"pickup":{"id":0,"kind":"health"}},
+            {"entry":[0,0,0],"waypoints":[[0,0,40]],"pickup":{"id":1,"kind":"armor"}},
+            {"entry":[40,0,0],"waypoints":[[40,0,40]],"pickup":{"id":1,"kind":"armor"}}
+        ]}"#,
+        )
+        .unwrap();
+        let now = Instant::now();
+        let origin = Vec3::default();
+        let health = Vec3::new(40.0, 0.0, 0.0);
+        let mut follower = RouteFollower::default();
+        let observation = RouteObservation {
+            vitals: OwnVitals {
+                health: Some(10),
+                armor: Some(100),
+            },
+            pickup_active: &[false, true],
+            ..observe(now, false, None)
+        };
+        assert_eq!(
+            follower.steer(&nav, origin, observation).direction,
+            [1.0, 0.0, 0.0]
+        );
+        assert_eq!(
+            follower.steer(&nav, health, observation).direction,
+            [0.0; 3]
+        );
+        assert_eq!(
+            follower.steer(&nav, health, observation).direction,
+            [0.0, 0.0, 1.0]
+        );
+
+        let mut healthy = RouteFollower::default();
+        let observation = RouteObservation {
+            vitals: OwnVitals {
+                health: Some(100),
+                armor: Some(0),
+            },
+            ..observation
+        };
+        assert_eq!(
+            healthy.steer(&nav, origin, observation).direction,
+            [0.0, 0.0, 1.0]
+        );
+    }
+
     #[test]
     fn graph_continuation_requires_the_matching_landing() {
         let graph: WashoiNavigation = serde_json::from_str(
@@ -164,25 +275,29 @@ mod tests {
         let mut follower = RouteFollower::default();
         let start = Vec3::new(0.0, 0.0, 0.0);
         assert_eq!(
-            follower.steer(&graph, start, now, true, None).direction,
+            follower
+                .steer(&graph, start, observe(now, true, None))
+                .direction,
             [1.0, 0.0, 0.0]
         );
         assert_eq!(follower.takeoff(&graph), Some("jump"));
         follower = RouteFollower::default();
         assert_eq!(
-            follower.steer(&graph, start, now, false, None).direction,
+            follower
+                .steer(&graph, start, observe(now, false, None))
+                .direction,
             [0.0, 0.0, 1.0]
         );
         let landing = Vec3::new(200.0, 0.0, 200.0);
         assert_eq!(
             follower
-                .steer(&graph, landing, now, false, Some("other"))
+                .steer(&graph, landing, observe(now, false, Some("other")))
                 .direction,
             [0.0; 3]
         );
         assert_eq!(
             follower
-                .steer(&graph, landing, now, false, Some("jump"))
+                .steer(&graph, landing, observe(now, false, Some("jump")))
                 .direction,
             [-1.0, 0.0, 0.0]
         );
@@ -202,22 +317,28 @@ mod tests {
         let start = Instant::now();
         let anchor = Vec3::new(0.0, 0.0, 0.0);
         assert_eq!(
-            follower.steer(&nav, anchor, start, true, None).direction,
+            follower
+                .steer(&nav, anchor, observe(start, true, None))
+                .direction,
             [1.0, 0.0, 0.0]
         );
         let stalled = start + STALL_TIMEOUT;
         assert_eq!(
-            follower.steer(&nav, anchor, stalled, true, None).direction,
+            follower
+                .steer(&nav, anchor, observe(stalled, true, None))
+                .direction,
             [0.0; 3]
         );
         assert_eq!(
-            follower.steer(&nav, anchor, stalled, true, None).direction,
+            follower
+                .steer(&nav, anchor, observe(stalled, true, None))
+                .direction,
             [0.0, 0.0, 1.0]
         );
         let displaced = Vec3::new(200.0, 0.0, 0.0);
         assert_eq!(
             follower
-                .steer(&nav, displaced, stalled, true, None)
+                .steer(&nav, displaced, observe(stalled, true, None))
                 .direction,
             [-1.0, 0.0, 0.0]
         );

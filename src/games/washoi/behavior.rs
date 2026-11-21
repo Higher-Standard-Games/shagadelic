@@ -3,7 +3,8 @@ use std::{sync::Arc, time::Duration};
 use shagger_shared::net::game_state::GameState;
 use tokio::time::Instant;
 
-use super::navigation::RouteFollower;
+use super::goals::OwnVitals;
+use super::navigation::{RouteFollower, RouteObservation};
 use super::protocol::{PlayerInput, SnapshotEvent};
 use super::{LearnedRoutes, WashoiNavigation, learned::Traversal};
 
@@ -27,6 +28,7 @@ pub struct BotPlayer {
     learned: Option<Arc<LearnedRoutes>>,
     traversal: Traversal,
     linked_takeoffs: bool,
+    vitals: OwnVitals,
 }
 
 impl BotPlayer {
@@ -43,6 +45,7 @@ impl BotPlayer {
             learned: None,
             traversal: Traversal::default(),
             linked_takeoffs: false,
+            vitals: OwnVitals::default(),
             planned_input: PlayerInput {
                 direction: [0.0, 0.0, 1.0],
                 ..PlayerInput::default()
@@ -73,8 +76,15 @@ impl BotPlayer {
         for event in &world.events {
             match event {
                 SnapshotEvent::CombatState {
-                    entity_id, dead, ..
+                    entity_id,
+                    dead,
+                    health,
+                    armor,
                 } if *entity_id == self.entity_id => {
+                    self.vitals = OwnVitals {
+                        health: Some(*health),
+                        armor: Some(*armor),
+                    };
                     if *dead {
                         self.respawn_at.get_or_insert(now + RESPAWN_DELAY);
                     } else {
@@ -124,9 +134,14 @@ impl BotPlayer {
                 self.planned_input = self.route.steer(
                     navigation,
                     position,
-                    now,
-                    self.learned.is_some() && self.traversal.landing_result().is_none(),
-                    landed,
+                    RouteObservation {
+                        now,
+                        vitals: self.vitals,
+                        pickup_active: &world.pickup_active_mask,
+                        allow_takeoff: self.learned.is_some()
+                            && self.traversal.landing_result().is_none(),
+                        landed_id: landed,
+                    },
                 );
                 if let Some(library) = &self.learned
                     && let Some(id) = self.route.takeoff(navigation)
