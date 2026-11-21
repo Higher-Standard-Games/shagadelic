@@ -57,10 +57,6 @@ Suggested path:
 
 Done: strafing and hit dodges (`b83927c`), rocket and grenade sidesteps (`37eef1d`), chasing an enemy out of sight (`efe5de9`), perception (`17db763`), the brain's side of the separation (`7ead674` to `cefd2cf`), weapon combos (`e8b1990`), cover peeking (`565fb7a`), high ground (`a189c5f`), charged blade blasts (`b604ac2`), the enemy estimate with the finishing switch (`7b5bd29`), order priority over fight movement (`1460384`), readying a gun for heard enemies, holding still to plant or defuse, and keeping to the upper ground (pending S&D checks). Hunting turned out to be mostly covered by chase and roaming, and the design records why. The rest needs the strategy layer's weight profiles.
 
-Next:
-1. Major item pickups heard by item, to credit enemy takes in the estimate.
-3. Bot mistakes from `BotMood.ts`: wild shots, wrong weapon, item glances.
-
 ## Parity backlog
 
 The goal is every TypeScript bot skill in `src/games/fps/bot/`, not a sample. `tools/bench-washoi-ab.mjs` orders the work: take next what costs the Rust bot most against the TypeScript bot. Line counts are the TypeScript sources.
@@ -68,12 +64,13 @@ The goal is every TypeScript bot skill in `src/games/fps/bot/`, not a sample. `t
 Session A, decisions and combat:
 - [x] Mood and mistakes: `BotMood.ts` (160). Wild shots, wrong weapon, item glances, forgetting an enemy.
 - [x] Fire safety: `BotFireSafety.ts` (97).
-- [ ] Goal arbiter and considerations: `goals/` (about 1,500). Covers `GoalArbiter`, `ItemGoalPlanner`, `ItemGoalSource`, and `DirectiveGoalSource`, plus the Danger, ItemDenial, ContestedItem, ItemValue, RouteCost, TeamPlay, and ObjectivePush considerations.
-- [ ] Strategy layer: `strategy/Strategist.ts` (448), `strategy/OpponentModel.ts` (59), the rest of `strategy/MatchRead.ts`, `intel/` (393), `BotTerritory.ts` (62), and `states/BotRoam.ts` roam choice (`goals/RoamChoice.ts`).
+- [x] Goal arbiter and considerations: `goals/` (about 1,500). Covers `GoalArbiter`, `ItemGoalPlanner`, `ItemGoalSource`, and `DirectiveGoalSource`, plus the Danger, ItemDenial, ContestedItem, ItemValue, RouteCost, TeamPlay, and ObjectivePush considerations.
+- [x] Strategy layer: `strategy/Strategist.ts` (448), `strategy/OpponentModel.ts` (59), the rest of `strategy/MatchRead.ts`, `BotTerritory.ts` (62), and `states/BotRoam.ts` roam choice (`goals/RoamChoice.ts`).
+- [ ] Learned strategy priors from earlier matches: `intel/` (393). Also the retreat's escape out of the enemy's sight (`BotRoam.retreat`, `_escapePoint`); a fading bot keeps to its route for now.
 - [x] Look behavior: `view/BotLook.ts` (226).
-- [ ] Blade lunge: `sequences/SlideBladeSequence.ts` (173).
-- [ ] Decision traces: `DecisionTrace.ts` (53) and replayable decision records.
-- [ ] Enemy major pickups credited in the estimate: `BotPerception` pickup hearing by item.
+- [x] Blade lunge: `sequences/SlideBladeSequence.ts` (173).
+- [x] Decision traces: `DecisionTrace.ts` (53) and replayable decision records.
+- [x] Enemy major pickups credited in the estimate: `BotPerception` pickup hearing by item.
 
 Session B, movement, navigation, and team play:
 - [ ] Movement sequences: `RouteCrouchslideSequence` (158), `RouteStrafeJumpSequence` (384), `ItemSlideApproachSequence` (152), `LedgeSlideJump` (107), and `FlyingStart` (175).
