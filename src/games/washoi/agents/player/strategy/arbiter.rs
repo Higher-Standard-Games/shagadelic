@@ -103,6 +103,7 @@ impl Arbiter {
     }
 
     /// The goal the bot is committed to.
+    #[cfg(test)]
     pub(in crate::games::washoi) fn committed(&self) -> Option<&str> {
         self.committed.as_deref()
     }

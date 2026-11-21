@@ -26,8 +26,12 @@ use crate::games::washoi::agents::player::navigation::{
     RouteFollower, RouteObservation,
     unstick::{Unstick, UnstickView},
 };
+use crate::games::washoi::agents::player::strategy::candidates::{Candidate, GoalTarget};
+use crate::games::washoi::agents::player::strategy::considerations::{Me, Situation};
 use crate::games::washoi::agents::player::strategy::goals::OwnVitals;
 use crate::games::washoi::agents::player::strategy::orders::Orders;
+use crate::games::washoi::agents::player::strategy::planner::{KnownPickup, Planner};
+use crate::games::washoi::agents::player::strategy::weights::MatchContext;
 use crate::games::washoi::difficulty::AimSkill;
 use crate::games::washoi::hosting::net::protocol::{PlayerInput, SnapshotEvent};
 use crate::games::washoi::random::Random;
@@ -50,6 +54,9 @@ const RESPAWN_DELAY: Duration = Duration::from_millis(2500);
 /// Events kept for the next decision. A burst beyond this drops the oldest,
 /// counted in `dropped_events`.
 const MAX_PENDING_EVENTS: usize = 4096;
+/// How long the route follower chooses freely after it could not plan to
+/// the arbiter's pickup.
+const FREE_ROAM: Duration = Duration::from_secs(2);
 
 /// The pilot walks forward or follows an authored route while alive, and
 /// fights enemies in sight when it has the map's sight file.
@@ -92,6 +99,22 @@ pub struct BotPlayer {
     /// A ledge to fight from with a splash weapon, and the walk there.
     high_ground: HighGround,
     climb: Chase,
+    /// What to go for, the match it is chosen in, and the server ticks the
+    /// bot was hurt at lately.
+    planner: Planner,
+    match_context: Option<MatchContext>,
+    recent_damage: Vec<u32>,
+    /// Pickup walks as priced from the last graph node, and where.
+    /// Pickups with a walk from where the bot last decided, and the walk
+    /// between pickup pairs, which the map fixes.
+    walkable: Vec<usize>,
+    /// The follower chooses its own way until then, after failing to plan
+    /// to the goal set.
+    free_until: Option<SimTime>,
+    /// `SHAGADELIC_GOAL_ARBITER=verbose` logs each new goal choice.
+    verbose_goals: bool,
+    last_goal: Option<GoalTarget>,
+    pair_costs: std::collections::HashMap<(usize, usize), Option<f64>>,
     /// A server order steered this tick, which takes over from a chase.
     ordered: bool,
     /// Where to look while chasing, and whether to fire into the spot.
@@ -137,6 +160,15 @@ impl BotPlayer {
             shooting: false,
             fighting: false,
             unstick: Unstick::default(),
+            planner: Planner::new(Difficulty::default().mistake_rate()),
+            match_context: None,
+            recent_damage: Vec::new(),
+            walkable: Vec::new(),
+            free_until: None,
+            verbose_goals: std::env::var("SHAGADELIC_GOAL_ARBITER")
+                .is_ok_and(|mode| mode == "verbose"),
+            last_goal: None,
+            pair_costs: std::collections::HashMap::new(),
             high_ground: HighGround::default(),
             climb: Chase::default(),
             ordered: false,
@@ -153,6 +185,7 @@ impl BotPlayer {
 
     pub fn with_difficulty(mut self, difficulty: Difficulty) -> Self {
         self.difficulty = difficulty;
+        self.planner = Planner::new(difficulty.mistake_rate());
         self.aim = AimController::new(difficulty.aim());
         self
     }
@@ -649,6 +682,9 @@ impl BotPlayer {
                     health,
                     armor,
                 } if *entity_id == self.entity_id => {
+                    if self.vitals.health.is_some_and(|before| *health < before) {
+                        self.recent_damage.push(world.tick);
+                    }
                     self.vitals = OwnVitals {
                         health: Some(*health),
                         armor: Some(*armor),
@@ -661,6 +697,9 @@ impl BotPlayer {
                 }
                 SnapshotEvent::Death { entity_id, .. } if *entity_id == self.entity_id => {
                     self.respawn_at.get_or_insert(now + RESPAWN_DELAY);
+                }
+                SnapshotEvent::MatchState(state) => {
+                    self.match_context = Some(MatchContext::read(state));
                 }
                 _ => {}
             }
@@ -675,6 +714,9 @@ impl BotPlayer {
             self.traversal = Traversal::default();
             self.aim.clear();
             self.combat.respawned();
+            self.planner.reset();
+            self.walkable.clear();
+            self.route.set_goal(None);
         } else if !self.route.traversing()
             && let Some(library) = &self.learned
             && let Some(entity) = own
@@ -691,7 +733,40 @@ impl BotPlayer {
                 return true;
             }
         }
-        if !self.route.traversing()
+        let position = own
+            .and_then(|entity| entity.position)
+            .filter(|_| self.respawn_at.is_none() && !self.route.traversing());
+        // A pickup the follower cannot route to from here is given up on.
+        // The follower then chooses freely for a while.
+        if let Some(id) = self.route.goal_unplanned(now) {
+            self.planner.fail(&format!("pickup:{id}"), world.tick);
+            self.route.set_goal(None);
+            self.free_until = Some(now + FREE_ROAM);
+        }
+        let free = self.free_until.is_some_and(|until| now < until);
+        let goal = position.and_then(|position| self.choose_goal(world, now, position));
+        let to_pickup = matches!(goal, Some(GoalTarget::Pickup(_)));
+        // The follower walks the graph. From off it, or to a pickup it has
+        // no walk to, it keeps its own choice until it is back on a walk.
+        let walkable = |id: usize| !free && self.walkable.contains(&id);
+        match goal {
+            // Already on the way: setting the goal would drop the route.
+            Some(GoalTarget::Pickup(id))
+                if self
+                    .navigation
+                    .as_deref()
+                    .is_some_and(|navigation| self.route.active_pickup(navigation) == Some(id)) => {
+            }
+            Some(GoalTarget::Pickup(id)) if walkable(id) => self.route.set_goal(Some(id)),
+            Some(GoalTarget::Pickup(_)) => {}
+            Some(GoalTarget::Directive(id)) => {
+                self.orders.choose(&id);
+                self.route.set_goal(None);
+            }
+            None => self.route.set_goal(None),
+        }
+        if !to_pickup
+            && !self.route.traversing()
             && self.respawn_at.is_none()
             && let Some(entity) = own
             && let Some(position) = entity.position
@@ -752,6 +827,137 @@ impl BotPlayer {
             }
         }
         false
+    }
+
+    /// `ItemGoalPlanner.select`: the pickup or order to pursue. Until a
+    /// `match_state` names the gametype, orders keep their own choice and
+    /// only pickups are weighed, as the default profile gives orders no
+    /// weight.
+    fn choose_goal(
+        &mut self,
+        world: &Observation,
+        now: SimTime,
+        position: super::super::Vec3,
+    ) -> Option<GoalTarget> {
+        const DAMAGE_MEMORY_TICKS: u32 = 250;
+        let tick = world.tick;
+        self.recent_damage
+            .retain(|hit| tick.saturating_sub(*hit) <= DAMAGE_MEMORY_TICKS);
+        let navigation = self.navigation.as_deref();
+        let team = world
+            .player(&self.entity_id)
+            .map_or("", |player| player.team.as_str());
+        let weights = self
+            .match_context
+            .as_ref()
+            .map_or(strategy::weights::DEFAULT, |context| context.weights(team));
+        let costs = navigation
+            .map(|navigation| navigation.pickup_costs(position, self.sight.as_deref()))
+            .unwrap_or_default();
+        self.walkable = costs.iter().map(|(id, _)| *id).collect();
+        let pickups: Vec<KnownPickup> = navigation
+            .map(|navigation| {
+                navigation
+                    .pickups()
+                    .into_iter()
+                    .map(|(pickup, at)| {
+                        let returns = self.route.pickup_returns_at(pickup.id);
+                        let gone = self.route.pickup_unavailable(pickup.id, now);
+                        let up = world.pickup_active.get(pickup.id).copied().unwrap_or(!gone);
+                        KnownPickup {
+                            candidate: Candidate::pickup(
+                                pickup,
+                                at,
+                                costs
+                                    .iter()
+                                    .find(|(id, _)| *id == pickup.id)
+                                    .map(|(_, cost)| *cost),
+                            ),
+                            up,
+                            returns_tick: returns
+                                .filter(|_| !up)
+                                .map(|at| tick + ((at - now).as_secs_f64() * 125.0).round() as u32),
+                            blocked: up && gone || self.route.blocked_toward(at, now),
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut pickups = pickups;
+        // With no walk attached from here, rank by the straight-line
+        // estimate, as TypeScript does without a graph, rather than gating
+        // every pickup as unreachable. The follower keeps its own choice.
+        if costs.is_empty() {
+            for known in &mut pickups {
+                let [x, y, z] = known.candidate.position;
+                known.candidate.route_cost = Some(strategy::considerations::estimate_route_cost(
+                    position,
+                    super::super::Vec3::new(x, y, z),
+                ) as f32);
+            }
+        }
+        let orders: Vec<Candidate> = if self.match_context.is_some() {
+            self.orders.candidates(position).collect()
+        } else {
+            Vec::new()
+        };
+        if pickups.is_empty() && orders.is_empty() {
+            return None;
+        }
+        let (weapons, ammo) = self.combat.inventory();
+        let allies = self.combat.allies_by_id(world, &self.entity_id);
+        let me = Me {
+            position,
+            health: self.vitals.health.unwrap_or(100),
+            armor: self.vitals.armor.unwrap_or(0),
+            weapons,
+            ammo,
+        };
+        let situation = Situation {
+            tick,
+            recent_damage: &self.recent_damage,
+            known_enemies: self.combat.known_enemies(),
+            scoreboard_enemies: self.combat.scoreboard_enemies(world, &self.entity_id),
+            allies: &allies,
+            contested: None,
+        };
+        // Pair walks start at a pickup's node, so they need no sight trace,
+        // and the map fixes them: work each out once.
+        let pairs = std::cell::RefCell::new(&mut self.pair_costs);
+        let between = |from: &strategy::considerations::Goal,
+                       to: &strategy::considerations::Goal| {
+            let (from_id, to_id) = (from.pickup?.id, to.pickup?.id);
+            *pairs
+                .borrow_mut()
+                .entry((from_id, to_id))
+                .or_insert_with(|| {
+                    navigation?
+                        .pickup_costs(from.position, None)
+                        .into_iter()
+                        .find(|(id, _)| *id == to_id)
+                        .map(|(_, cost)| f64::from(cost))
+                })
+        };
+        let chosen = self.planner.select(
+            pickups,
+            orders,
+            me,
+            situation,
+            weights,
+            &between,
+            &mut self.random,
+        );
+        // `BOT_GOAL_ARBITER=verbose`: the decision line on each new choice.
+        if self.verbose_goals && chosen != self.last_goal {
+            eprintln!("[bot {}] {}", self.entity_id, self.planner.explain());
+        }
+        self.last_goal.clone_from(&chosen);
+        chosen
+    }
+
+    /// The goal arbiter's last decision on one line, for diagnostics.
+    pub fn goal_explain(&self) -> &str {
+        self.planner.explain()
     }
 
     /// Whether to ask the server for a respawn now. Asking starts its delay.

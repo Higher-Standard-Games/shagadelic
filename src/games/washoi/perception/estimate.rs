@@ -95,6 +95,11 @@ impl Estimates {
         enemy.known = tick;
     }
 
+    /// How many enemies the bot has met and believes alive.
+    pub(in crate::games::washoi) fn alive(&self) -> usize {
+        self.enemies.iter().filter(|enemy| enemy.alive).count()
+    }
+
     /// The estimate for a living enemy the bot has met.
     pub(in crate::games::washoi) fn of(&self, entity: &str, tick: u32) -> Option<Estimate> {
         let enemy = self

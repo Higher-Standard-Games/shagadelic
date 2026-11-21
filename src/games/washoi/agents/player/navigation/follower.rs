@@ -149,6 +149,22 @@ impl RouteFollower {
             .any(|(leg, until)| leg.to == point && now < *until)
     }
 
+    /// The pickup the route under way leads to, if any.
+    pub(in crate::games::washoi) fn active_pickup(
+        &self,
+        navigation: &WashoiNavigation,
+    ) -> Option<usize> {
+        let active = self.active.as_ref()?;
+        Some(active.route.get(navigation).pickup?.id)
+    }
+
+    /// The goal set has no route from here: the last plan for it failed and
+    /// the follower waits to plan again.
+    pub(in crate::games::washoi) fn goal_unplanned(&self, now: SimTime) -> Option<usize> {
+        self.goal
+            .filter(|_| self.active.is_none() && self.replan_at.is_some_and(|at| now < at))
+    }
+
     /// Walk only to this pickup, as the goal arbiter chose, or choose freely
     /// with None. A route under way to anything else is dropped.
     pub(in crate::games::washoi) fn set_goal(&mut self, pickup: Option<usize>) {

@@ -714,6 +714,18 @@ impl Combat {
     /// Living teammates' positions, for the friendly-fire gate. None outside
     /// team play.
     pub(super) fn allies(&self, world: &Observation, own: &str) -> Vec<Vec3> {
+        self.allies_by_id(world, own)
+            .into_iter()
+            .map(|(_, at)| at)
+            .collect()
+    }
+
+    /// Living teammates and where they are, by entity ID.
+    pub(in crate::games::washoi) fn allies_by_id<'a>(
+        &self,
+        world: &'a Observation,
+        own: &str,
+    ) -> Vec<(&'a str, Vec3)> {
         let team = world.player(own).map(|player| player.team.as_str());
         if !on_a_team(team) {
             return Vec::new();
@@ -726,8 +738,42 @@ impl Combat {
                     && Some(player.team.as_str()) == team
                     && !self.dead.contains(&player.entity_id)
             })
-            .filter_map(|player| world.body(&player.entity_id)?.position)
+            .filter_map(|player| {
+                Some((
+                    player.entity_id.as_str(),
+                    world.body(&player.entity_id)?.position?,
+                ))
+            })
             .collect()
+    }
+
+    /// Opponents on the scoreboard, seen or not: everyone else outside team
+    /// play, the other teams in it. Spectators don't count.
+    pub(in crate::games::washoi) fn scoreboard_enemies(
+        &self,
+        world: &Observation,
+        own: &str,
+    ) -> usize {
+        let team = world.player(own).map(|player| player.team.as_str());
+        world
+            .players
+            .iter()
+            .filter(|player| {
+                player.entity_id != own
+                    && player.team != "spectator"
+                    && (!on_a_team(team) || Some(player.team.as_str()) != team)
+            })
+            .count()
+    }
+
+    /// Enemies the bot believes alive, from what it saw, heard, and hit.
+    pub(in crate::games::washoi) fn known_enemies(&self) -> usize {
+        self.estimates.alive()
+    }
+
+    /// The bot's weapons, in slot order, and ammo by weapon.
+    pub(in crate::games::washoi) fn inventory(&self) -> (&[String], &[(String, f64)]) {
+        (&self.weapons, &self.ammo)
     }
 
     /// Forget the weapon on death. Other players' state stays current.

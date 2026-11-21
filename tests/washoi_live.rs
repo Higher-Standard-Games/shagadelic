@@ -315,7 +315,9 @@ async fn washoi_bot_roams_between_graph_goals() {
     let nodes: Vec<[f64; 3]> = serde_json::from_value(raw["graph"]["nodes"].clone()).unwrap();
     let goals: Vec<usize> = serde_json::from_value(raw["graph"]["goals"].clone()).unwrap();
     let navigation: WashoiNavigation = serde_json::from_str(&baked).unwrap();
-    let deadline = Duration::from_secs(25);
+    // The goal arbiter may send a fresh bot across the map for the best item
+    // left, passing few graph goals on the way.
+    let deadline = Duration::from_secs(40);
     let mut connection = connect(
         &endpoint,
         "SHAGADELIC roaming".into(),
