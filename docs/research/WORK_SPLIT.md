@@ -80,7 +80,7 @@ Session B, movement, navigation, and team play:
 - [ ] `LiquidEscape.ts` (56) and `TeleportExit.ts`.
 - [ ] Local steering and unsticking: `BotVisionTracer.ts` (534), `movement/BotSteering.ts` (363), and `BotBlockedMove.ts`. `BotBlockedMove` and the brain's `_turnFromBlock` are in `navigation/unstick.rs`. `BotSteering` and the tracer's probes remain.
 - [ ] Team tactics, callouts, and chat: `BotCallouts.ts` (168), `chat/` (304), and the TeamPlay consideration together with session A.
-- [ ] Game-mode parity: S&D rounds, Duel, FFA, and Amphi.
+- [ ] Game-mode parity: S&D rounds, Duel, FFA, and Amphi. Every directive kind a Washoi gametype issues is handled, and guards patrol and leash (`9507ab5`). Live S&D plants passed 5 of 6 at `854edcf`. Who defuses is the server's choice. Duel, FFA, and Amphi issue no orders, so their parity is the goal arbiter's weights.
 
 Mark items here as they land, with the commit.
 
