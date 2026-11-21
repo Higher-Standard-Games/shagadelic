@@ -165,6 +165,7 @@ impl Planner {
         recovery: Option<ObjectiveRecovery>,
         local_walk: impl Fn(Vec3, Vec3) -> bool,
     ) -> Option<(Route, Vec<ObjectiveEdge>)> {
+        let mut lead = None;
         let start = self
             .nearest_entry(position)
             .or_else(|| {
@@ -173,6 +174,11 @@ impl Planner {
                 (horizontal_distance(position, point) <= ANCHOR_RADIUS
                     && (point[1] - position.y).abs() <= MAX_HEIGHT_DELTA)
                     .then_some(node)
+            })
+            .or_else(|| {
+                let (node, rest) = self.on_edge(position)?;
+                lead = Some(rest);
+                Some(node)
             })
             .or_else(|| {
                 self.nodes
@@ -234,7 +240,7 @@ impl Planner {
             current = previous;
         }
         path.reverse();
-        let mut waypoints = vec![self.nodes[start]];
+        let mut waypoints = lead.unwrap_or_else(|| vec![self.nodes[start]]);
         let mut edges = Vec::with_capacity(path.len() - 1);
         for pair in path.windows(2) {
             walk_edge(&mut waypoints, &self.nodes, &self.corners, pair[0], pair[1]);
@@ -246,7 +252,7 @@ impl Planner {
         waypoints.extend(tail);
         Some((
             Route {
-                entry: self.nodes[start],
+                entry: waypoints[0],
                 waypoints,
                 maneuvers: Vec::new(),
                 learned_route: None,
@@ -255,6 +261,45 @@ impl Planner {
             },
             edges,
         ))
+    }
+
+    /// A walk edge the bot stands on, partway along: within the entry radius
+    /// of the edge's path, at that point's height. Stairs and ramps baked
+    /// with corners leave long stretches far from either node, where a
+    /// fight or a stall can leave the bot. It finishes that walk to the
+    /// edge's end node, and the returned lead is the rest of the walk,
+    /// ending at that node. Maneuver edges are not walks and never match.
+    fn on_edge(&self, position: Vec3) -> Option<(usize, Vec<[f64; 3]>)> {
+        let mut best: Option<(f64, usize, Vec<[f64; 3]>)> = None;
+        for (from, adjacent) in self.neighbors.iter().enumerate() {
+            for &to in adjacent {
+                if self.maneuvers.contains_key(&(from, to)) {
+                    continue;
+                }
+                let mut points = vec![self.nodes[from]];
+                points.extend(self.corners.get(&(from, to)).into_iter().flatten().copied());
+                points.push(self.nodes[to]);
+                for (index, pair) in points.windows(2).enumerate() {
+                    let ([ax, ay, az], [bx, by, bz]) = (pair[0], pair[1]);
+                    let (dx, dz) = (bx - ax, bz - az);
+                    let length = dx * dx + dz * dz;
+                    let t = if length > 0.0 {
+                        (((position.x - ax) * dx + (position.z - az) * dz) / length).clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    };
+                    let distance = (ax + dx * t - position.x).hypot(az + dz * t - position.z);
+                    let height = ay + (by - ay) * t;
+                    if distance <= ENTRY_RADIUS
+                        && (height - position.y).abs() <= MAX_HEIGHT_DELTA
+                        && best.as_ref().is_none_or(|(top, _, _)| distance < *top)
+                    {
+                        best = Some((distance, to, points[index + 1..].to_vec()));
+                    }
+                }
+            }
+        }
+        best.map(|(_, node, lead)| (node, lead))
     }
 
     /// The best accepted walk from the node nearest `position` to a goal

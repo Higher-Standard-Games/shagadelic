@@ -20,7 +20,10 @@ const MAX_FILE: u64 = 4 * 1024 * 1024;
 const ARRIVAL_RADIUS: f64 = 16.0;
 const MAX_HEIGHT_DELTA: f64 = 40.0;
 const ANCHOR_RADIUS: f64 = 128.0;
-const LOCAL_WALK_RADIUS: f64 = 128.0;
+// Sparse cache graphs leave open floor more than 128 units from any node, as on
+// `washoi_snd1`, where a fight can strand a bot. The walk is sampled every 16
+// units, so a longer straight connector stays as safe as a short one.
+const LOCAL_WALK_RADIUS: f64 = 256.0;
 const SPRINT_LEG_DISTANCE: f64 = 128.0;
 const SPRINT_HEIGHT_DELTA: f64 = 16.0;
 // Washoi engine/network/components/InputComponent.ts.
@@ -432,6 +435,44 @@ fn horizontal_distance(position: Vec3, target: [f64; 3]) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_objective_walk_starts_partway_up_a_cornered_stair_edge() {
+        // Node 1 sits 128 units above node 0, and the baked walk climbs
+        // through two corners. Halfway up, the bot is more than the entry
+        // radius from either node and far above node 0, as live S&D
+        // carriers were after a fight on `washoi_snd1`'s east stairs.
+        let navigation: WashoiNavigation = serde_json::from_str(
+            r#"{"map":"stairs","graph":{
+                "bsp_sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                "nodes":[[0,0,0],[256,128,0],[400,128,0]],
+                "edges":[[0,1,[[96,48,0],[160,80,0]]],[1,2],[2,1],[1,0]],
+                "entries":[0],"goals":[2]
+            }}"#,
+        )
+        .unwrap();
+        let halfway = Vec3::new(128.0, 64.0, 20.0);
+        let walk = navigation
+            .objective_walk(halfway, Vec3::new(400.0, 128.0, 0.0), 48.0, None, None)
+            .expect("the bot finishes the stair walk and plans on");
+        assert_eq!(
+            walk.route.waypoints[..2],
+            [[160.0, 80.0, 0.0], [256.0, 128.0, 0.0]]
+        );
+        assert_eq!(walk.route.entry, [160.0, 80.0, 0.0]);
+        // Off every walk, it still has nowhere to start.
+        assert!(
+            navigation
+                .objective_walk(
+                    Vec3::new(128.0, 64.0, 200.0),
+                    Vec3::new(400.0, 128.0, 0.0),
+                    48.0,
+                    None,
+                    None
+                )
+                .is_none()
+        );
+    }
 
     #[test]
     fn objective_walk_releases_sprint_before_a_ledge() {
