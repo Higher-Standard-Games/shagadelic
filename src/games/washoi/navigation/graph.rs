@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use serde::Deserialize;
 
 use shagger_shared::net::game_state::Vec3;
@@ -10,12 +12,24 @@ use super::{
 const MAX_NODES: usize = 256;
 const MAX_ENTRIES: usize = 32;
 const ROUTES_PER_ENTRY: usize = 3;
+const MAX_CORNERS: usize = 16;
+
+/// Intermediate points of a walk edge, from the TypeScript nav cache `via`.
+type Corners = BTreeMap<(usize, usize), Vec<[f64; 3]>>;
+
+/// `[from, to]`, or `[from, to, corners]` for a walk that turns corners.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum Edge {
+    Straight([usize; 2]),
+    Cornered(usize, usize, Vec<[f64; 3]>),
+}
 
 #[derive(Deserialize)]
 pub(super) struct WalkGraph {
     bsp_sha256: String,
     nodes: Vec<[f64; 3]>,
-    edges: Vec<[usize; 2]>,
+    edges: Vec<Edge>,
     entries: Vec<usize>,
     goals: Vec<usize>,
     #[serde(default)]
@@ -31,8 +45,9 @@ pub(super) struct WalkGraph {
 /// only from the entries with precomputed routes.
 pub(super) struct Planner {
     nodes: Vec<[f64; 3]>,
+    corners: Corners,
     goals: Vec<PlannedGoal>,
-    component: Vec<usize>,
+    areas: Areas,
 }
 
 struct PlannedGoal {
@@ -78,7 +93,7 @@ impl Planner {
         for goal in &self.goals {
             let distance = goal.distance[start];
             if goal.node == start
-                || self.component[goal.node] != self.component[start]
+                || !self.areas.allows(start, goal.node)
                 || !distance.is_finite()
                 || here(self.nodes[goal.node], ARRIVAL_RADIUS)
             {
@@ -90,8 +105,9 @@ impl Planner {
             }
             let mut node = start;
             while let Some(next) = goal.toward[node] {
-                node = usize::from(next);
-                waypoints.push(self.nodes[node]);
+                let next = usize::from(next);
+                walk_edge(&mut waypoints, &self.nodes, &self.corners, node, next);
+                node = next;
             }
             let route = Route {
                 entry: self.nodes[start],
@@ -152,11 +168,26 @@ impl WalkGraph {
             }
             learned[*goal] = Some(id.as_str());
         }
-        for [from, to] in self.edges.iter().copied() {
-            if from >= count || to >= count || from == to {
+        let mut corners = Corners::new();
+        for edge in &self.edges {
+            let (from, to, via) = match edge {
+                Edge::Straight([from, to]) => (*from, *to, None),
+                Edge::Cornered(from, to, via) => (*from, *to, Some(via)),
+            };
+            if from >= count
+                || to >= count
+                || from == to
+                || via.is_some_and(|via| {
+                    via.len() > MAX_CORNERS || !via.iter().flatten().all(|value| value.is_finite())
+                })
+            {
                 return Err("invalid navigation graph edge");
             }
             neighbors[from].push(to);
+            if let Some(via) = via.filter(|via| !via.is_empty()) {
+                // The first duplicate edge decides its corners.
+                corners.entry((from, to)).or_insert_with(|| via.clone());
+            }
         }
         for adjacent in &mut neighbors {
             adjacent.sort_unstable();
@@ -169,7 +200,7 @@ impl WalkGraph {
                 reverse[to].push(from);
             }
         }
-        let component = components(&neighbors, &reverse);
+        let areas = Areas::new(components(&neighbors, &reverse), &self.goals, &learned);
         let routes: Vec<_> = self
             .entries
             .iter()
@@ -182,7 +213,8 @@ impl WalkGraph {
             .flat_map(|(entry, resumed_from)| {
                 let walk = Walk {
                     neighbors: &neighbors,
-                    component: &component,
+                    corners: &corners,
+                    areas: &areas,
                     learned: &learned,
                     pickups: &pickups,
                 };
@@ -202,14 +234,15 @@ impl WalkGraph {
         goals.dedup();
         let goals = goals
             .into_iter()
-            .map(|node| self.walks_to(node, &reverse, pickups[node]))
+            .map(|node| self.walks_to(node, &reverse, &corners, pickups[node]))
             .collect();
         Ok((
             routes,
             Planner {
                 nodes: self.nodes,
+                corners,
                 goals,
-                component,
+                areas,
             },
         ))
     }
@@ -219,6 +252,7 @@ impl WalkGraph {
         &self,
         goal: usize,
         reverse: &[Vec<usize>],
+        corners: &Corners,
         pickup: Option<PickupGoal>,
     ) -> PlannedGoal {
         let count = self.nodes.len();
@@ -232,7 +266,7 @@ impl WalkGraph {
         {
             settled[node] = true;
             for &previous in &reverse[node] {
-                let cost = distance[node] + edge_length(self.nodes[previous], self.nodes[node]);
+                let cost = distance[node] + edge_cost(&self.nodes, corners, previous, node);
                 if cost < distance[previous] {
                     distance[previous] = cost;
                     // MAX_NODES keeps node indices within u16.
@@ -251,7 +285,8 @@ impl WalkGraph {
     fn routes_from(&self, entry: usize, walk: Walk<'_>, resumed_from: Option<&str>) -> Vec<Route> {
         let Walk {
             neighbors,
-            component,
+            corners,
+            areas,
             learned,
             pickups,
         } = walk;
@@ -277,17 +312,18 @@ impl WalkGraph {
                     .count()
                     >= ROUTES_PER_ENTRY
             };
-            // A walk that can't return could trap the bot. Learned takeoffs
-            // leave by their recording instead.
-            let returns = is_learned || component[node] == component[entry];
-            if node != entry && self.goals.contains(&node) && returns && !category_full {
-                let mut waypoints = vec![self.nodes[node]];
-                let mut previous = predecessor[node].expect("reachable goal has predecessor");
-                while previous != entry {
-                    waypoints.push(self.nodes[previous]);
-                    previous = predecessor[previous].expect("reachable node has predecessor");
+            // Learned takeoffs leave by their recording instead.
+            let allowed = is_learned || areas.allows(entry, node);
+            if node != entry && self.goals.contains(&node) && allowed && !category_full {
+                let mut path = vec![node];
+                while let Some(previous) = predecessor[*path.last().expect("path has a node")] {
+                    path.push(previous);
                 }
-                waypoints.reverse();
+                path.reverse();
+                let mut waypoints = Vec::new();
+                for pair in path.windows(2) {
+                    walk_edge(&mut waypoints, &self.nodes, corners, pair[0], pair[1]);
+                }
                 routes.push(Route {
                     entry: self.nodes[entry],
                     waypoints,
@@ -301,7 +337,7 @@ impl WalkGraph {
             }
             settled[node] = true;
             for &next in &neighbors[node] {
-                let cost = distances[node] + edge_length(self.nodes[node], self.nodes[next]);
+                let cost = distances[node] + edge_cost(&self.nodes, corners, node, next);
                 if cost < distances[next] {
                     distances[next] = cost;
                     predecessor[next] = Some(node);
@@ -315,9 +351,43 @@ impl WalkGraph {
 #[derive(Clone, Copy)]
 struct Walk<'a> {
     neighbors: &'a [Vec<usize>],
-    component: &'a [usize],
+    corners: &'a Corners,
+    areas: &'a Areas,
     learned: &'a [Option<&'a str>],
     pickups: &'a [Option<PickupGoal>],
+}
+
+/// Walkable areas: nodes that can walk to each other.
+struct Areas {
+    component: Vec<usize>,
+    goals: Vec<usize>,
+}
+
+impl Areas {
+    fn new(component: Vec<usize>, goals: &[usize], learned: &[Option<&str>]) -> Self {
+        let mut counts = vec![0; component.len()];
+        let mut ordinary: Vec<_> = goals
+            .iter()
+            .filter(|&&goal| learned[goal].is_none())
+            .collect();
+        ordinary.sort_unstable();
+        ordinary.dedup();
+        for &goal in ordinary {
+            counts[component[goal]] += 1;
+        }
+        Self {
+            component,
+            goals: counts,
+        }
+    }
+
+    /// A walk stays within the bot's area, or leaves it one way for an
+    /// area with more goals. That keeps a bot out of one-way pockets and
+    /// lets it drop out of a small area into the main one.
+    fn allows(&self, from: usize, to: usize) -> bool {
+        let (from, to) = (self.component[from], self.component[to]);
+        from == to || self.goals[to] > self.goals[from]
+    }
 }
 
 /// Strongly connected components, by Kosaraju's algorithm. The cache
@@ -364,6 +434,27 @@ fn components(neighbors: &[Vec<usize>], reverse: &[Vec<usize>]) -> Vec<usize> {
         }
     }
     component
+}
+
+/// Append the walk from `from` to `to`, through its corners.
+fn walk_edge(
+    waypoints: &mut Vec<[f64; 3]>,
+    nodes: &[[f64; 3]],
+    corners: &Corners,
+    from: usize,
+    to: usize,
+) {
+    waypoints.extend(corners.get(&(from, to)).into_iter().flatten().copied());
+    waypoints.push(nodes[to]);
+}
+
+fn edge_cost(nodes: &[[f64; 3]], corners: &Corners, from: usize, to: usize) -> f64 {
+    let mut points = vec![nodes[from]];
+    walk_edge(&mut points, nodes, corners, from, to);
+    points
+        .windows(2)
+        .map(|pair| edge_length(pair[0], pair[1]))
+        .sum()
 }
 
 fn edge_length(from: [f64; 3], to: [f64; 3]) -> f64 {

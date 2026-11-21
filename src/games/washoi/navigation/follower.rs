@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use shagger_shared::net::game_state::Vec3;
+use shagger_shared::net::game_state::{Vec3, Velocity};
 use tokio::time::Instant;
 
 use super::{MAX_HEIGHT_DELTA, PlayerInput, Route, WashoiNavigation, horizontal_distance};
@@ -30,6 +30,7 @@ const REPLAN_DELAY: Duration = Duration::from_millis(250);
 pub(in crate::games::washoi) struct RouteObservation<'a> {
     pub(in crate::games::washoi) now: Instant,
     pub(in crate::games::washoi) vitals: OwnVitals,
+    pub(in crate::games::washoi) velocity: Option<Velocity>,
     pub(in crate::games::washoi) difficulty: Difficulty,
     pub(in crate::games::washoi) pickup_active: &'a [bool],
     pub(in crate::games::washoi) allow_takeoff: bool,
@@ -114,6 +115,7 @@ impl RouteFollower {
         let RouteObservation {
             now,
             vitals,
+            velocity,
             difficulty,
             pickup_active,
             allow_takeoff,
@@ -205,7 +207,7 @@ impl RouteFollower {
         } = self.active.as_mut().expect("route selected");
         let route = route.get(navigation);
         let reached = *next;
-        let input = WashoiNavigation::steer(route, next, position);
+        let input = WashoiNavigation::steer(route, next, position, velocity);
         if *next > reached {
             self.anchor = Some(route.waypoints[*next - 1]);
         }
@@ -297,6 +299,7 @@ mod tests {
         RouteObservation {
             now,
             vitals: OwnVitals::default(),
+            velocity: None,
             difficulty: Difficulty::default(),
             pickup_active: &[],
             allow_takeoff,

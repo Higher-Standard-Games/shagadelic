@@ -38,7 +38,7 @@ type Pilot = serde_json::Value;
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum Command {
-    Initialize(Initialization),
+    Initialize(Box<Initialization>),
     Shutdown,
     #[cfg(feature = "washoi")]
     Spawn(washoi::Spawn),
@@ -74,6 +74,7 @@ pub fn run(mut reader: impl BufRead + Send + 'static, writer: &mut impl Write) -
     let Command::Initialize(init) = command else {
         return Err(invalid("expected initialization"));
     };
+    let init = *init;
     if init.version != VERSION {
         return Err(invalid("unsupported control version"));
     }

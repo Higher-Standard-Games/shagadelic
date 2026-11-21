@@ -144,6 +144,7 @@ impl BotPlayer {
                     RouteObservation {
                         now,
                         vitals: self.vitals,
+                        velocity: own.and_then(|entity| entity.velocity),
                         difficulty: self.difficulty,
                         pickup_active: &world.pickup_active_mask,
                         allow_takeoff: self.learned.is_some()

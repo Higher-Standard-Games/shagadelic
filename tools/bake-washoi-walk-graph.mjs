@@ -105,7 +105,7 @@ async function cachedGraph() {
     // BotNavGraph.walkOrigin lifts floor and item nodes to the standing origin.
     const index = nodes.length;
     standing.set(id, index);
-    nodes.push([position.x, position.y + (type === "spawn" ? 0 : 24), position.z]);
+    nodes.push(rounded([position.x, position.y + (type === "spawn" ? 0 : 24), position.z]));
     if (type === "spawn") entries.push(index);
     if (type === "item") {
       goals.push(index);
@@ -122,14 +122,22 @@ async function cachedGraph() {
   for (const edge of transitions) {
     const from = standing.get(edge.from);
     const to = standing.get(edge.to);
-    if (edge.type !== "walk" || edge.via?.length || from === undefined || to === undefined) continue;
-    if (Math.abs(nodes[from][1] - nodes[to][1]) <= 32) edges.push([from, to]);
+    // Walks, including their corners, and falls off ledges need only steering.
+    // Jumps, jump pads, and teleporters need execution rules the bot lacks.
+    if ((edge.type !== "walk" && edge.type !== "fall") || from === undefined || to === undefined) continue;
+    const via = (edge.via ?? []).map(({ x, y, z }) => rounded([x, y, z]));
+    edges.push(via.length ? [from, to, via] : [from, to]);
   }
   for (const [node] of pickupGoals) {
     if (entries.length >= 32) break;
     entries.push(node);
   }
   return { nodes, edges, entries, goals, pickup_goals: pickupGoals };
+}
+
+/** A tenth of a unit keeps a baked map within the 64 KiB control record. */
+function rounded(point) {
+  return point.map((value) => Math.round(value * 10) / 10);
 }
 
 function reachable(anchors, edges, reverse = false) {

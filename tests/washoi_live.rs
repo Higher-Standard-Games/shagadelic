@@ -304,3 +304,63 @@ async fn washoi_applies_paced_pilot_movement() {
         "server acknowledged inputs and moved the bot horizontally"
     );
 }
+
+#[tokio::test]
+#[ignore = "requires a local Washoi server and a baked cache graph"]
+async fn washoi_bot_roams_between_graph_goals() {
+    let endpoint = std::env::var("SHAGADELIC_TEST_WASHOI").expect("local Washoi endpoint");
+    let path = std::env::var("SHAGADELIC_TEST_WASHOI_ROAM_GRAPH").expect("baked cache graph");
+    let baked = std::fs::read_to_string(path).unwrap();
+    let raw: serde_json::Value = serde_json::from_str(&baked).unwrap();
+    let nodes: Vec<[f64; 3]> = serde_json::from_value(raw["graph"]["nodes"].clone()).unwrap();
+    let goals: Vec<usize> = serde_json::from_value(raw["graph"]["goals"].clone()).unwrap();
+    let navigation: WashoiNavigation = serde_json::from_str(&baked).unwrap();
+    let deadline = Duration::from_secs(25);
+    let mut connection = connect(
+        &endpoint,
+        "SHAGADELIC roaming".into(),
+        None,
+        None,
+        deadline,
+        WashoiEvents,
+        |_| {},
+    )
+    .await
+    .unwrap();
+    let entity = connection.identity.entity_id.clone();
+    let mut reached = std::collections::BTreeSet::new();
+    let mut died = false;
+    let result = tokio::time::timeout(
+        deadline,
+        connection.play(
+            BotPlayer::new(entity.clone()).with_navigation(Arc::new(navigation)),
+            |state| {
+                died |= state.events.iter().any(|event| {
+                    matches!(event, SnapshotEvent::Death { entity_id, .. } if *entity_id == entity)
+                });
+                if let Some(position) = state
+                    .entities
+                    .get(&entity)
+                    .and_then(|entity| entity.position)
+                {
+                    for &goal in &goals {
+                        let [x, y, z] = nodes[goal];
+                        if (x - position.x).hypot(z - position.z) <= 24.0
+                            && (y - position.y).abs() <= 40.0
+                        {
+                            reached.insert(goal);
+                        }
+                    }
+                }
+                // One life must be enough. Before graph replanning, a bot
+                // stood still at its first goal until it died.
+                reached.len() < 3 && !died
+            },
+        ),
+    )
+    .await;
+    assert!(
+        reached.len() >= 3 && !died,
+        "reached goals {reached:?} (died: {died}): {result:?}"
+    );
+}

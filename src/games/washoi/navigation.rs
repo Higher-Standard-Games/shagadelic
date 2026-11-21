@@ -2,7 +2,7 @@ mod follower;
 mod graph;
 
 use serde::Deserialize;
-use shagger_shared::net::game_state::Vec3;
+use shagger_shared::net::game_state::{Vec3, Velocity};
 
 use super::{goals::PickupGoal, protocol::PlayerInput};
 
@@ -12,6 +12,14 @@ const ENTRY_RADIUS: f64 = 48.0;
 const ARRIVAL_RADIUS: f64 = 16.0;
 const MAX_HEIGHT_DELTA: f64 = 40.0;
 const ANCHOR_RADIUS: f64 = 128.0;
+// Washoi `shared/server/simulation/physics/constants.ts`.
+const GRAVITY: f64 = 800.0;
+const RUN_SPEED: f64 = 320.0;
+// Approach a ledge slowly enough to step off it rather than sail past the
+// landing. Most cached falls land 32 units out and 100 to 230 units down.
+const LEDGE_SPEED: f64 = 100.0;
+const LEDGE_BRAKE_RADIUS: f64 = 96.0;
+const MIN_STEP_SPEED: f64 = 30.0;
 
 /// Authored walking routes. Coordinates are Washoi world-space XYZ.
 #[derive(Deserialize)]
@@ -157,22 +165,69 @@ impl WashoiNavigation {
             .map(|(index, _, _)| index)
     }
 
-    fn steer(route: &Route, next: &mut usize, position: Vec3) -> PlayerInput {
+    fn steer(
+        route: &Route,
+        next: &mut usize,
+        position: Vec3,
+        velocity: Option<Velocity>,
+    ) -> PlayerInput {
         let waypoints = &route.waypoints;
         while let Some(&waypoint) = waypoints.get(*next) {
-            if (waypoint[1] - position.y).abs() > MAX_HEIGHT_DELTA {
-                break;
-            }
+            // Steer toward a waypoint at another height, as on a ramp or
+            // over a ledge, but count it reached only on its own level.
+            // A bot that passes over or under a waypoint hasn't reached it.
             let distance = horizontal_distance(position, waypoint);
-            if distance <= ARRIVAL_RADIUS {
+            let drop = position.y - waypoint[1];
+            let (x, z) = if distance > ARRIVAL_RADIUS {
+                (
+                    (waypoint[0] - position.x) / distance,
+                    (waypoint[2] - position.z) / distance,
+                )
+            } else if drop > MAX_HEIGHT_DELTA {
+                // Over the landing but still on the ledge: keep stepping off
+                // along the leg.
+                let from = if *next == 0 {
+                    route.entry
+                } else {
+                    waypoints[*next - 1]
+                };
+                let (x, z) = (waypoint[0] - from[0], waypoint[2] - from[2]);
+                let length = x.hypot(z);
+                if length == 0.0 {
+                    break;
+                }
+                (x / length, z / length)
+            } else if -drop > MAX_HEIGHT_DELTA {
+                break;
+            } else {
                 *next += 1;
                 continue;
+            };
+            let yaw = x.atan2(z);
+            let cap = if drop > MAX_HEIGHT_DELTA {
+                // Leave the ledge at the speed that lands on the waypoint.
+                let fall = (2.0 * drop / GRAVITY).sqrt();
+                Some((distance / fall).max(MIN_STEP_SPEED))
+            } else {
+                waypoints
+                    .get(*next + 1)
+                    .filter(|after| waypoint[1] - after[1] > MAX_HEIGHT_DELTA)
+                    .and_then(|_| (distance <= LEDGE_BRAKE_RADIUS).then_some(LEDGE_SPEED))
+            };
+            // In the air, keep steering toward the landing.
+            if let Some(cap) = cap.filter(|&cap| cap < RUN_SPEED)
+                && let Some(velocity) = velocity.filter(|velocity| velocity.grounded)
+                && velocity.linear.x.hypot(velocity.linear.z) > cap
+            {
+                // Coast: Washoi's ground friction brakes a player without input.
+                return PlayerInput {
+                    yaw,
+                    ..PlayerInput::default()
+                };
             }
-            let x = (waypoint[0] - position.x) / distance;
-            let z = (waypoint[2] - position.z) / distance;
             return PlayerInput {
                 direction: [x, 0.0, z],
-                yaw: x.atan2(z),
+                yaw,
                 ..PlayerInput::default()
             };
         }
@@ -209,6 +264,54 @@ mod tests {
     }
 
     #[test]
+    fn brakes_before_a_ledge_and_steps_off_toward_the_landing() {
+        let routes: WashoiNavigation = serde_json::from_str(
+            r#"{"map":"test","routes":[
+                {"entry":[0,200,0],"waypoints":[[100,200,0],[132,0,0]]}
+            ]}"#,
+        )
+        .unwrap();
+        let route = &routes.routes[0];
+        let moving = |speed: f64, grounded| Velocity {
+            linear: Vec3::new(speed, 0.0, 0.0),
+            grounded,
+            is_crouching: false,
+            is_sliding: false,
+        };
+        let steer = |next: &mut usize, x, y, velocity| {
+            WashoiNavigation::steer(route, next, Vec3::new(x, y, 0.0), Some(velocity)).direction
+        };
+        let mut next = 0;
+        // Far from the ledge, run. Near it, coast down to ledge speed.
+        assert_eq!(
+            steer(&mut next, 0.0, 200.0, moving(320.0, true)),
+            [1.0, 0.0, 0.0]
+        );
+        assert_eq!(steer(&mut next, 20.0, 200.0, moving(320.0, true)), [0.0; 3]);
+        assert_eq!(
+            steer(&mut next, 20.0, 200.0, moving(90.0, true)),
+            [1.0, 0.0, 0.0]
+        );
+        // 32 units out and 200 down takes about 0.7 s, so leave at under 46 u/s.
+        assert_eq!(steer(&mut next, 100.0, 200.0, moving(90.0, true)), [0.0; 3]);
+        assert_eq!(next, 1);
+        assert_eq!(
+            steer(&mut next, 100.0, 200.0, moving(40.0, true)),
+            [1.0, 0.0, 0.0]
+        );
+        assert_eq!(
+            steer(&mut next, 110.0, 150.0, moving(90.0, false)),
+            [1.0, 0.0, 0.0]
+        );
+        // Over the landing but still on the ledge, keep stepping off.
+        assert_eq!(
+            steer(&mut next, 130.0, 200.0, moving(10.0, true)),
+            [1.0, 0.0, 0.0]
+        );
+        assert_eq!(next, 1);
+    }
+
+    #[test]
     fn walks_only_to_goals_the_bot_can_walk_back_from() {
         // Node 2 is a pocket: walkable into, but its exit is a drop the
         // cache importer leaves out. Its pickup would score higher.
@@ -242,6 +345,22 @@ mod tests {
         // A bot left in the dead end has no walk out until it dies.
         let inside = graph.plan(Vec3::new(0.0, 0.0, 100.0), None, |_| true, |_| 0.0);
         assert!(inside.is_none());
+
+        // Dropping one way from a small area into a larger one is fine.
+        let ledge: WashoiNavigation = serde_json::from_str(
+            r#"{
+            "map":"test","graph":{
+                "bsp_sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                "nodes":[[0,200,0],[40,0,0],[200,0,0],[200,0,200]],
+                "edges":[[0,1],[1,2],[2,1],[2,3],[3,2]],"entries":[0],"goals":[2,3]
+            }
+        }"#,
+        )
+        .unwrap();
+        let down = ledge
+            .plan(Vec3::new(0.0, 200.0, 0.0), None, |_| true, |_| 0.0)
+            .unwrap();
+        assert_eq!(down.waypoints, [[40.0, 0.0, 0.0], [200.0, 0.0, 0.0]]);
     }
 
     #[test]
@@ -258,18 +377,33 @@ mod tests {
         assert_eq!(routes.route_at(Vec3::new(100.0, 0.0, 0.0), |_| true), None);
         let mut next = 0;
         assert_eq!(
-            WashoiNavigation::steer(&routes.routes[route], &mut next, Vec3::new(0.0, 0.0, 0.0))
-                .direction,
+            WashoiNavigation::steer(
+                &routes.routes[route],
+                &mut next,
+                Vec3::new(0.0, 0.0, 0.0),
+                None,
+            )
+            .direction,
             [1.0, 0.0, 0.0]
         );
         assert_eq!(
-            WashoiNavigation::steer(&routes.routes[route], &mut next, Vec3::new(40.0, 0.0, 0.0))
-                .direction,
+            WashoiNavigation::steer(
+                &routes.routes[route],
+                &mut next,
+                Vec3::new(40.0, 0.0, 0.0),
+                None,
+            )
+            .direction,
             [0.0, 0.0, 1.0]
         );
         assert_eq!(
-            WashoiNavigation::steer(&routes.routes[route], &mut next, Vec3::new(40.0, 0.0, 40.0))
-                .direction,
+            WashoiNavigation::steer(
+                &routes.routes[route],
+                &mut next,
+                Vec3::new(40.0, 0.0, 40.0),
+                None,
+            )
+            .direction,
             [0.0; 3]
         );
         assert_eq!(next, 2);
