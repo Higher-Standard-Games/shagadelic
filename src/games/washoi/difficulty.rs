@@ -49,6 +49,16 @@ impl Difficulty {
         }
     }
 
+    /// `dodgeSkill`, as `BotCombatMovement.ts` uses it.
+    pub(super) fn dodge_skill(self) -> f64 {
+        match self {
+            Self::Easy => 0.15,
+            Self::Medium => 0.4,
+            Self::Hard => 0.7,
+            Self::Insane => 0.9,
+        }
+    }
+
     /// How far off a remembered take time may be, from `itemTimingSkill`
     /// as `BotPerception._believeItems` scales it.
     pub(super) fn item_timing_error(self) -> std::time::Duration {

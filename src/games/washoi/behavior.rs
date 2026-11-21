@@ -10,9 +10,13 @@ use super::navigation::{RouteFollower, RouteObservation};
 use super::orders::Orders;
 use super::protocol::{PlayerInput, SnapshotEvent};
 use super::random::Random;
+use super::strafe::{self, Body, CombatMovement};
 use super::{Difficulty, LearnedRoutes, Sight, WashoiNavigation, learned::Traversal};
 
 pub(crate) const INPUT_PERIOD: Duration = Duration::from_millis(8);
+// `InputButtons` in `engine/network/components/InputComponent.ts`.
+const JUMP: u16 = 1 << 4;
+const CROUCH: u16 = 1 << 5;
 const MAX_BURST: u64 = 4;
 const MAX_DEBT: u64 = 25;
 const MAX_OBSERVATION_AGE: Duration = Duration::from_millis(500);
@@ -39,6 +43,7 @@ pub struct BotPlayer {
     sight: Option<Arc<Sight>>,
     combat: Combat,
     engagement: Option<Engagement>,
+    moves: CombatMovement,
     aim: AimController,
     random: Random,
     /// A traversal sets the view itself, so the aim controller stands aside.
@@ -67,6 +72,7 @@ impl BotPlayer {
             sight: None,
             combat: Combat::default(),
             engagement: None,
+            moves: CombatMovement::default(),
             aim: AimController::new(Difficulty::default().aim()),
             exact_view: false,
             pressed_melee: false,
@@ -134,8 +140,64 @@ impl BotPlayer {
             }
             _ => None,
         };
-        if self.engagement.is_none() {
-            self.combat.disengage();
+        match (self.engagement, self.sight.clone(), position) {
+            (Some(fight), Some(sight), Some(position)) => {
+                self.fight_moves(world, fight, &sight, position);
+            }
+            _ => {
+                self.combat.disengage();
+                self.moves.reset();
+            }
+        }
+    }
+
+    /// Strafe across the walk while fighting, and dodge when hit. The strafe
+    /// is relative to the wanted view, and the keys encoder snaps the sum to
+    /// a held chord.
+    fn fight_moves(
+        &mut self,
+        world: &GameState<SnapshotEvent>,
+        fight: Engagement,
+        sight: &Sight,
+        position: shagger_shared::net::game_state::Vec3,
+    ) {
+        let own = &self.entity_id;
+        let hit = world.events.iter().any(|event| {
+            matches!(event, SnapshotEvent::Damage { entity_id, attacker_id, .. }
+                if entity_id == own && attacker_id != own)
+        });
+        let velocity = world.entities.get(own).and_then(|entity| entity.velocity);
+        let body = Body {
+            hit,
+            grounded: velocity.is_none_or(|velocity| velocity.grounded),
+            speed: velocity.map_or(0.0, |velocity| velocity.linear.x.hypot(velocity.linear.z)),
+        };
+        let moves = self.moves.step(
+            world.tick,
+            self.difficulty.dodge_skill(),
+            body,
+            &mut self.random,
+        );
+        let yaw = fight.view.yaw;
+        let side = f64::from(strafe::clear_side(
+            sight,
+            [position.x, position.y, position.z],
+            yaw,
+            moves.strafe,
+        ));
+        let [x, _, z] = self.planned_input.direction;
+        let (x, z) = (x + side * yaw.cos(), z - side * yaw.sin());
+        let length = x.hypot(z);
+        self.planned_input.direction = if length > 1e-6 {
+            [x / length, 0.0, z / length]
+        } else {
+            [0.0; 3]
+        };
+        if moves.jump {
+            self.planned_input.buttons |= JUMP;
+        }
+        if moves.crouch {
+            self.planned_input.buttons |= CROUCH;
         }
     }
 

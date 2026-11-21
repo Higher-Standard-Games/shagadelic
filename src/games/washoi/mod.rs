@@ -10,6 +10,7 @@ pub mod protocol;
 mod random;
 mod session;
 mod sight;
+mod strafe;
 mod weapons;
 pub use behavior::BotPlayer;
 pub use difficulty::Difficulty;
