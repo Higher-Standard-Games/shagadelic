@@ -1,7 +1,7 @@
 use std::{sync::Arc, time::Duration};
 
+use crate::games::washoi::SimTime;
 use shagger_shared::net::game_state::GameState;
-use tokio::time::Instant;
 
 use super::aim::{AimController, View};
 use super::chase::Chase;
@@ -27,10 +27,10 @@ const RESPAWN_DELAY: Duration = Duration::from_millis(2500);
 /// fights enemies in sight when it has the map's sight file.
 pub struct BotPlayer {
     entity_id: String,
-    respawn_at: Option<Instant>,
+    respawn_at: Option<SimTime>,
     own_entity_present: bool,
-    last_snapshot: Option<Instant>,
-    started: Option<Instant>,
+    last_snapshot: Option<SimTime>,
+    started: Option<SimTime>,
     sent: u64,
     navigation: Option<Arc<WashoiNavigation>>,
     route: RouteFollower,
@@ -128,7 +128,7 @@ impl BotPlayer {
         self
     }
 
-    pub(crate) fn observe(&mut self, world: &GameState<SnapshotEvent>, now: Instant) {
+    pub(crate) fn observe(&mut self, world: &GameState<SnapshotEvent>, now: SimTime) {
         self.combat.observe(&world.events, &self.entity_id);
         self.exact_view = self.plan(world, now);
         let position = world
@@ -181,7 +181,7 @@ impl BotPlayer {
     fn chase_lost(
         &mut self,
         world: &GameState<SnapshotEvent>,
-        now: Instant,
+        now: SimTime,
         navigation: &WashoiNavigation,
         sight: &Sight,
         position: shagger_shared::net::game_state::Vec3,
@@ -290,7 +290,7 @@ impl BotPlayer {
     }
 
     /// Movement for the coming commands. True when a traversal set the view.
-    fn plan(&mut self, world: &GameState<SnapshotEvent>, now: Instant) -> bool {
+    fn plan(&mut self, world: &GameState<SnapshotEvent>, now: SimTime) -> bool {
         for event in &world.events {
             match event {
                 SnapshotEvent::CombatState {
@@ -405,7 +405,7 @@ impl BotPlayer {
         false
     }
 
-    pub(crate) fn request_respawn(&mut self, now: Instant) -> bool {
+    pub(crate) fn request_respawn(&mut self, now: SimTime) -> bool {
         if self.has_fresh_snapshot(now) && self.respawn_at.is_some_and(|at| now >= at) {
             self.respawn_at = Some(now + RESPAWN_DELAY);
             return true;
@@ -413,12 +413,12 @@ impl BotPlayer {
         false
     }
 
-    fn has_fresh_snapshot(&self, now: Instant) -> bool {
+    fn has_fresh_snapshot(&self, now: SimTime) -> bool {
         self.last_snapshot
             .is_some_and(|at| now - at <= MAX_OBSERVATION_AGE)
     }
 
-    pub(crate) fn inputs(&mut self, now: Instant) -> impl Iterator<Item = PlayerInput> {
+    pub(crate) fn inputs(&mut self, now: SimTime) -> impl Iterator<Item = PlayerInput> {
         let ready =
             self.respawn_at.is_none() && self.own_entity_present && self.has_fresh_snapshot(now);
         let mut learned = None;
@@ -511,7 +511,7 @@ impl BotPlayer {
         input
     }
 
-    fn commands_due(&mut self, now: Instant) -> u64 {
+    fn commands_due(&mut self, now: SimTime) -> u64 {
         let started = *self.started.get_or_insert_with(|| {
             self.sent = 0;
             now
@@ -534,7 +534,7 @@ mod tests {
 
     #[test]
     fn input_debt_is_bounded_and_stale_observations_stop_movement() {
-        let start = Instant::now();
+        let start = SimTime::ZERO;
         let mut bot = BotPlayer::new("bot".into());
         assert_eq!(bot.inputs(start).count(), 0);
         bot.last_snapshot = Some(start);
@@ -579,7 +579,7 @@ mod tests {
                 .get_or_insert_with(id, Default::default)
                 .position = Some(at);
         }
-        let start = Instant::now();
+        let start = SimTime::ZERO;
         let mut fired = 0;
         let mut last = PlayerInput::default();
         for step in 0..150u64 {
@@ -647,7 +647,7 @@ mod tests {
                 .get_or_insert_with(id, Default::default)
                 .position = Some(at);
         }
-        let start = Instant::now();
+        let start = SimTime::ZERO;
         // Ahead along the walk, so in view; noticed after 18 ticks.
         world.tick = 100;
         bot.observe(&world, start);
@@ -667,7 +667,7 @@ mod tests {
 
     #[test]
     fn dead_bots_wait_for_a_fresh_snapshot_before_requesting_respawn() {
-        let start = Instant::now();
+        let start = SimTime::ZERO;
         let mut bot = BotPlayer::new("bot".into());
         let mut world = GameState::default();
         world.entities.get_or_insert_with("bot", Default::default);

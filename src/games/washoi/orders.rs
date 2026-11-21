@@ -2,11 +2,11 @@
 
 use std::time::Duration;
 
+use crate::games::washoi::SimTime;
 use shagger_shared::{
     json::Value,
     net::game_state::{GameState, Vec3, Velocity},
 };
-use tokio::time::Instant;
 
 use super::{
     Sight, WashoiNavigation,
@@ -47,15 +47,15 @@ pub(super) struct Orders {
     destination: Option<Vec3>,
     via: usize,
     walk: Option<(Vec3, ObjectiveWalk)>,
-    blocked: Option<(ObjectiveRecovery, Instant)>,
-    retry_at: Option<Instant>,
+    blocked: Option<(ObjectiveRecovery, SimTime)>,
+    retry_at: Option<SimTime>,
     progress: Option<Progress>,
 }
 
 struct Progress {
     waypoint: usize,
     distance: f64,
-    since: Instant,
+    since: SimTime,
 }
 
 impl Orders {
@@ -117,7 +117,7 @@ impl Orders {
         sight: Option<&Sight>,
         position: Vec3,
         velocity: Option<Velocity>,
-        now: Instant,
+        now: SimTime,
     ) -> Option<PlayerInput> {
         let directive = self.directive.as_ref()?;
         let Some(destination) = self.destination else {
@@ -354,7 +354,7 @@ mod tests {
             }],
             ..GameState::default()
         };
-        let start = Instant::now();
+        let start = SimTime::ZERO;
         let mut orders = Orders::default();
         let origin = Vec3::default();
         orders.observe(&state, "bot");
@@ -423,7 +423,7 @@ mod tests {
             }],
             ..GameState::default()
         };
-        let start = Instant::now();
+        let start = SimTime::ZERO;
         for (step, x, direction) in [
             (0, 0.0, [1.0, 0.0, 0.0]),
             (1, 56.0, [1.0, 0.0, 0.0]),
@@ -483,7 +483,7 @@ mod tests {
         .unwrap();
         let mut orders = Orders::default();
         let origin = Vec3::default();
-        let start = Instant::now();
+        let start = SimTime::ZERO;
         orders.observe(&world, "bot");
         assert_eq!(
             orders
@@ -549,7 +549,7 @@ mod tests {
             }],
             ..GameState::default()
         };
-        let start = Instant::now();
+        let start = SimTime::ZERO;
         let origin = Vec3::default();
         let blocked = Vec3::new(80.0, 0.0, 0.0);
         let mut orders = Orders::default();

@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
+use crate::games::washoi::SimTime;
 use shagger_shared::net::game_state::{Vec3, Velocity};
-use tokio::time::Instant;
 
 use super::traversal::{Outcome, Traversal};
 use super::{MAX_HEIGHT_DELTA, PlayerInput, Route, WashoiNavigation, horizontal_distance};
@@ -29,7 +29,7 @@ const REPLAN_DELAY: Duration = Duration::from_millis(250);
 
 #[derive(Clone, Copy)]
 pub(in crate::games::washoi) struct RouteObservation<'a> {
-    pub(in crate::games::washoi) now: Instant,
+    pub(in crate::games::washoi) now: SimTime,
     pub(in crate::games::washoi) vitals: OwnVitals,
     pub(in crate::games::washoi) velocity: Option<Velocity>,
     pub(in crate::games::washoi) difficulty: Difficulty,
@@ -53,7 +53,7 @@ struct Leg {
 struct Progress {
     next: usize,
     distance: f64,
-    updated: Instant,
+    updated: SimTime,
 }
 
 enum RouteSlot {
@@ -74,7 +74,7 @@ struct ActiveRoute {
     route: RouteSlot,
     next: usize,
     progress: Option<Progress>,
-    arrived: Option<Instant>,
+    arrived: Option<SimTime>,
     /// The bot saw the route's item in place from close by.
     seen_up: bool,
     traversal: Option<Traversal>,
@@ -84,9 +84,9 @@ struct ActiveRoute {
 pub(in crate::games::washoi) struct RouteFollower {
     active: Option<ActiveRoute>,
     last_position: Option<Vec3>,
-    blocked: Vec<(Leg, Instant)>,
-    pickup_unavailable: BTreeMap<usize, Instant>,
-    replan_at: Option<Instant>,
+    blocked: Vec<(Leg, SimTime)>,
+    pickup_unavailable: BTreeMap<usize, SimTime>,
+    replan_at: Option<SimTime>,
     /// The last waypoint the bot reached. Momentum can carry a bot past the
     /// end of a route and out of every node's attach radius.
     anchor: Option<[f64; 3]>,
@@ -397,7 +397,7 @@ mod tests {
         )
         .unwrap();
         let mut follower = RouteFollower::default();
-        let start = Instant::now();
+        let start = SimTime::ZERO;
         let mut steer = |ms, p: [f64; 3], grounded, vertical| {
             let now = start + Duration::from_millis(ms);
             let mut observation = observe(now, false, None);
@@ -431,7 +431,7 @@ mod tests {
         assert_eq!(walk.direction, [1.0, 0.0, 0.0]);
     }
 
-    fn observe(now: Instant, allow_takeoff: bool, landed_id: Option<&str>) -> RouteObservation<'_> {
+    fn observe(now: SimTime, allow_takeoff: bool, landed_id: Option<&str>) -> RouteObservation<'_> {
         RouteObservation {
             now,
             vitals: OwnVitals::default(),
@@ -456,7 +456,7 @@ mod tests {
         ]}"#,
         )
         .unwrap();
-        let now = Instant::now();
+        let now = SimTime::ZERO;
         let origin = Vec3::default();
         let health = Vec3::new(40.0, 0.0, 0.0);
         let mut follower = RouteFollower::default();
@@ -526,7 +526,7 @@ mod tests {
         ]}"#,
         )
         .unwrap();
-        let now = Instant::now();
+        let now = SimTime::ZERO;
         let observation = |now| RouteObservation {
             vitals: OwnVitals {
                 health: Some(100),
@@ -572,7 +572,7 @@ mod tests {
         }"#,
         )
         .unwrap();
-        let now = Instant::now();
+        let now = SimTime::ZERO;
         let mut follower = RouteFollower::default();
         let start = Vec3::new(0.0, 0.0, 0.0);
         assert_eq!(
@@ -627,7 +627,7 @@ mod tests {
         }"#,
         )
         .unwrap();
-        let now = Instant::now();
+        let now = SimTime::ZERO;
         let mut follower = RouteFollower::default();
         // Node 1 isn't an entry, so only the planner can start here. The
         // nearer goal wins when neither holds a pickup.
@@ -680,7 +680,7 @@ mod tests {
         )
         .unwrap();
         let mut follower = RouteFollower::default();
-        let start = Instant::now();
+        let start = SimTime::ZERO;
         let anchor = Vec3::new(0.0, 0.0, 0.0);
         assert_eq!(
             follower

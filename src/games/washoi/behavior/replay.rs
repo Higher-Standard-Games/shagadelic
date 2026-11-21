@@ -2,9 +2,9 @@
 
 use std::{sync::Arc, time::Duration};
 
+use crate::games::washoi::SimTime;
 use serde::Deserialize;
 use shagger_shared::net::game_state::{GameState, Vec3, Velocity};
-use tokio::time::Instant;
 
 use crate::games::washoi::{BotPlayer, LearnedRoutes, protocol::SnapshotEvent};
 
@@ -38,7 +38,7 @@ fn replays_exact_inputs_and_remembers_a_one_tick_death() {
     .unwrap();
     let mut bot =
         BotPlayer::new(trace.entity_id.clone()).with_learned_routes(Arc::new(trace.learned_routes));
-    let start = Instant::now();
+    let start = SimTime::ZERO;
 
     for step in trace.steps {
         let now = start + Duration::from_millis(step.ms);

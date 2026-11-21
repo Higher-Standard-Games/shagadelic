@@ -4,9 +4,9 @@
 
 use std::time::Duration;
 
+use crate::games::washoi::SimTime;
 use serde::Deserialize;
 use shagger_shared::net::game_state::{Vec3, Velocity};
-use tokio::time::Instant;
 
 use super::PlayerInput;
 
@@ -100,13 +100,13 @@ pub(super) enum Outcome {
 
 pub(super) struct Traversal {
     maneuver: Maneuver,
-    started: Instant,
-    activated: Option<Instant>,
+    started: SimTime,
+    activated: Option<SimTime>,
     airborne: bool,
 }
 
 impl Traversal {
-    pub(super) fn new(maneuver: Maneuver, now: Instant) -> Self {
+    pub(super) fn new(maneuver: Maneuver, now: SimTime) -> Self {
         Self {
             maneuver,
             started: now,
@@ -119,7 +119,7 @@ impl Traversal {
         &mut self,
         position: Vec3,
         velocity: Option<Velocity>,
-        now: Instant,
+        now: SimTime,
     ) -> Outcome {
         if now - self.started >= ticks(260) {
             return Outcome::Failed;
@@ -205,7 +205,7 @@ impl Traversal {
         }
     }
 
-    fn approach(&mut self, position: Vec3, min: [f64; 3], max: [f64; 3], now: Instant) -> Outcome {
+    fn approach(&mut self, position: Vec3, min: [f64; 3], max: [f64; 3], now: SimTime) -> Outcome {
         if near_trigger(position, min, max, 0.0) {
             self.activated.get_or_insert(now);
         }

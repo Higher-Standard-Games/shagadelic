@@ -7,9 +7,9 @@ use std::{
     time::Duration,
 };
 
+use crate::games::washoi::SimTime;
 use serde::Deserialize;
 use shagger_shared::net::game_state::{Entity, Vec3};
-use tokio::time::Instant;
 
 use super::{behavior::INPUT_PERIOD, protocol::PlayerInput};
 
@@ -146,19 +146,19 @@ pub(super) enum Traversal {
     Waiting,
     Approaching {
         route: usize,
-        until: Instant,
+        until: SimTime,
         settling: bool,
     },
     Playing {
         route: usize,
-        started: Instant,
+        started: SimTime,
         sent: usize,
         row: usize,
         offset: usize,
     },
     Landing {
         route: usize,
-        until: Instant,
+        until: SimTime,
     },
     Landed {
         route: usize,
@@ -172,7 +172,7 @@ impl Traversal {
         library: &LearnedRoutes,
         id: &str,
         position: Vec3,
-        now: Instant,
+        now: SimTime,
     ) -> bool {
         if matches!(self, Self::Waiting)
             && let Some(route) = library.approach_target(id, position)
@@ -191,7 +191,7 @@ impl Traversal {
         &mut self,
         library: &LearnedRoutes,
         entity: &Entity,
-        now: Instant,
+        now: SimTime,
     ) -> Option<PlayerInput> {
         let Self::Approaching {
             route,
@@ -258,7 +258,7 @@ impl Traversal {
         &mut self,
         library: &LearnedRoutes,
         entity: &Entity,
-        now: Instant,
+        now: SimTime,
         auto_start: bool,
     ) {
         let Some(position) = entity.position else {
@@ -291,7 +291,7 @@ impl Traversal {
     pub(super) fn drive(
         &mut self,
         library: &LearnedRoutes,
-        now: Instant,
+        now: SimTime,
     ) -> Option<Vec<PlayerInput>> {
         let Self::Playing {
             route,
@@ -345,7 +345,7 @@ impl Traversal {
         }
     }
 
-    fn start(&mut self, route: usize, now: Instant) {
+    fn start(&mut self, route: usize, now: SimTime) {
         *self = Self::Playing {
             route,
             started: now,
@@ -422,7 +422,7 @@ mod tests {
             }),
             ..Entity::default()
         };
-        let start = Instant::now();
+        let start = SimTime::ZERO;
         traversal.observe(&library, &entity, start, true);
         let first = traversal.drive(&library, start).unwrap();
         let rest = traversal.drive(&library, start + INPUT_PERIOD * 2).unwrap();

@@ -5,8 +5,8 @@
 
 use std::time::Duration;
 
+use crate::games::washoi::SimTime;
 use shagger_shared::net::game_state::{Vec3, Velocity};
-use tokio::time::Instant;
 
 use super::{Sight, WashoiNavigation, navigation::ObjectiveWalk, protocol::PlayerInput};
 
@@ -19,7 +19,7 @@ const RETRY: Duration = Duration::from_millis(500);
 #[derive(Default)]
 pub(super) struct Chase {
     walk: Option<(Vec3, ObjectiveWalk)>,
-    retry_at: Option<Instant>,
+    retry_at: Option<SimTime>,
 }
 
 impl Chase {
@@ -35,7 +35,7 @@ impl Chase {
         position: Vec3,
         velocity: Option<Velocity>,
         target: Vec3,
-        now: Instant,
+        now: SimTime,
     ) -> Option<PlayerInput> {
         if self
             .walk
