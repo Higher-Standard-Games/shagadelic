@@ -17,6 +17,21 @@ The parity work left most of the instrumentation HUNCH needs in place.
 | Recorded matches | SHAG `.cache/**.shagdemo` | 2,838 demos, nearly all bot soak and benchmark runs. `config/bot-intel/people.json` was built from two human players in two demos. Human data is scarce. |
 | A/B harness | `tools/bench-washoi-ab.mjs` | Rust against TypeScript, alternating join order, sign test and frag gap. |
 
+### First data audit (H0, 2026-11-22)
+
+A header scan of the 1,137 uncompressed `.shagdemo` files under SHAG's `.cache` (`.shagdemo.zip` not yet included) counted players whose names are not bot names. Duel has the most of it:
+
+| Mode and map | Demos with a non-bot player | Their minutes | Distinct non-bot names |
+| --- | --- | --- | --- |
+| Duel, `washoi_dm2` | 164 of 200 | 614 | 23 |
+| Duel, `wfdm5` | 120 of 128 | 530 | 10 |
+| Duel, `wfdm11` | 87 of 111 | 345 | 11 |
+| Duel, `washoi_dm5` | 42 of 93 | 231 | 4 |
+| Deathmatch, `washoi_dm2` | 77 of 91 | 144 | 11 |
+| S&D, `washoi_snd1` | 21 of 28 | 117 | 2 |
+
+Most non-bot names are the default `Player_<n>`, which test clients and probes also use, and only a few are chosen names. The 614 Duel minutes on `washoi_dm2` are an upper bound on human play. H0 still has to separate people from automated clients, for example by recorded inputs (v3+ demos) and by movement statistics, and count the `.zip` archives. Even the upper bound is about 10 hours on the first map, below the 20 hours this plan wants, so expect to pair a collection drive with a cold start.
+
 ## Decision zero: what to go for
 
 The SHAGADELIC design starts with a tactic plus position in Duel. Start one step narrower, with the choice the arbiter already makes: which goal to pursue when not fighting. Its candidates are the pickups up or due back, orders, a teammate's call to hunt, and ground to hold.
