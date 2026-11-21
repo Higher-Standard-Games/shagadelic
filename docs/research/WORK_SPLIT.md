@@ -61,6 +61,29 @@ Next:
 1. Major item pickups heard by item, to credit enemy takes in the estimate.
 3. Bot mistakes from `BotMood.ts`: wild shots, wrong weapon, item glances.
 
+## Parity backlog
+
+The goal is every TypeScript bot skill in `src/games/fps/bot/`, not a sample. `tools/bench-washoi-ab.mjs` orders the work: take next what costs the Rust bot most against the TypeScript bot. Line counts are the TypeScript sources.
+
+Session A, decisions and combat:
+- [ ] Mood and mistakes: `BotMood.ts` (160). Wild shots, wrong weapon, item glances, forgetting an enemy.
+- [ ] Fire safety: `BotFireSafety.ts` (97).
+- [ ] Goal arbiter and considerations: `goals/` (about 1,500). Covers `GoalArbiter`, `ItemGoalPlanner`, `ItemGoalSource`, and `DirectiveGoalSource`, plus the Danger, ItemDenial, ContestedItem, ItemValue, RouteCost, TeamPlay, and ObjectivePush considerations.
+- [ ] Strategy layer: `strategy/Strategist.ts` (448), `strategy/OpponentModel.ts` (59), the rest of `strategy/MatchRead.ts`, `intel/` (393), `BotTerritory.ts` (62), and `states/BotRoam.ts` roam choice (`goals/RoamChoice.ts`).
+- [ ] Look behavior: `view/BotLook.ts` (226).
+- [ ] Blade lunge: `sequences/SlideBladeSequence.ts` (173).
+- [ ] Decision traces: `DecisionTrace.ts` (53) and replayable decision records.
+- [ ] Enemy major pickups credited in the estimate: `BotPerception` pickup hearing by item.
+
+Session B, movement, navigation, and team play:
+- [ ] Movement sequences: `RouteCrouchslideSequence` (158), `RouteStrafeJumpSequence` (384), `ItemSlideApproachSequence` (152), `LedgeSlideJump` (107), and `FlyingStart` (175).
+- [ ] `LiquidEscape.ts` (56) and `TeleportExit.ts`.
+- [ ] Local steering and unsticking: `BotVisionTracer.ts` (534), `movement/BotSteering.ts` (363), and `BotBlockedMove.ts`.
+- [ ] Team tactics, callouts, and chat: `BotCallouts.ts` (168), `chat/` (304), and the TeamPlay consideration together with session A.
+- [ ] Game-mode parity: S&D rounds, Duel, FFA, and Amphi.
+
+Mark items here as they land, with the commit.
+
 ## Notes between sessions
 
 - The agents/hosting split moved the player into `agents/player/` and the WebSocket session and protocol into `hosting/net/`.
