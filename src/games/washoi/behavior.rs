@@ -694,3 +694,6 @@ mod tests {
         assert_eq!(bot.inputs(due).count(), 1);
     }
 }
+
+#[cfg(test)]
+mod replay;
