@@ -15,6 +15,7 @@ use crate::games::washoi::{
 };
 
 use crate::games::washoi::agents::player::combat::aim::{AimController, View};
+use crate::games::washoi::agents::player::combat::lunge::{self, Lunge, Mark, Runner};
 use crate::games::washoi::agents::player::combat::mood::{BotMood, Mistake};
 use crate::games::washoi::agents::player::combat::safety;
 use crate::games::washoi::agents::player::combat::{ALT_FIRE, Combat, Engagement, FIRE};
@@ -106,6 +107,7 @@ pub struct BotPlayer {
     /// What to go for, the match it is chosen in, and the server ticks the
     /// bot was hurt at lately.
     planner: Planner,
+    lunge: Lunge,
     opponents: Opponents,
     match_context: Option<MatchContext>,
     recent_damage: Vec<u32>,
@@ -166,6 +168,7 @@ impl BotPlayer {
             fighting: false,
             unstick: Unstick::default(),
             planner: Planner::new(Difficulty::default().mistake_rate()),
+            lunge: Lunge::default(),
             opponents: Opponents::default(),
             match_context: None,
             recent_damage: Vec::new(),
@@ -329,6 +332,7 @@ impl BotPlayer {
                 }
             }
         }
+        self.blade_lunge(world, position);
         let was_chasing = self.chasing.take().is_some();
         // The `forget` mistake drops an enemy as soon as it is out of sight.
         let forgot = self
@@ -836,6 +840,79 @@ impl BotPlayer {
             }
         }
         false
+    }
+
+    /// `SlideBladeSequence`: running at the enemy fought, slide in with the
+    /// blade. While it runs the lunge sets movement, view, and weapon.
+    fn blade_lunge(&mut self, world: &Observation, position: Option<super::super::Vec3>) {
+        let body = world.body(&self.entity_id).copied();
+        let (Some(position), Some(velocity), Some(sight)) = (
+            position,
+            body.and_then(|body| body.velocity),
+            self.sight.clone(),
+        ) else {
+            self.lunge.stop();
+            return;
+        };
+        if self.respawn_at.is_some() || self.traversal.active() || self.exact_view {
+            self.lunge.stop();
+            return;
+        }
+        let view = self.aim.current().unwrap_or(View {
+            yaw: self.planned_input.yaw,
+            pitch: self.planned_input.pitch,
+        });
+        let me = Runner {
+            position,
+            velocity: velocity.linear,
+            grounded: velocity.grounded,
+            sliding: velocity.is_sliding,
+            yaw: view.yaw,
+            pitch: view.pitch,
+        };
+        let mark = |entity: &str| {
+            if self.combat.is_dead(entity) {
+                return None;
+            }
+            let body = world.body(entity)?;
+            Some(Mark {
+                position: body.position?,
+                velocity: body.velocity.map(|v| v.linear).unwrap_or_default(),
+            })
+        };
+        let (weapons, _) = self.combat.inventory();
+        if !self.lunge.active()
+            && self.engagement.is_some_and(|fight| fight.in_sight)
+            && let Some(target) = self.combat.tracked()
+            && let Some(at) = mark(target)
+            && lunge::can_lunge(me, at, weapons, |from, to| {
+                // `isWalkable`: open at knee and chest height.
+                [16.0, 40.0].into_iter().all(|height| {
+                    sight.clear(
+                        [from.x, from.y + height, from.z],
+                        [to.x, to.y + height, to.z],
+                    )
+                })
+            })
+        {
+            let left = self.random.next() < 0.5;
+            let target = target.to_owned();
+            let weapon = self.combat.weapon().to_owned();
+            self.lunge.start(world.tick, &target, &weapon, left);
+        }
+        let (weapons, _) = self.combat.inventory();
+        if let Some(input) = self.lunge.step(
+            world.tick,
+            me,
+            mark,
+            weapons,
+            self.combat.weapon(),
+            self.difficulty.aim().prediction,
+        ) {
+            self.planned_input = input;
+            self.exact_view = true;
+            self.moves.reset();
+        }
     }
 
     /// A distant sound does not pull a bot off an item it needs, from

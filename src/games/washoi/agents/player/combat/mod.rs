@@ -9,6 +9,7 @@
 
 pub(in crate::games::washoi) mod aim;
 pub(in crate::games::washoi) mod combos;
+pub(in crate::games::washoi) mod lunge;
 pub(in crate::games::washoi) mod mood;
 pub(in crate::games::washoi) mod safety;
 pub(in crate::games::washoi) mod weapons;
@@ -773,6 +774,22 @@ impl Combat {
     /// Enemies the bot believes alive, from what it saw, heard, and hit.
     pub(in crate::games::washoi) fn known_enemies(&self) -> usize {
         self.estimates.alive()
+    }
+
+    /// The enemy last fought or heard, while alive.
+    pub(in crate::games::washoi) fn tracked(&self) -> Option<&str> {
+        let track = self.track.as_ref()?;
+        (!self.dead.contains(&track.entity)).then_some(track.entity.as_str())
+    }
+
+    /// Whether this enemy is known dead.
+    pub(in crate::games::washoi) fn is_dead(&self, entity: &str) -> bool {
+        self.dead.contains(entity)
+    }
+
+    /// The weapon out.
+    pub(in crate::games::washoi) fn weapon(&self) -> &str {
+        &self.weapon
     }
 
     /// Ammo for the weapon out, when known.
