@@ -340,8 +340,10 @@ impl BotPlayer {
         ));
         let [x, _, z] = self.planned_input.direction;
         // Peeking from cover, the bot keeps its spot: only the side step.
-        // Making for high ground, the walk there replaces the strafe.
-        let (x, z) = match (fight.peek, climb) {
+        // Making for high ground, the walk there replaces the strafe. A server
+        // order outranks both: the bot keeps walking it and only strafes.
+        let peek = fight.peek.filter(|_| !self.ordered);
+        let (x, z) = match (peek, climb) {
             (Some(peek), _) if !self.moves.dodging(world.tick) => {
                 let peek = f64::from(peek);
                 (peek * yaw.cos(), -peek * yaw.sin())
@@ -374,7 +376,7 @@ impl BotPlayer {
         now: SimTime,
     ) -> Option<[f64; 3]> {
         let navigation = self.navigation.clone()?;
-        if !fight.splash || !fight.in_sight || fight.peek.is_some() {
+        if self.ordered || !fight.splash || !fight.in_sight || fight.peek.is_some() {
             self.high_ground.reset();
             self.climb.reset();
             return None;
@@ -843,6 +845,39 @@ mod tests {
         bot.observe_at(frame(1, 0.0, many), start);
         assert_eq!(bot.pending.len(), MAX_PENDING_EVENTS);
         assert_eq!(bot.dropped_events(), 3);
+    }
+
+    #[test]
+    fn a_server_order_outranks_cover_while_fighting() {
+        use crate::games::washoi::{
+            Vec3,
+            sight::tests::{cube, encode},
+        };
+        // No floor anywhere, so strafing never finds room: only the walk and
+        // the peek move the bot.
+        let sight = Sight::parse(&encode("test", &[cube([1000.0; 3], [1001.0; 3])], &[])).unwrap();
+        let fight = Engagement {
+            view: View {
+                yaw: 0.0,
+                pitch: 0.0,
+            },
+            buttons: 0,
+            melee: false,
+            weapon_slot: 0,
+            peek: Some(0),
+            in_sight: true,
+            target: Vec3::new(0.0, 24.0, 600.0),
+            splash: false,
+        };
+        let world = Observation::default();
+        let here = Vec3::new(0.0, 24.0, 0.0);
+        for (ordered, expected) in [(true, [1.0, 0.0, 0.0]), (false, [0.0; 3])] {
+            let mut bot = BotPlayer::new("bot".into());
+            bot.ordered = ordered;
+            bot.planned_input.direction = [1.0, 0.0, 0.0];
+            bot.fight_moves(&world, fight, &sight, here, SimTime::ZERO);
+            assert_eq!(bot.planned_input.direction, expected, "ordered: {ordered}");
+        }
     }
 
     #[test]
