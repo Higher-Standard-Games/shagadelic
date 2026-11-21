@@ -749,11 +749,11 @@ impl Combat {
 
     /// Opponents on the scoreboard, seen or not: everyone else outside team
     /// play, the other teams in it. Spectators don't count.
-    pub(in crate::games::washoi) fn scoreboard_enemies(
+    pub(in crate::games::washoi) fn scoreboard_enemies<'a>(
         &self,
-        world: &Observation,
+        world: &'a Observation,
         own: &str,
-    ) -> usize {
+    ) -> Vec<&'a str> {
         let team = world.player(own).map(|player| player.team.as_str());
         world
             .players
@@ -763,7 +763,8 @@ impl Combat {
                     && player.team != "spectator"
                     && (!on_a_team(team) || Some(player.team.as_str()) != team)
             })
-            .count()
+            .map(|player| player.entity_id.as_str())
+            .collect()
     }
 
     /// Enemies the bot believes alive, from what it saw, heard, and hit.

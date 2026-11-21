@@ -50,6 +50,18 @@ impl Difficulty {
         }
     }
 
+    /// `matchSense`: how well the bot reads the match, from 0 for an easy
+    /// bot to 1 for an insane one. From 0.6 it contests the items an
+    /// opponent keeps taking (`CONTEST_SENSE`).
+    pub(super) fn match_sense(self) -> f64 {
+        match self {
+            Self::Easy => 0.0,
+            Self::Medium => 0.45,
+            Self::Hard => 0.8,
+            Self::Insane => 1.0,
+        }
+    }
+
     /// `mistakeRate`: a new fight errs at `mistakeRate / 16` odds (`BotMood`).
     pub(super) fn mistake_rate(self) -> f64 {
         match self {

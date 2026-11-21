@@ -29,6 +29,7 @@ use crate::games::washoi::agents::player::navigation::{
 use crate::games::washoi::agents::player::strategy::candidates::{Candidate, GoalTarget};
 use crate::games::washoi::agents::player::strategy::considerations::{Me, Situation};
 use crate::games::washoi::agents::player::strategy::goals::OwnVitals;
+use crate::games::washoi::agents::player::strategy::opponents::{Opponents, Scene};
 use crate::games::washoi::agents::player::strategy::orders::Orders;
 use crate::games::washoi::agents::player::strategy::planner::{KnownPickup, Planner};
 use crate::games::washoi::agents::player::strategy::weights::MatchContext;
@@ -57,6 +58,9 @@ const MAX_PENDING_EVENTS: usize = 4096;
 /// How long the route follower chooses freely after it could not plan to
 /// the arbiter's pickup.
 const FREE_ROAM: Duration = Duration::from_secs(2);
+/// `CONTEST_SENSE`: the match sense at which a bot contests the items an
+/// opponent keeps taking.
+const CONTEST_SENSE: f64 = 0.6;
 
 /// The pilot walks forward or follows an authored route while alive, and
 /// fights enemies in sight when it has the map's sight file.
@@ -102,6 +106,7 @@ pub struct BotPlayer {
     /// What to go for, the match it is chosen in, and the server ticks the
     /// bot was hurt at lately.
     planner: Planner,
+    opponents: Opponents,
     match_context: Option<MatchContext>,
     recent_damage: Vec<u32>,
     /// Pickup walks as priced from the last graph node, and where.
@@ -161,6 +166,7 @@ impl BotPlayer {
             fighting: false,
             unstick: Unstick::default(),
             planner: Planner::new(Difficulty::default().mistake_rate()),
+            opponents: Opponents::default(),
             match_context: None,
             recent_damage: Vec::new(),
             walkable: Vec::new(),
@@ -264,11 +270,13 @@ impl BotPlayer {
         self.combat
             .observe(&world.events, &self.entity_id, world.tick);
         self.exact_view = self.plan(world, now);
+        self.read_opponents(world);
         self.mood.update(
             &self.entity_id,
             &world.events,
             self.vitals.health,
             self.respawn_at.is_some(),
+            self.opponents.armed_enemy(world.tick),
             world.tick,
         );
         // `aimDifficulty`: a tilted bot aims looser and reacts slower.
@@ -829,6 +837,34 @@ impl BotPlayer {
         false
     }
 
+    /// Credit the major items enemies were heard or seen taking.
+    fn read_opponents(&mut self, world: &Observation) {
+        let pickups = self
+            .navigation
+            .as_deref()
+            .map(|navigation| navigation.pickups())
+            .unwrap_or_default();
+        let allies: Vec<&str> = self
+            .combat
+            .allies_by_id(world, &self.entity_id)
+            .into_iter()
+            .map(|(entity, _)| entity)
+            .collect();
+        let opponents = self.combat.scoreboard_enemies(world, &self.entity_id);
+        let position = world.body(&self.entity_id).and_then(|body| body.position);
+        self.opponents.observe(
+            world,
+            &Scene {
+                own: &self.entity_id,
+                position,
+                allies: &allies,
+                opponents: &opponents,
+                pickups: &pickups,
+                sight: self.sight.as_deref(),
+            },
+        );
+    }
+
     /// `ItemGoalPlanner.select`: the pickup or order to pursue. Until a
     /// `match_state` names the gametype, orders keep their own choice and
     /// only pickups are weighed, as the default profile gives orders no
@@ -904,6 +940,7 @@ impl BotPlayer {
         if pickups.is_empty() && orders.is_empty() {
             return None;
         }
+        let contested = self.opponents.contested();
         let (weapons, ammo) = self.combat.inventory();
         let allies = self.combat.allies_by_id(world, &self.entity_id);
         let me = Me {
@@ -917,9 +954,9 @@ impl BotPlayer {
             tick,
             recent_damage: &self.recent_damage,
             known_enemies: self.combat.known_enemies(),
-            scoreboard_enemies: self.combat.scoreboard_enemies(world, &self.entity_id),
+            scoreboard_enemies: self.combat.scoreboard_enemies(world, &self.entity_id).len(),
             allies: &allies,
-            contested: None,
+            contested: (self.difficulty.match_sense() >= CONTEST_SENSE).then_some(&contested),
         };
         // Pair walks start at a pickup's node, so they need no sight trace,
         // and the map fixes them: work each out once.

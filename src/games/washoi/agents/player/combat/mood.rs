@@ -4,7 +4,7 @@
 //! Moods: calm by default, fading back after 20 s with nothing new.
 //! Confident after two kills without dying. Tilted after three deaths in a
 //! row, with a looser aim and slower reactions. Cautious when low on health.
-//! TypeScript also turns cautious when an enemy is known to carry a major
+//! Cautious too when an enemy is known to carry a major item, as in
 //! item, which needs pickup hearing by item and is not ported. A mood also
 //! scales the retreat threshold, used once retreating is ported.
 //!
@@ -82,6 +82,7 @@ impl BotMood {
         events: &[SnapshotEvent],
         health: Option<u16>,
         dead: bool,
+        armed_enemy: bool,
         tick: u32,
     ) {
         for event in events {
@@ -111,7 +112,7 @@ impl BotMood {
         }
         self.mood = if self.deaths >= TILTED_DEATHS {
             Mood::Tilted
-        } else if !dead && health.is_some_and(|health| health < CAUTIOUS_HEALTH) {
+        } else if !dead && (health.is_some_and(|health| health < CAUTIOUS_HEALTH) || armed_enemy) {
             Mood::Cautious
         } else if self.kills >= CONFIDENT_KILLS {
             Mood::Confident
@@ -213,18 +214,19 @@ mod tests {
             &[death("a", "me"), death("b", "me")],
             Some(100),
             false,
+            false,
             10,
         );
         assert_eq!(mood.mood(), Mood::Confident);
         let deaths = [death("me", "a"), death("me", "a"), death("me", "a")];
-        mood.update("me", &deaths, Some(100), false, 20);
+        mood.update("me", &deaths, Some(100), false, false, 20);
         assert_eq!(mood.mood(), Mood::Tilted);
         assert_eq!(mood.aim(0.5, 280.0), (0.5 * 0.85, 280.0 * 1.3));
         // Twenty seconds later the streak is gone; low health is cautious.
-        mood.update("me", &[], Some(30), false, 20 + 2500);
+        mood.update("me", &[], Some(30), false, false, 20 + 2500);
         assert_eq!(mood.mood(), Mood::Cautious);
         assert_eq!(mood.retreat_health(40.0), 60.0);
-        mood.update("me", &[], Some(100), false, 20 + 2500);
+        mood.update("me", &[], Some(100), false, false, 20 + 2500);
         assert_eq!(mood.mood(), Mood::Calm);
     }
 
