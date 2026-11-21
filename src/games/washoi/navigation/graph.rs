@@ -60,16 +60,21 @@ struct PlannedGoal {
 }
 
 impl Planner {
-    pub(super) fn plan_to(&self, position: Vec3, target: Vec3, radius: f64) -> Option<Route> {
-        let start = (0..self.nodes.len())
-            .filter(|&node| {
-                (self.nodes[node][1] - position.y).abs() <= MAX_HEIGHT_DELTA
-                    && horizontal_distance(position, self.nodes[node]) <= ENTRY_RADIUS
+    fn nearest_entry(&self, position: Vec3) -> Option<usize> {
+        self.nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(node, &point)| {
+                let distance = horizontal_distance(position, point);
+                (distance <= ENTRY_RADIUS && (point[1] - position.y).abs() <= MAX_HEIGHT_DELTA)
+                    .then_some((node, distance))
             })
-            .min_by(|&a, &b| {
-                horizontal_distance(position, self.nodes[a])
-                    .total_cmp(&horizontal_distance(position, self.nodes[b]))
-            })?;
+            .min_by(|(_, a), (_, b)| a.total_cmp(b))
+            .map(|(node, _)| node)
+    }
+
+    pub(super) fn plan_to(&self, position: Vec3, target: Vec3, radius: f64) -> Option<Route> {
+        let start = self.nearest_entry(position)?;
         let mut distances = vec![f64::INFINITY; self.nodes.len()];
         let mut predecessor: Vec<Option<usize>> = vec![None; self.nodes.len()];
         let mut settled = vec![false; self.nodes.len()];
@@ -130,13 +135,7 @@ impl Planner {
             horizontal_distance(position, node) <= radius
                 && (node[1] - position.y).abs() <= MAX_HEIGHT_DELTA
         };
-        let nearby = (0..self.nodes.len())
-            .filter(|&node| here(self.nodes[node], ENTRY_RADIUS))
-            .min_by(|&a, &b| {
-                horizontal_distance(position, self.nodes[a])
-                    .total_cmp(&horizontal_distance(position, self.nodes[b]))
-            });
-        let (start, back) = match nearby {
+        let (start, back) = match self.nearest_entry(position) {
             Some(node) => (node, false),
             None => {
                 let anchor = anchor.filter(|&anchor| here(anchor, ANCHOR_RADIUS))?;
@@ -505,12 +504,14 @@ fn walk_edge(
 }
 
 fn edge_cost(nodes: &[[f64; 3]], corners: &Corners, from: usize, to: usize) -> f64 {
-    let mut points = vec![nodes[from]];
-    walk_edge(&mut points, nodes, corners, from, to);
-    points
-        .windows(2)
-        .map(|pair| edge_length(pair[0], pair[1]))
-        .sum()
+    let (last, travel) = corners
+        .get(&(from, to))
+        .into_iter()
+        .flatten()
+        .fold((nodes[from], 0.0), |(previous, distance), &point| {
+            (point, distance + edge_length(previous, point))
+        });
+    travel + edge_length(last, nodes[to])
 }
 
 fn edge_length(from: [f64; 3], to: [f64; 3]) -> f64 {
