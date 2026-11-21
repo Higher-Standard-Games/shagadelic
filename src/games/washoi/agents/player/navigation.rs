@@ -211,6 +211,25 @@ impl WashoiNavigation {
         pickups
     }
 
+    /// The walk from `position` to each pickup the bot can reach, in world
+    /// units, by pickup ID. It attaches to the graph as roaming does: at a
+    /// node, partway along a walk, by a straight walk to a node up to 256
+    /// units away, or toward a node in clear view. A pickup missing from the
+    /// list has no walk from here.
+    pub(in crate::games::washoi) fn pickup_costs(
+        &self,
+        position: Vec3,
+        sight: Option<&Sight>,
+    ) -> Vec<(usize, f32)> {
+        self.planner.as_ref().map_or_else(Vec::new, |planner| {
+            planner.pickup_costs(
+                position,
+                |from, to| sight.is_some_and(|map| local_walk(map, from, to)),
+                |from, to| sight.is_some_and(|map| open_line(map, from, to)),
+            )
+        })
+    }
+
     pub(in crate::games::washoi) fn nodes(&self) -> &[[f64; 3]] {
         self.planner.as_ref().map_or(&[], |planner| planner.nodes())
     }
@@ -716,6 +735,43 @@ mod tests {
             [[0.0; 3], [100.0, 0.0, 0.0]]
         );
         assert!(plan(-300.0).is_none());
+    }
+
+    #[test]
+    fn prices_the_walk_to_every_pickup_from_where_the_bot_attaches() {
+        let graph: WashoiNavigation = serde_json::from_str(
+            r#"{"map":"test","graph":{
+                "bsp_sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                "nodes":[[0,0,0],[100,0,0],[200,0,0]],
+                "edges":[[0,1],[1,0],[1,2],[2,1]],"entries":[0],"goals":[1,2],
+                "pickup_goals":[[2,{"id":5,"kind":"powerup"}]]
+            }}"#,
+        )
+        .unwrap();
+        let planner = graph.planner.as_ref().unwrap();
+        let costs =
+            |x: f64, z: f64| planner.pickup_costs(Vec3::new(x, 0.0, z), |_, _| true, |_, _| false);
+        // Beside node 0: its walk plus the step to it.
+        let [(id, cost)] = costs(10.0, 0.0)[..] else {
+            panic!("one pickup");
+        };
+        assert_eq!(id, 5);
+        assert!((cost - 210.0).abs() < 1e-3);
+        // Between nodes, partway along the walk from 1 to 2: the rest of it.
+        let [(_, cost)] = costs(150.0, 20.0)[..] else {
+            panic!("one pickup");
+        };
+        assert!((cost - 50.0f32.hypot(20.0)).abs() < 1e-3);
+        // Off the graph but within a straight walk of node 0.
+        let [(_, cost)] = costs(-200.0, 0.0)[..] else {
+            panic!("one pickup");
+        };
+        assert!((cost - 400.0).abs() < 1e-3);
+        assert!(costs(10.0, 900.0).is_empty());
+        // Farther than any straight walk, a node in clear view still prices.
+        let far = planner.pickup_costs(Vec3::new(-600.0, 0.0, 0.0), |_, _| false, |_, _| true);
+        assert_eq!(far.len(), 1);
+        assert!((far[0].1 - 800.0).abs() < 1e-3);
     }
 
     #[test]

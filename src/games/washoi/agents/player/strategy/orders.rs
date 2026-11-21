@@ -11,6 +11,7 @@ use shagger_shared::{
 use crate::games::washoi::{
     Sight, WashoiNavigation,
     agents::player::navigation::{ObjectiveRecovery, ObjectiveWalk},
+    agents::player::strategy::candidates::{Candidate, CandidateKind, GoalTarget, Interrupt},
     hosting::net::protocol::{PlayerInput, SnapshotEvent},
 };
 
@@ -54,7 +55,7 @@ enum Kind {
     Escort,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 struct Directive {
     id: String,
     kind: Kind,
@@ -63,13 +64,16 @@ struct Directive {
     priority: f64,
     expires: f64,
     immediate: bool,
+    interrupt: Interrupt,
+    /// `AgentDirective.urgency`, zero when absent.
+    urgency: f64,
     watch: Option<Vec3>,
     via: Vec<Vec3>,
     /// How far a fight may draw a guard from its ground.
     leash: Option<f64>,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 enum Target {
     Position(Vec3),
     Escort(String),
@@ -86,6 +90,9 @@ pub(in crate::games::washoi) struct Orders {
     progress: Option<Progress>,
     patrol: Option<Patrol>,
     random: u64,
+    /// Every valid order addressed to this bot, with where its target is
+    /// now, for the goal arbiter. The followed order is one of them.
+    offered: Vec<(Directive, Option<Vec3>)>,
 }
 
 struct Patrol {
@@ -115,13 +122,23 @@ impl Orders {
             } if entity_id == own_entity => Some(directives),
             _ => None,
         });
+        self.offered
+            .retain(|(order, _)| order.expires > f64::from(world.tick));
         if let Some(directives) = addressed {
-            let latest = directives
+            self.offered = directives
                 .as_array()
                 .into_iter()
                 .flatten()
                 .filter_map(|value| Directive::parse(value, world.tick))
-                .filter_map(|order| Some((order.target.position(world, own_entity)?, order)))
+                .map(|order| {
+                    let at = order.target.position(world, own_entity);
+                    (order, at)
+                })
+                .collect();
+            let latest = self
+                .offered
+                .iter()
+                .filter_map(|(order, at)| Some(((*at)?, order.clone())))
                 .min_by(|(_, a), (_, b)| {
                     b.immediate
                         .cmp(&a.immediate)
@@ -138,6 +155,9 @@ impl Orders {
                 self.destination = Some(destination);
             }
         } else {
+            for (order, at) in &mut self.offered {
+                *at = order.target.position(world, own_entity);
+            }
             self.destination = self
                 .directive
                 .as_ref()
@@ -145,10 +165,66 @@ impl Orders {
         }
     }
 
+    /// The orders addressed to this bot whose targets can be found, as goal
+    /// candidates. There is no precomputed walk to an arbitrary order
+    /// target, so `route_cost` is the straight distance from `from`.
+    pub(in crate::games::washoi) fn candidates(
+        &self,
+        from: Vec3,
+    ) -> impl Iterator<Item = Candidate> + '_ {
+        self.offered.iter().filter_map(move |(order, at)| {
+            let at = (*at)?;
+            Some(Candidate {
+                id: order.id.clone(),
+                target: GoalTarget::Directive(order.id.clone()),
+                position: [at.x, at.y, at.z],
+                route_cost: Some(
+                    ((at.x - from.x).hypot(at.z - from.z).hypot(at.y - from.y)) as f32,
+                ),
+                kind: match order.kind {
+                    Kind::MoveTo => CandidateKind::MoveTo,
+                    Kind::Guard => CandidateKind::Guard,
+                    Kind::Escort => CandidateKind::Escort,
+                },
+                priority: order.priority,
+                urgency: order.urgency,
+                interrupt: order.interrupt,
+                escort: match &order.target {
+                    Target::Escort(carrier) => Some(carrier.clone()),
+                    Target::Position(_) => None,
+                },
+                pickup: None,
+            })
+        })
+    }
+
+    /// Follow the offered order with this ID, as the goal arbiter chose,
+    /// instead of the one the orders would pick themselves. False when no
+    /// such order is offered. Choosing the order already followed keeps its
+    /// walk.
+    pub(in crate::games::washoi) fn choose(&mut self, id: &str) -> bool {
+        let Some((order, at)) = self.offered.iter().find(|(order, _)| order.id == id) else {
+            return false;
+        };
+        if self
+            .directive
+            .as_ref()
+            .is_some_and(|current| current == order)
+        {
+            return true;
+        }
+        let (order, at) = (order.clone(), *at);
+        self.clear_order();
+        self.directive = Some(order);
+        self.destination = at;
+        true
+    }
+
     fn clear_order(&mut self) {
         *self = Self {
             blocked: self.blocked,
             random: self.random,
+            offered: std::mem::take(&mut self.offered),
             ..Self::default()
         };
     }
@@ -421,16 +497,13 @@ impl Directive {
         let target = value.get("target")?;
         let priority = value.get("priority")?.as_f64()?;
         let expires = value.get("expiresAtTick")?.as_f64()?;
-        let interrupt = value.get("interrupt")?.as_str()?;
+        let interrupt_name = value.get("interrupt")?.as_str()?;
+        let interrupt = Interrupt::parse(interrupt_name)?;
         if id.is_empty()
             || id.len() > 128
             || !priority.is_finite()
             || !expires.is_finite()
             || expires <= f64::from(tick)
-            || !matches!(
-                interrupt,
-                "never" | "danger" | "enemy_visible" | "higher_priority"
-            )
         {
             return None;
         }
@@ -478,7 +551,13 @@ impl Directive {
             radius,
             priority,
             expires,
-            immediate: interrupt == "never",
+            immediate: interrupt == Interrupt::Never,
+            interrupt,
+            urgency: value
+                .get("urgency")
+                .and_then(Value::as_f64)
+                .filter(|urgency| urgency.is_finite())
+                .unwrap_or(0.0),
             watch: value.get("watch").and_then(point),
             via,
             leash,
@@ -670,6 +749,67 @@ mod tests {
             assert_eq!(inputs.next().unwrap().direction, direction);
             assert!(inputs.all(|input| input.direction == direction));
         }
+    }
+
+    #[test]
+    fn offers_every_order_as_a_candidate_and_follows_the_one_chosen() {
+        use crate::games::washoi::PlayerView;
+
+        let mut world = Observation {
+            tick: 1,
+            players: ["bot", "carrier"]
+                .map(|id| PlayerView {
+                    entity_id: id.into(),
+                    team: "red".into(),
+                })
+                .into(),
+            events: vec![SnapshotEvent::AgentDirectives {
+                entity_id: "bot".into(),
+                directives: json::parse(
+                    r#"[{"id":"plant","kind":"move_to","urgency":0.7,
+                         "target":{"type":"position","position":{"x":300,"y":0,"z":400},"radius":96},
+                         "priority":1,"expiresAtTick":50,"interrupt":"never"},
+                        {"id":"cover","kind":"escort","target":{"type":"player","entityId":"carrier"},
+                         "priority":0.5,"expiresAtTick":50,"interrupt":"enemy_visible"}]"#,
+                )
+                .unwrap(),
+            }],
+            ..Observation::default()
+        };
+        world.body_or_insert("carrier").position = Some(Vec3::new(0.0, 0.0, 30.0));
+        let mut orders = Orders::default();
+        orders.observe(&world, "bot");
+        let candidates: Vec<_> = orders.candidates(Vec3::default()).collect();
+        assert_eq!(candidates.len(), 2);
+        let plant = &candidates[0];
+        assert_eq!(plant.id, "plant");
+        assert_eq!(plant.target, GoalTarget::Directive("plant".into()));
+        assert_eq!(plant.kind, CandidateKind::MoveTo);
+        assert_eq!((plant.priority, plant.urgency), (1.0, 0.7));
+        assert_eq!(plant.interrupt, Interrupt::Never);
+        assert_eq!(plant.route_cost, Some(500.0));
+        let cover = &candidates[1];
+        assert_eq!(cover.escort.as_deref(), Some("carrier"));
+        assert_eq!(cover.position, [0.0, 0.0, 30.0]);
+        assert_eq!(cover.urgency, 0.0);
+
+        // Left to itself the bot follows the immediate order.
+        assert_eq!(orders.directive.as_ref().unwrap().id, "plant");
+        assert!(orders.choose("cover"));
+        assert_eq!(orders.directive.as_ref().unwrap().id, "cover");
+        assert_eq!(orders.destination, Some(Vec3::new(0.0, 0.0, 30.0)));
+        assert!(!orders.choose("missing"));
+        assert_eq!(orders.directive.as_ref().unwrap().id, "cover");
+        // The escort target moves, and the offer follows it.
+        world.events.clear();
+        world.body_or_insert("carrier").position = Some(Vec3::new(0.0, 0.0, 90.0));
+        orders.observe(&world, "bot");
+        let cover = orders.candidates(Vec3::default()).nth(1).unwrap();
+        assert_eq!(cover.position, [0.0, 0.0, 90.0]);
+        // Expired orders are no longer offered.
+        world.tick = 50;
+        orders.observe(&world, "bot");
+        assert_eq!(orders.candidates(Vec3::default()).count(), 0);
     }
 
     #[test]

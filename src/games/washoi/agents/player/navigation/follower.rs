@@ -88,6 +88,8 @@ pub(in crate::games::washoi) struct RouteFollower {
     last_position: Option<Vec3>,
     blocked: Vec<(Leg, SimTime)>,
     pickup_unavailable: BTreeMap<usize, SimTime>,
+    /// The pickup the goal arbiter chose, when it chose one.
+    goal: Option<usize>,
     replan_at: Option<SimTime>,
     /// The last waypoint the bot reached. Momentum can carry a bot past the
     /// end of a route and out of every node's attach radius.
@@ -126,6 +128,36 @@ impl RouteFollower {
         }
         self.last_position = None;
         self.exact = false;
+    }
+
+    /// Whether the bot believes this pickup is gone for now: seen taken, or
+    /// found missing, and not yet due back.
+    pub(in crate::games::washoi) fn pickup_unavailable(&self, id: usize, now: SimTime) -> bool {
+        self.pickup_returns_at(id).is_some_and(|at| now < at)
+    }
+
+    /// When the bot expects a pickup it saw taken or missing to be back.
+    pub(in crate::games::washoi) fn pickup_returns_at(&self, id: usize) -> Option<SimTime> {
+        self.pickup_unavailable.get(&id).copied()
+    }
+
+    /// Whether a leg into `point` failed recently, so walks that end there
+    /// should wait.
+    pub(in crate::games::washoi) fn blocked_toward(&self, point: [f64; 3], now: SimTime) -> bool {
+        self.blocked
+            .iter()
+            .any(|(leg, until)| leg.to == point && now < *until)
+    }
+
+    /// Walk only to this pickup, as the goal arbiter chose, or choose freely
+    /// with None. A route under way to anything else is dropped.
+    pub(in crate::games::washoi) fn set_goal(&mut self, pickup: Option<usize>) {
+        if self.goal != pickup {
+            self.goal = pickup;
+            if pickup.is_some() {
+                self.active = None;
+            }
+        }
     }
 
     pub(in crate::games::washoi) fn traversing(&self) -> bool {
@@ -197,11 +229,17 @@ impl RouteFollower {
             self.anchor = None;
         }
         if self.active.is_none() {
+            let goal = self.goal;
             let unblocked = |route: &Route| {
+                let chosen =
+                    goal.is_none_or(|id| route.pickup.is_some_and(|pickup| pickup.id == id));
                 let available = route.pickup.is_none_or(|pickup| {
-                    pickup.benefits(vitals) && !self.pickup_unavailable.contains_key(&pickup.id)
+                    goal == Some(pickup.id)
+                        || pickup.benefits(vitals)
+                            && !self.pickup_unavailable.contains_key(&pickup.id)
                 });
-                available
+                chosen
+                    && available
                     && (0..route.waypoints.len())
                         .all(|next| !self.blocked.iter().any(|(leg, _)| *leg == route.leg(next)))
             };
@@ -536,6 +574,63 @@ mod tests {
             healthy.steer(&nav, origin, observation).direction,
             [0.0, 0.0, 1.0]
         );
+    }
+
+    #[test]
+    fn walks_only_to_the_pickup_the_arbiter_chose_and_reports_its_memory() {
+        let nav: WashoiNavigation = serde_json::from_str(
+            r#"{"map":"test","routes":[
+            {"entry":[0,0,0],"waypoints":[[40,0,0]],"pickup":{"id":0,"kind":"health"}},
+            {"entry":[0,0,0],"waypoints":[[0,0,40]],"pickup":{"id":1,"kind":"armor"}}
+        ]}"#,
+        )
+        .unwrap();
+        let now = SimTime::ZERO;
+        let origin = Vec3::default();
+        let hurt = RouteObservation {
+            vitals: OwnVitals {
+                health: Some(10),
+                armor: Some(100),
+            },
+            pickup_active: &[true, true],
+            ..observe(now, false, None)
+        };
+        let mut follower = RouteFollower::default();
+        // Left to itself, a hurt bot goes for the health.
+        assert_eq!(
+            follower.steer(&nav, origin, hurt).direction,
+            [1.0, 0.0, 0.0]
+        );
+        // The arbiter chose the armor, even at full armor: the route
+        // under way is dropped and only the armor is walked to.
+        follower.set_goal(Some(1));
+        assert_eq!(
+            follower.steer(&nav, origin, hurt).direction,
+            [0.0, 0.0, 1.0]
+        );
+        follower.set_goal(None);
+        assert!(!follower.pickup_unavailable(0, now));
+        assert_eq!(follower.pickup_returns_at(0), None);
+        assert!(!follower.blocked_toward([40.0, 0.0, 0.0], now));
+
+        follower
+            .pickup_unavailable
+            .insert(0, now + Duration::from_secs(5));
+        assert!(follower.pickup_unavailable(0, now));
+        assert!(!follower.pickup_unavailable(0, now + Duration::from_secs(5)));
+        assert_eq!(
+            follower.pickup_returns_at(0),
+            Some(now + Duration::from_secs(5))
+        );
+        follower.blocked.push((
+            Leg {
+                from: [0.0; 3],
+                to: [40.0, 0.0, 0.0],
+            },
+            now + RETRY_DELAY,
+        ));
+        assert!(follower.blocked_toward([40.0, 0.0, 0.0], now));
+        assert!(!follower.blocked_toward([40.0, 0.0, 0.0], now + RETRY_DELAY));
     }
 
     #[test]

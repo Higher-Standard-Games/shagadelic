@@ -151,6 +151,80 @@ impl Planner {
             .filter_map(|goal| Some((goal.pickup?, self.nodes[goal.node])))
     }
 
+    /// The precomputed walk to every reachable pickup, by pickup ID, plus
+    /// the way onto the graph. Attaching once serves every pickup.
+    pub(in crate::games::washoi) fn pickup_costs(
+        &self,
+        position: Vec3,
+        local_walk: impl Fn(Vec3, Vec3) -> bool,
+        open_line: impl Fn(Vec3, Vec3) -> bool,
+    ) -> Vec<(usize, f32)> {
+        let costs = |(start, lead): (usize, f64)| -> Vec<(usize, f32)> {
+            self.goals
+                .iter()
+                .filter_map(|goal| {
+                    let pickup = goal.pickup?;
+                    let distance = goal.distance[start];
+                    (distance.is_finite() && self.areas.allows(start, goal.node))
+                        .then_some((pickup.id, distance + lead as f32))
+                })
+                .collect()
+        };
+        // A start with no pickup in reach, such as a ledge pocket's node, is
+        // passed over for the next way onto the graph, as roaming does.
+        self.starts(position, &local_walk, &open_line)
+            .map(costs)
+            .find(|costs| !costs.is_empty())
+            .unwrap_or_default()
+    }
+
+    /// The ways onto the graph in the order roaming tries them, each with the
+    /// walk to it: a node within the entry radius, the end of a walk the bot
+    /// stands on, the nearest nodes within a straight local walk, then nodes
+    /// in clear view. Each is found only when the one before is passed over.
+    fn starts<'a>(
+        &'a self,
+        position: Vec3,
+        local_walk: &'a impl Fn(Vec3, Vec3) -> bool,
+        open_line: &'a impl Fn(Vec3, Vec3) -> bool,
+    ) -> impl Iterator<Item = (usize, f64)> + 'a {
+        let entry = self
+            .nearest_entry(position)
+            .map(|node| (node, horizontal_distance(position, self.nodes[node])));
+        let edge = std::iter::once_with(move || {
+            self.on_edge(position).map(|(node, lead)| {
+                let (_, length) = lead.iter().fold(
+                    ([position.x, position.y, position.z], 0.0),
+                    |(from, total), &to| (to, total + edge_length(from, to)),
+                );
+                (node, length)
+            })
+        })
+        .flatten();
+        let local = std::iter::once_with(move || {
+            let mut near: Vec<_> = (0..self.nodes.len())
+                .map(|node| (horizontal_distance(position, self.nodes[node]), node))
+                .filter(|&(distance, node)| {
+                    distance <= LOCAL_WALK_RADIUS
+                        && (self.nodes[node][1] - position.y).abs() <= MAX_HEIGHT_DELTA
+                })
+                .collect();
+            near.sort_by(|a, b| a.0.total_cmp(&b.0));
+            near.into_iter().filter(move |&(_, node)| {
+                let [x, y, z] = self.nodes[node];
+                local_walk(position, Vec3::new(x, y, z))
+            })
+        })
+        .flatten()
+        .take(MAX_LOCAL_STARTS)
+        .map(|(distance, node)| (node, distance));
+        let view = std::iter::once_with(move || self.in_view(position, open_line))
+            .flatten()
+            .take(MAX_LOCAL_STARTS)
+            .map(move |node| (node, horizontal_distance(position, self.nodes[node])));
+        entry.into_iter().chain(edge).chain(local).chain(view)
+    }
+
     pub(in crate::games::washoi) fn nodes(&self) -> &[[f64; 3]] {
         &self.nodes
     }
