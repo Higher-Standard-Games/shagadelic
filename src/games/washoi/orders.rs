@@ -21,6 +21,7 @@ const ESCORT_REPLAN_DISTANCE: f64 = 48.0;
 const RETRY: Duration = Duration::from_millis(350);
 const STALL: Duration = Duration::from_millis(850);
 const BLOCKED_FOR: Duration = Duration::from_secs(5);
+const MIN_PROGRESS: f64 = 8.0;
 
 #[derive(Debug, PartialEq)]
 struct Directive {
@@ -48,7 +49,13 @@ pub(super) struct Orders {
     walk: Option<(Vec3, ObjectiveWalk)>,
     blocked: Option<(ObjectiveRecovery, Instant)>,
     retry_at: Option<Instant>,
-    progress: Option<(Vec3, Instant)>,
+    progress: Option<Progress>,
+}
+
+struct Progress {
+    waypoint: usize,
+    distance: f64,
+    since: Instant,
 }
 
 impl Orders {
@@ -153,18 +160,6 @@ impl Orders {
                 ..PlayerInput::default()
             });
         }
-        if let Some((previous, at)) = self.progress {
-            if !near(position, previous, 8.0) {
-                self.progress = Some((position, now));
-            } else if now - at >= STALL {
-                if let Some(edge) = self.walk.as_ref().and_then(|(_, walk)| walk.blocked_edge()) {
-                    self.blocked = Some((edge, now + BLOCKED_FOR));
-                }
-                self.walk = None;
-                self.progress = None;
-                self.retry_at = Some(now + RETRY);
-            }
-        }
         if self.walk.is_none() && self.retry_at.is_none_or(|at| now >= at) {
             let recovery = self.blocked.map(|(mut edge, until)| {
                 if now >= until {
@@ -175,12 +170,38 @@ impl Orders {
             self.walk = navigation
                 .and_then(|map| map.objective_walk(position, target, radius, recovery))
                 .map(|walk| (target, walk));
-            self.progress = self.walk.as_ref().map(|_| (position, now));
             self.retry_at = Some(now + RETRY);
         }
-        self.walk
-            .as_mut()
-            .map(|(_, walk)| walk.steer(position, velocity))
+        let (_, walk) = self.walk.as_mut()?;
+        let input = walk.steer(position, velocity);
+        if let Some((waypoint, distance)) = walk.progress(position) {
+            if self.progress.as_ref().is_none_or(|previous| {
+                previous.waypoint != waypoint || distance <= previous.distance - MIN_PROGRESS
+            }) {
+                self.progress = Some(Progress {
+                    waypoint,
+                    distance,
+                    since: now,
+                });
+            }
+            if self
+                .progress
+                .as_ref()
+                .is_some_and(|previous| now - previous.since < STALL)
+            {
+                return Some(input);
+            }
+            if let Some(edge) = walk.blocked_edge() {
+                self.blocked = Some((edge, now + BLOCKED_FOR));
+            }
+        }
+
+        // An escort can also finish its path outside the moving target's
+        // radius when it drifted less than the replan threshold.
+        self.walk = None;
+        self.progress = None;
+        self.retry_at = Some(now + RETRY);
+        None
     }
 }
 
@@ -535,6 +556,8 @@ mod tests {
         for (ms, position, expected) in [
             (0, origin, Some([1.0, 0.0, 0.0])),
             (300, blocked, Some([1.0, 0.0, 0.0])),
+            // Sideways motion away from the waypoint does not reset the stall timer.
+            (800, Vec3::new(200.0, 0.0, 120.0), Some([0.0, 0.0, -1.0])),
             (1200, blocked, None),
             (1600, blocked, Some([-1.0, 0.0, 0.0])),
             (1850, origin, Some([0.0, 0.0, 1.0])),

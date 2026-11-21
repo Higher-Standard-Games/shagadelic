@@ -74,6 +74,12 @@ impl ObjectiveWalk {
             avoid: Some(edge.nodes),
         })
     }
+
+    pub(super) fn progress(&self, position: Vec3) -> Option<(usize, f64)> {
+        let waypoint = *self.route.waypoints.get(self.next)?;
+        let distance = horizontal_distance(position, waypoint).hypot(position.y - waypoint[1]);
+        Some((self.next, distance))
+    }
 }
 
 /// Authored walking routes. Coordinates are Washoi world-space XYZ.
