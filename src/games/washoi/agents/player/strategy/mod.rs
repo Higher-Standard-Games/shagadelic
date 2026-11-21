@@ -4,6 +4,7 @@ pub(in crate::games::washoi) mod arbiter;
 pub(in crate::games::washoi) mod candidates;
 pub(in crate::games::washoi) mod considerations;
 pub(in crate::games::washoi) mod goals;
+pub(in crate::games::washoi) mod hunch_features;
 pub(in crate::games::washoi) mod intel;
 pub(in crate::games::washoi) mod items;
 pub(in crate::games::washoi) mod match_read;

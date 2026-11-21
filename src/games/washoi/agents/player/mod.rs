@@ -42,6 +42,7 @@ use crate::games::washoi::agents::player::strategy::intel::{Baseline, PeopleProf
 use crate::games::washoi::agents::player::strategy::match_read::{MatchRead, Moment};
 use crate::games::washoi::agents::player::strategy::opponents::{Opponents, Scene};
 use crate::games::washoi::agents::player::strategy::orders::Orders;
+pub use crate::games::washoi::agents::player::strategy::planner::HunchMode;
 use crate::games::washoi::agents::player::strategy::planner::{KnownPickup, Planner};
 use crate::games::washoi::agents::player::strategy::strategist::{Reading, Strategist};
 use crate::games::washoi::agents::player::strategy::weights::MatchContext;
@@ -118,6 +119,8 @@ pub struct BotPlayer {
     /// What to go for, the match it is chosen in, and the server ticks the
     /// bot was hurt at lately.
     planner: Planner,
+    /// A HUNCH model, kept so a new planner gets it too.
+    hunch: Option<(Arc<crate::hunch::Model>, HunchMode)>,
     /// Chat and team callouts, the map's location names they use, the
     /// lines waiting to be sent, the directive calls already made, and the
     /// last enemy sighting a teammate called.
@@ -214,6 +217,7 @@ impl BotPlayer {
             fighting: false,
             unstick: Unstick::default(),
             planner: Planner::new(Difficulty::default().mistake_rate()),
+            hunch: None,
             chat,
             callouts,
             locations: None,
@@ -286,6 +290,18 @@ impl BotPlayer {
         std::mem::take(&mut self.outgoing)
     }
 
+    /// Let a HUNCH model of schema `washoi.goal.v0` score goal candidates,
+    /// in shadow or deciding. The artifact is checked against the schema.
+    pub fn with_hunch(mut self, model: Arc<crate::hunch::Model>, mode: HunchMode) -> Self {
+        if model.validate(strategy::hunch_features::SCHEMA).is_ok()
+            && model.width() == strategy::hunch_features::WIDTH
+        {
+            self.hunch = Some((model.clone(), mode));
+            self.planner.set_hunch(model, mode);
+        }
+        self
+    }
+
     /// Keep a `DecisionTrace` of each decision, for tools.
     pub fn with_trace(mut self, tracing: bool) -> Self {
         self.tracing = tracing;
@@ -300,6 +316,9 @@ impl BotPlayer {
     pub fn with_difficulty(mut self, difficulty: Difficulty) -> Self {
         self.difficulty = difficulty;
         self.planner = Planner::new(difficulty.mistake_rate());
+        if let Some((model, mode)) = self.hunch.clone() {
+            self.planner.set_hunch(model, mode);
+        }
         self.strategist = Strategist::new(
             difficulty.match_sense(),
             Random::for_bot(&format!("{}/strategy", self.entity_id)),
@@ -534,6 +553,11 @@ impl BotPlayer {
             armor: self.vitals.armor,
             weapon: self.combat.weapon().to_owned(),
             strategy: self.strategist.explain(),
+            hunch: if self.arbitrated {
+                self.planner.hunch_pick().map(str::to_owned)
+            } else {
+                None
+            },
         }
     }
 

@@ -46,4 +46,6 @@ pub struct DecisionTrace {
     pub weapon: String,
     /// The strategy and the diagnosis it answers.
     pub strategy: String,
+    /// The candidate a HUNCH model preferred, when one scores goals.
+    pub hunch: Option<String>,
 }

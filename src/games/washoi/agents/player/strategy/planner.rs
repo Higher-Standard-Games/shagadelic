@@ -7,7 +7,9 @@
 //! bot. They pass the gates, then the arbiter scores them. An order that
 //! must not be interrupted is taken without arbitration.
 
-use std::fmt::Write as _;
+use std::{fmt::Write as _, sync::Arc};
+
+use crate::{games::washoi::agents::player::strategy::hunch_features, hunch::Model};
 
 use crate::games::washoi::agents::player::trace::{TRACED_CANDIDATES, TracedCandidate};
 
@@ -64,8 +66,23 @@ pub(in crate::games::washoi) struct KnownPickup {
     pub(in crate::games::washoi) blocked: bool,
 }
 
+/// How a HUNCH model takes part in goal choice (`docs/research/HUNCH.md`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HunchMode {
+    /// The arbiter decides. The model's pick is only recorded.
+    Shadow,
+    /// The model's best eligible candidate decides.
+    On,
+}
+
 pub(in crate::games::washoi) struct Planner {
     arbiter: Arbiter,
+    /// A HUNCH model scoring the eligible candidates, its mode, the rows
+    /// and scores it reuses, and its last pick.
+    hunch: Option<(Arc<Model>, HunchMode)>,
+    hunch_rows: Vec<f32>,
+    hunch_scores: Vec<f32>,
+    hunch_pick: Option<String>,
     explain: String,
     /// The arbiter's score for the last goal chosen, zero for none.
     desire: f64,
@@ -97,6 +114,10 @@ impl Planner {
         Self {
             arbiter: Arbiter::new(&considerations::ALL, mistake_probability(mistake_rate)),
             explain: String::new(),
+            hunch: None,
+            hunch_rows: Vec::new(),
+            hunch_scores: Vec::new(),
+            hunch_pick: None,
             desire: 0.0,
             timed: false,
             last_goal: None,
@@ -127,6 +148,16 @@ impl Planner {
     /// What the last goal chosen is worth, in the arbiter's currency.
     pub(in crate::games::washoi) fn desire(&self) -> f64 {
         self.desire
+    }
+
+    /// Score candidates with a HUNCH model of schema `washoi.goal.v0`.
+    pub(in crate::games::washoi) fn set_hunch(&mut self, model: Arc<Model>, mode: HunchMode) {
+        self.hunch = Some((model, mode));
+    }
+
+    /// The candidate HUNCH preferred at the last decision.
+    pub(in crate::games::washoi) fn hunch_pick(&self) -> Option<&str> {
+        self.hunch_pick.as_deref()
     }
 
     /// The last decision on one line.
@@ -204,8 +235,9 @@ impl Planner {
         };
         self.desire = 0.0;
         self.timed = false;
+        self.hunch_pick = None;
         let Choice {
-            goal,
+            mut goal,
             explain,
             traces,
             desire,
@@ -242,6 +274,24 @@ impl Planner {
             .collect();
         self.last_gated = traces.iter().filter(|t| t.gated.is_some()).count();
         self.last_goal = goal.map(|index| goals[index].id.clone());
+        if let Some((model, mode)) = self.hunch.clone() {
+            let eligible: Vec<usize> = (0..goals.len())
+                .filter(|index| traces[*index].gated.is_none())
+                .collect();
+            self.hunch_rows.clear();
+            for &index in &eligible {
+                hunch_features::push_row(&context(index), &traces[index], &mut self.hunch_rows);
+            }
+            self.hunch_scores.resize(eligible.len(), 0.0);
+            if let Some(pick) = model.choose(&self.hunch_rows, &mut self.hunch_scores) {
+                let pick = eligible[pick];
+                self.hunch_pick = Some(goals[pick].id.clone());
+                let _ = write!(self.explain, " hunch={}", goals[pick].id);
+                if mode == HunchMode::On {
+                    goal = Some(pick);
+                }
+            }
+        }
         let Some(index) = goal else {
             self.stopover = None;
             return None;
@@ -605,6 +655,88 @@ mod tests {
             "{}",
             planner.explain()
         );
+    }
+
+    #[test]
+    fn a_hunch_model_records_its_pick_in_shadow_and_decides_when_on() {
+        use crate::hunch::{Decision, Model, Training, train};
+        // A model trained to want armor and nothing else.
+        let width = hunch_features::WIDTH;
+        let armor = hunch_features::NAMES
+            .iter()
+            .position(|name| *name == "armor_gain")
+            .unwrap();
+        let rows = |gain: f32, other: f32| {
+            let mut a = vec![0.0; width];
+            let mut b = vec![0.0; width];
+            a[armor] = gain;
+            b[armor] = other;
+            [a, b].concat()
+        };
+        let decisions: Vec<Decision> = (0..40)
+            .map(|i| {
+                let low = (i % 5) as f32 / 10.0;
+                Decision {
+                    features: rows(low + 0.5, low),
+                    chosen: 0,
+                }
+            })
+            .collect();
+        let model: Arc<Model> = Arc::new(train(
+            hunch_features::SCHEMA,
+            hunch_features::names(),
+            &decisions,
+            Training::default(),
+        ));
+        let pickups = || {
+            vec![
+                known(
+                    r#"{"id":0,"kind":"health","item":"mega"}"#,
+                    [300.0, 0.0, 0.0],
+                    Some(300.0),
+                    true,
+                ),
+                known(
+                    r#"{"id":1,"kind":"armor","item":"ga"}"#,
+                    [900.0, 0.0, 0.0],
+                    Some(900.0),
+                    true,
+                ),
+            ]
+        };
+        let mut random = Random::new(1);
+        let mut shadow = Planner::new(0.0);
+        shadow.set_hunch(model.clone(), HunchMode::Shadow);
+        let choice = shadow.select(
+            pickups(),
+            Vec::new(),
+            me(30, 0),
+            situation(),
+            weights::DEFAULT,
+            &straight_between,
+            &mut random,
+        );
+        // Hurt, the arbiter takes the Mega; the model would take the armor.
+        assert_eq!(choice, Some(GoalTarget::Pickup(0)), "{}", shadow.explain());
+        assert_eq!(shadow.hunch_pick(), Some("pickup:1"));
+        assert!(
+            shadow.explain().contains(" hunch=pickup:1"),
+            "{}",
+            shadow.explain()
+        );
+        let mut on = Planner::new(0.0);
+        on.set_hunch(model, HunchMode::On);
+        let choice = on.select(
+            pickups(),
+            Vec::new(),
+            me(30, 0),
+            situation(),
+            weights::DEFAULT,
+            &|_, _| None,
+            &mut random,
+        );
+        // On, the model's goal stands (here without stopovers on the way).
+        assert_eq!(choice, Some(GoalTarget::Pickup(1)), "{}", on.explain());
     }
 
     #[test]
