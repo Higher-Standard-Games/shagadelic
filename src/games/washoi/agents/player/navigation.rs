@@ -238,6 +238,16 @@ impl WashoiNavigation {
         })
     }
 
+    /// The view yaw a baked teleporter set when the bot's own position
+    /// jumped from `before` to `after` through it.
+    pub(in crate::games::washoi) fn teleport_exit_yaw(
+        &self,
+        before: Vec3,
+        after: Vec3,
+    ) -> Option<f64> {
+        self.planner.as_ref()?.teleport_exit_yaw(before, after)
+    }
+
     pub(in crate::games::washoi) fn nodes(&self) -> &[[f64; 3]] {
         self.planner.as_ref().map_or(&[], |planner| planner.nodes())
     }
@@ -780,6 +790,32 @@ mod tests {
         let far = planner.pickup_costs(Vec3::new(-600.0, 0.0, 0.0), |_, _| false, |_, _| true);
         assert_eq!(far.len(), 1);
         assert!((far[0].1 - 800.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn a_jump_out_of_a_teleporter_reports_its_exit_yaw() {
+        let graph: WashoiNavigation = serde_json::from_str(
+            r#"{"map":"test","graph":{
+                "bsp_sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                "nodes":[[0,24,0],[80,24,160],[1000,24,500]],
+                "edges":[[0,1],[1,0],[2,0]],"entries":[0],"goals":[1,2],
+                "maneuvers":[[1,2,{"kind":"teleporter","min":[72,0,152],"max":[88,56,168],
+                    "exit":[1000,24,500],"yaw":1.5}]]
+            }}"#,
+        )
+        .unwrap();
+        let entry = Vec3::new(80.0, 24.0, 160.0);
+        let teleported = Vec3::new(1040.0, 24.0, 520.0);
+        assert_eq!(graph.teleport_exit_yaw(entry, teleported), Some(1.5));
+        // An ordinary step, or a long move that lands away from any exit.
+        assert_eq!(
+            graph.teleport_exit_yaw(entry, Vec3::new(160.0, 24.0, 160.0)),
+            None
+        );
+        assert_eq!(
+            graph.teleport_exit_yaw(entry, Vec3::new(600.0, 24.0, 500.0)),
+            None
+        );
     }
 
     #[test]

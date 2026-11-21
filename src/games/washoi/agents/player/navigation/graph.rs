@@ -225,6 +225,35 @@ impl Planner {
         entry.into_iter().chain(edge).chain(local).chain(view)
     }
 
+    /// The view yaw a teleporter set, when the bot moved from `before` to
+    /// `after` by going through one, after TypeScript `teleportExitYaw`. One
+    /// snapshot of movement never covers 150 units, and the bot may have
+    /// moved 96 on from the exit by the time a snapshot shows it.
+    pub(in crate::games::washoi) fn teleport_exit_yaw(
+        &self,
+        before: Vec3,
+        after: Vec3,
+    ) -> Option<f64> {
+        let step = (after.x - before.x)
+            .hypot(after.z - before.z)
+            .hypot(after.y - before.y);
+        if step < 150.0 {
+            return None;
+        }
+        self.maneuvers
+            .values()
+            .filter_map(|maneuver| maneuver.teleport_exit())
+            .map(|(exit, yaw)| {
+                let distance = (exit[0] - after.x)
+                    .hypot(exit[2] - after.z)
+                    .hypot(exit[1] - after.y);
+                (distance, yaw)
+            })
+            .filter(|&(distance, _)| distance <= 96.0)
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+            .map(|(_, yaw)| yaw)
+    }
+
     pub(in crate::games::washoi) fn nodes(&self) -> &[[f64; 3]] {
         &self.nodes
     }

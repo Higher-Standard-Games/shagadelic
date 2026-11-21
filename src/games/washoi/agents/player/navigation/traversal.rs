@@ -49,6 +49,14 @@ impl Maneuver {
         }
     }
 
+    /// A teleporter's exit origin and the view yaw it sets.
+    pub(in crate::games::washoi) fn teleport_exit(self) -> Option<([f64; 3], f64)> {
+        match self {
+            Self::Teleporter { exit, yaw, .. } => Some((exit, yaw)),
+            _ => None,
+        }
+    }
+
     pub(in crate::games::washoi) fn observed_teleport(self, before: Vec3, after: Vec3) -> bool {
         matches!(self, Self::Teleporter { min, max, exit, .. }
             if near_trigger(before, min, max, 24.0) && near(after, exit, 72.0, 72.0))

@@ -452,6 +452,7 @@ impl BotPlayer {
         let position = world
             .body(&self.entity_id)
             .and_then(|entity| entity.position);
+        self.face_teleport_exit(position);
         self.engagement = match (&self.sight, position) {
             (Some(sight), Some(position))
                 if !self.exact_view && self.respawn_at.is_none() && !self.traversal.active() =>
@@ -635,6 +636,25 @@ impl BotPlayer {
     /// `BotLook`: note which major item spots are in sight, and while
     /// roaming out of a fight, let the view glance into open space or at a
     /// stale spot. Movement keeps its heading.
+    /// A teleporter sets the view to its exit yaw, as it does for a human,
+    /// after TypeScript `BotClient._faceTeleportExit`. Without this the aim
+    /// would turn there from the entry view after the reaction time, and a bot
+    /// that walked into a teleporter mid-fight would come out looking back.
+    fn face_teleport_exit(&mut self, position: Option<super::super::Vec3>) {
+        let (Some(before), Some(after), Some(navigation)) =
+            (self.position, position, self.navigation.as_deref())
+        else {
+            return;
+        };
+        if let Some(yaw) = navigation.teleport_exit_yaw(before, after) {
+            let pitch = self
+                .aim
+                .current()
+                .map_or(self.planned_input.pitch, |view| view.pitch);
+            self.aim.reset(View { yaw, pitch });
+        }
+    }
+
     fn look_around(&mut self, world: &Observation, position: Option<super::super::Vec3>) {
         let (Some(sight), Some(navigation), Some(position)) =
             (self.sight.clone(), self.navigation.clone(), position)
