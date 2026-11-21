@@ -29,6 +29,8 @@ The gameplay ownership above describes the parity work. For the architecture mil
 | B | Map reconstructed snapshots and ordered events into A's observation contract and actions into paced wire inputs. Move decision execution under the scheduler's decision budget. | Own `session.rs`, `protocol/`, and any necessary host or runtime changes. Keep socket admission, ACKs, backpressure, removal, and lobby shutdown working. |
 | C, if available | Capture a short reference trace on the pre-refactor baseline. Include elapsed times, a transient event and an exact input sequence. Then replay the same fixture through the synchronous brain and compare outputs with the live path. | Own replay fixtures and independent integration tests. If a test needs a private hook, ask the owning session to expose it. B owns this verification if C is unavailable. |
 
+Session B also took over the hosted scheduler and replay work from `763c135` (`session.rs`, `protocol/connection.rs`, `protocol/keys.rs`, `runtime/mod.rs`, `control/washoi.rs`, `tests/washoi_hosted_replay.rs`), whose author is no longer active. Session A works in its own worktree and lands brain commits on `main`. Snapshots map through `protocol::observe` (`5e901d7`), and `Controls` encode through the movement keys (`b22a029`).
+
 A and B first agree on observation, ordered event, action, and time semantics against the trace. B can exercise burst delivery with a zero decision budget while A ports gameplay. Wire the production paths together after the replay matches. Finish with a private lobby smoke covering admission, movement, traversal, combat, and shutdown. Keep HUNCH training and waypoint schema changes for their own milestones.
 
 ## Handover for session B: traversal and lobby wiring
