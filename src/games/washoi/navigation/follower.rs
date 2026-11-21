@@ -4,7 +4,7 @@ use std::time::Duration;
 use shagger_shared::net::game_state::Vec3;
 use tokio::time::Instant;
 
-use super::{PlayerInput, Route, WashoiNavigation, horizontal_distance};
+use super::{MAX_HEIGHT_DELTA, PlayerInput, Route, WashoiNavigation, horizontal_distance};
 use crate::games::washoi::{Difficulty, goals::OwnVitals};
 
 const STALL_TIMEOUT: Duration = Duration::from_millis(800);
@@ -13,6 +13,10 @@ const MIN_PROGRESS: f64 = 8.0;
 const DISPLACEMENT: f64 = 128.0;
 const MAX_BLOCKS: usize = 16;
 const LOCAL_PICKUP_RADIUS: f64 = 24.0;
+// Close enough on the final leg to see an item vanish, as in TypeScript
+// `BotPerception.ts`, where an item that vanishes beside the bot is its own
+// take and known to the tick.
+const PICKUP_SIGHT_RADIUS: f64 = 96.0;
 // Washoi takes a beneficial item on the first tick a player overlaps it. An
 // item that stays after this wait is one the bot can't take, such as full
 // ammo or a new weapon that needs USE to swap. A bot at a plain goal also
@@ -63,6 +67,8 @@ struct ActiveRoute {
     next: usize,
     progress: Option<Progress>,
     arrived: Option<Instant>,
+    /// The bot saw the route's item in place from close by.
+    seen_up: bool,
 }
 
 #[derive(Default)]
@@ -72,6 +78,9 @@ pub(in crate::games::washoi) struct RouteFollower {
     blocked: Vec<(Leg, Instant)>,
     pickup_unavailable: BTreeMap<usize, Instant>,
     replan_at: Option<Instant>,
+    /// The last waypoint the bot reached. Momentum can carry a bot past the
+    /// end of a route and out of every node's attach radius.
+    anchor: Option<[f64; 3]>,
 }
 
 impl RouteFollower {
@@ -82,6 +91,7 @@ impl RouteFollower {
         self.active = None;
         self.last_position = None;
         self.replan_at = None;
+        self.anchor = None;
     }
 
     pub(in crate::games::washoi) fn takeoff<'a>(
@@ -122,6 +132,7 @@ impl RouteFollower {
             })
         {
             self.active = None;
+            self.anchor = None;
         }
         if self.active.is_none() {
             let unblocked = |route: &Route| {
@@ -167,7 +178,8 @@ impl RouteFollower {
                     if self.replan_at.is_some_and(|at| now < at) {
                         return PlayerInput::default();
                     }
-                    let Some(route) = navigation.plan(position, unblocked, score) else {
+                    let planned = navigation.plan(position, self.anchor, unblocked, score);
+                    let Some(route) = planned else {
                         self.replan_at = Some(now + REPLAN_DELAY);
                         return PlayerInput::default();
                     };
@@ -180,6 +192,7 @@ impl RouteFollower {
                 next: 0,
                 progress: None,
                 arrived: None,
+                seen_up: false,
             });
         }
 
@@ -188,9 +201,23 @@ impl RouteFollower {
             next,
             progress,
             arrived,
+            seen_up,
         } = self.active.as_mut().expect("route selected");
         let route = route.get(navigation);
+        let reached = *next;
         let input = WashoiNavigation::steer(route, next, position);
+        if *next > reached {
+            self.anchor = Some(route.waypoints[*next - 1]);
+        }
+        if let Some(pickup) = route.pickup
+            && let Some(&target) = route.waypoints.last()
+            && *next + 1 >= route.waypoints.len()
+            && horizontal_distance(position, target) <= PICKUP_SIGHT_RADIUS
+            && (target[1] - position.y).abs() <= MAX_HEIGHT_DELTA
+            && pickup_active.get(pickup.id) == Some(&true)
+        {
+            *seen_up = true;
+        }
         let Some(&goal) = route.waypoints.get(*next) else {
             let Some(&target) = route.waypoints.last() else {
                 return input;
@@ -207,8 +234,11 @@ impl RouteFollower {
                 .filter(|pickup| pickup_active.get(pickup.id) == Some(&false));
             let waited = now - *arrived.get_or_insert(now) >= ARRIVAL_DWELL;
             if let Some(pickup) = taken {
-                self.pickup_unavailable
-                    .insert(pickup.id, now + difficulty.pickup_recheck());
+                // Seen taken: back after its respawn time. Found gone: taken
+                // some time in the last respawn period, so expect it halfway.
+                let respawn = pickup.respawn();
+                let away = if *seen_up { respawn } else { respawn / 2 };
+                self.pickup_unavailable.insert(pickup.id, now + away);
             } else if waited && let Some(pickup) = route.pickup {
                 self.pickup_unavailable
                     .insert(pickup.id, now + DECLINED_PICKUP);
@@ -381,7 +411,7 @@ mod tests {
             "map":"test","graph":{
                 "bsp_sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
                 "nodes":[[0,0,0],[0,0,40],[60,0,0],[200,0,200],[160,0,200]],
-                "edges":[[0,1],[0,2],[3,4]],"entries":[0],"goals":[1,2,4],
+                "edges":[[0,1],[1,0],[0,2],[2,0],[3,4],[4,3]],"entries":[0],"goals":[1,2,4],
                 "learned_goals":[[2,"jump"]],"learned_landings":[[3,"jump"]]
             }
         }"#,

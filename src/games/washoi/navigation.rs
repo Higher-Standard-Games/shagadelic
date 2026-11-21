@@ -11,6 +11,7 @@ pub(super) use follower::{RouteFollower, RouteObservation};
 const ENTRY_RADIUS: f64 = 48.0;
 const ARRIVAL_RADIUS: f64 = 16.0;
 const MAX_HEIGHT_DELTA: f64 = 40.0;
+const ANCHOR_RADIUS: f64 = 128.0;
 
 /// Authored walking routes. Coordinates are Washoi world-space XYZ.
 #[derive(Deserialize)]
@@ -114,10 +115,11 @@ impl WashoiNavigation {
     fn plan(
         &self,
         position: Vec3,
+        anchor: Option<[f64; 3]>,
         accept: impl Fn(&Route) -> bool,
         score: impl Fn(&Route) -> f64,
     ) -> Option<Route> {
-        self.planner.as_ref()?.plan(position, accept, score)
+        self.planner.as_ref()?.plan(position, anchor, accept, score)
     }
 
     fn route_at(&self, position: Vec3, allowed: impl Fn(&Route) -> bool) -> Option<usize> {
@@ -204,6 +206,42 @@ mod tests {
         let mut disconnected = config;
         disconnected["graph"]["edges"] = serde_json::json!([]);
         assert!(serde_json::from_value::<WashoiNavigation>(disconnected).is_err());
+    }
+
+    #[test]
+    fn walks_only_to_goals_the_bot_can_walk_back_from() {
+        // Node 2 is a pocket: walkable into, but its exit is a drop the
+        // cache importer leaves out. Its pickup would score higher.
+        let graph: WashoiNavigation = serde_json::from_str(
+            r#"{
+            "map":"test","graph":{
+                "bsp_sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                "nodes":[[0,0,0],[100,0,0],[0,0,100]],
+                "edges":[[0,1],[1,0],[0,2]],"entries":[0],"goals":[1,2],
+                "pickup_goals":[[2,{"id":0,"kind":"powerup"}]]
+            }
+        }"#,
+        )
+        .unwrap();
+        let pocket = [0.0, 0.0, 100.0];
+        assert!(
+            graph
+                .routes
+                .iter()
+                .all(|route| !route.waypoints.contains(&pocket))
+        );
+        let planned = graph
+            .plan(
+                Vec3::new(0.0, 0.0, 0.0),
+                None,
+                |_| true,
+                |route| f64::from(u8::from(route.pickup.is_some())),
+            )
+            .unwrap();
+        assert_eq!(planned.waypoints, [[100.0, 0.0, 0.0]]);
+        // A bot left in the dead end has no walk out until it dies.
+        let inside = graph.plan(Vec3::new(0.0, 0.0, 100.0), None, |_| true, |_| 0.0);
+        assert!(inside.is_none());
     }
 
     #[test]

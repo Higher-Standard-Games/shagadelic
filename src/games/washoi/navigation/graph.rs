@@ -3,7 +3,8 @@ use serde::Deserialize;
 use shagger_shared::net::game_state::Vec3;
 
 use super::{
-    ARRIVAL_RADIUS, ENTRY_RADIUS, MAX_HEIGHT_DELTA, PickupGoal, Route, horizontal_distance,
+    ANCHOR_RADIUS, ARRIVAL_RADIUS, ENTRY_RADIUS, MAX_HEIGHT_DELTA, PickupGoal, Route,
+    horizontal_distance,
 };
 
 const MAX_NODES: usize = 256;
@@ -31,6 +32,7 @@ pub(super) struct WalkGraph {
 pub(super) struct Planner {
     nodes: Vec<[f64; 3]>,
     goals: Vec<PlannedGoal>,
+    component: Vec<usize>,
 }
 
 struct PlannedGoal {
@@ -44,9 +46,13 @@ struct PlannedGoal {
 impl Planner {
     /// The best accepted walk from the node nearest `position` to a goal
     /// the bot isn't already standing on. Ties go to the shorter walk.
+    ///
+    /// Off the graph, the bot can start from `anchor`, the last node it
+    /// reached, and walks back to it first. It got here from there.
     pub(super) fn plan(
         &self,
         position: Vec3,
+        anchor: Option<[f64; 3]>,
         accept: impl Fn(&Route) -> bool,
         score: impl Fn(&Route) -> f64,
     ) -> Option<Route> {
@@ -54,22 +60,34 @@ impl Planner {
             horizontal_distance(position, node) <= radius
                 && (node[1] - position.y).abs() <= MAX_HEIGHT_DELTA
         };
-        let start = (0..self.nodes.len())
+        let nearby = (0..self.nodes.len())
             .filter(|&node| here(self.nodes[node], ENTRY_RADIUS))
             .min_by(|&a, &b| {
                 horizontal_distance(position, self.nodes[a])
                     .total_cmp(&horizontal_distance(position, self.nodes[b]))
-            })?;
+            });
+        let (start, back) = match nearby {
+            Some(node) => (node, false),
+            None => {
+                let anchor = anchor.filter(|&anchor| here(anchor, ANCHOR_RADIUS))?;
+                let node = self.nodes.iter().position(|&node| node == anchor)?;
+                (node, true)
+            }
+        };
         let mut best: Option<(f64, f32, Route)> = None;
         for goal in &self.goals {
             let distance = goal.distance[start];
             if goal.node == start
+                || self.component[goal.node] != self.component[start]
                 || !distance.is_finite()
                 || here(self.nodes[goal.node], ARRIVAL_RADIUS)
             {
                 continue;
             }
             let mut waypoints = Vec::new();
+            if back {
+                waypoints.push(self.nodes[start]);
+            }
             let mut node = start;
             while let Some(next) = goal.toward[node] {
                 node = usize::from(next);
@@ -145,6 +163,13 @@ impl WalkGraph {
             adjacent.dedup();
         }
 
+        let mut reverse = vec![Vec::new(); count];
+        for (from, adjacent) in neighbors.iter().enumerate() {
+            for &to in adjacent {
+                reverse[to].push(from);
+            }
+        }
+        let component = components(&neighbors, &reverse);
         let routes: Vec<_> = self
             .entries
             .iter()
@@ -155,17 +180,17 @@ impl WalkGraph {
                     .map(|(entry, id)| (*entry, Some(id.as_str()))),
             )
             .flat_map(|(entry, resumed_from)| {
-                self.routes_from(entry, &neighbors, &learned, &pickups, resumed_from)
+                let walk = Walk {
+                    neighbors: &neighbors,
+                    component: &component,
+                    learned: &learned,
+                    pickups: &pickups,
+                };
+                self.routes_from(entry, walk, resumed_from)
             })
             .collect();
         if routes.is_empty() {
             return Err("navigation graph has no reachable goals");
-        }
-        let mut reverse = vec![Vec::new(); count];
-        for (from, adjacent) in neighbors.iter().enumerate() {
-            for &to in adjacent {
-                reverse[to].push(from);
-            }
         }
         let mut goals: Vec<_> = self
             .goals
@@ -184,6 +209,7 @@ impl WalkGraph {
             Planner {
                 nodes: self.nodes,
                 goals,
+                component,
             },
         ))
     }
@@ -222,14 +248,13 @@ impl WalkGraph {
         }
     }
 
-    fn routes_from(
-        &self,
-        entry: usize,
-        neighbors: &[Vec<usize>],
-        learned: &[Option<&str>],
-        pickups: &[Option<PickupGoal>],
-        resumed_from: Option<&str>,
-    ) -> Vec<Route> {
+    fn routes_from(&self, entry: usize, walk: Walk<'_>, resumed_from: Option<&str>) -> Vec<Route> {
+        let Walk {
+            neighbors,
+            component,
+            learned,
+            pickups,
+        } = walk;
         let mut routes = Vec::new();
         let mut distances = vec![f64::INFINITY; self.nodes.len()];
         let mut predecessor: Vec<Option<usize>> = vec![None; self.nodes.len()];
@@ -252,7 +277,10 @@ impl WalkGraph {
                     .count()
                     >= ROUTES_PER_ENTRY
             };
-            if node != entry && self.goals.contains(&node) && !category_full {
+            // A walk that can't return could trap the bot. Learned takeoffs
+            // leave by their recording instead.
+            let returns = is_learned || component[node] == component[entry];
+            if node != entry && self.goals.contains(&node) && returns && !category_full {
                 let mut waypoints = vec![self.nodes[node]];
                 let mut previous = predecessor[node].expect("reachable goal has predecessor");
                 while previous != entry {
@@ -282,6 +310,60 @@ impl WalkGraph {
         }
         routes
     }
+}
+
+#[derive(Clone, Copy)]
+struct Walk<'a> {
+    neighbors: &'a [Vec<usize>],
+    component: &'a [usize],
+    learned: &'a [Option<&'a str>],
+    pickups: &'a [Option<PickupGoal>],
+}
+
+/// Strongly connected components, by Kosaraju's algorithm. The cache
+/// importer keeps only straight walk edges, so a bot can walk into a pocket
+/// whose exits are jumps or drops. Two nodes share a component when each
+/// can walk to the other.
+fn components(neighbors: &[Vec<usize>], reverse: &[Vec<usize>]) -> Vec<usize> {
+    let count = neighbors.len();
+    let mut order = Vec::with_capacity(count);
+    let mut visited = vec![false; count];
+    for root in 0..count {
+        if visited[root] {
+            continue;
+        }
+        visited[root] = true;
+        let mut stack = vec![(root, 0)];
+        while let Some((node, edge)) = stack.last_mut() {
+            if let Some(&next) = neighbors[*node].get(*edge) {
+                *edge += 1;
+                if !visited[next] {
+                    visited[next] = true;
+                    stack.push((next, 0));
+                }
+            } else {
+                order.push(*node);
+                stack.pop();
+            }
+        }
+    }
+    let mut component = vec![usize::MAX; count];
+    for (id, &root) in order.iter().rev().enumerate() {
+        if component[root] != usize::MAX {
+            continue;
+        }
+        component[root] = id;
+        let mut stack = vec![root];
+        while let Some(node) = stack.pop() {
+            for &previous in &reverse[node] {
+                if component[previous] == usize::MAX {
+                    component[previous] = id;
+                    stack.push(previous);
+                }
+            }
+        }
+    }
+    component
 }
 
 fn edge_length(from: [f64; 3], to: [f64; 3]) -> f64 {

@@ -1,5 +1,7 @@
 //! First Washoi pickup policy. Pickup IDs index the map's snapshot active mask.
 
+use std::time::Duration;
+
 use super::Difficulty;
 use serde::Deserialize;
 
@@ -45,6 +47,21 @@ pub(super) struct OwnVitals {
 }
 
 impl PickupGoal {
+    /// How long a taken item stays away, from Washoi
+    /// `shared/items/ItemRespawn.ts` `itemRespawnSeconds` with its default
+    /// weapon time. The TypeScript bot uses the same defaults.
+    pub(super) fn respawn(self) -> Duration {
+        Duration::from_secs(match self.kind {
+            PickupKind::Weapon | PickupKind::Ammo => 15,
+            PickupKind::Armor => 25,
+            PickupKind::Powerup => 120,
+            PickupKind::Health => match self.item {
+                Some(PickupItem::Mega | PickupItem::Ultra) => 60,
+                _ => 20,
+            },
+        })
+    }
+
     /// Whether the server would let the bot take this item now. Washoi's
     /// `PickupSystem.ts` leaves health and armor in place when they add
     /// nothing. A bot sent to one would wait on it indefinitely. Weapon and
