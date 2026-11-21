@@ -167,17 +167,39 @@ impl BotPlayer {
                 if entity_id == own && attacker_id != own)
         });
         let velocity = world.entities.get(own).and_then(|entity| entity.velocity);
+        let origin = [position.x, position.y, position.z];
         let body = Body {
             hit,
             grounded: velocity.is_none_or(|velocity| velocity.grounded),
             speed: velocity.map_or(0.0, |velocity| velocity.linear.x.hypot(velocity.linear.z)),
+            position: origin,
+            yaw: fight.view.yaw,
         };
-        let moves = self.moves.step(
-            world.tick,
-            self.difficulty.dodge_skill(),
-            body,
-            &mut self.random,
-        );
+        // TypeScript reads every `proj_` entity in the snapshot. Here a
+        // projectile counts only when a sight ray from the eye reaches it.
+        let eye = [position.x, position.y + 32.0, position.z];
+        let projectiles: Vec<_> = world
+            .entities
+            .iter()
+            .filter(|(id, _)| id.starts_with("proj_"))
+            .filter_map(|(id, entity)| {
+                let at = entity.position?;
+                let velocity = entity.velocity?.linear;
+                let at = [at.x, at.y, at.z];
+                sight.clear(eye, at).then_some(strafe::Projectile {
+                    id,
+                    position: at,
+                    velocity: [velocity.x, velocity.y, velocity.z],
+                })
+            })
+            .collect();
+        let skills = strafe::Skills {
+            dodge: self.difficulty.dodge_skill(),
+            reaction_ms: self.difficulty.aim().reaction_ms,
+        };
+        let moves = self
+            .moves
+            .step(world.tick, skills, body, &projectiles, &mut self.random);
         let yaw = fight.view.yaw;
         let side = f64::from(strafe::clear_side(
             sight,

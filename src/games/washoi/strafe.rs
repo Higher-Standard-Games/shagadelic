@@ -1,7 +1,8 @@
 //! How a bot moves while it fights, from TypeScript `bot/BotCombatMovement.ts`:
 //! strafe runs of 0.25 to 0.9 s, with skilled bots sometimes stopping dead
-//! or doubling back, and a jump or slide dodge when hit. Sidestepping
-//! incoming rockets and taking high ground are not ported yet.
+//! or doubling back, a jump or slide dodge when hit, and a sidestep from a
+//! rocket or grenade on course for the bot once it has had time to notice
+//! it. Taking high ground is not ported yet.
 //!
 //! TypeScript keeps the feet clear of walls and ledges with collision sweeps
 //! (`BotVisionTracer.ts`). Here a strafe side is taken only when a static
@@ -23,6 +24,12 @@ const STRAFE_CLEARANCE: f64 = 48.0;
 /// `FLOOR_DEPTH` below them.
 const ORIGIN_HEIGHT: f64 = 24.0;
 const FLOOR_DEPTH: f64 = 40.0;
+/// A projectile first seen this close to the bot is its own.
+const OWN_PROJECTILE_RADIUS: f64 = 120.0;
+/// `isIncoming` in `BotGameState.ts`: a path passing this close within this
+/// many seconds is a threat.
+const THREAT_RADIUS: f64 = 150.0;
+const THREAT_SECONDS: f64 = 1.0;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct Moves {
@@ -40,6 +47,23 @@ pub(super) struct CombatMovement {
     dodge: Moves,
     dodge_jump_sent: bool,
     last_jump: Option<u32>,
+    /// Projectiles by entity: the tick first seen, whether the bot's own,
+    /// and whether already dodged.
+    projectiles: Vec<Tracked>,
+}
+
+struct Tracked {
+    id: String,
+    first: u32,
+    own: bool,
+    handled: bool,
+}
+
+/// A projectile in the bot's sight.
+pub(super) struct Projectile<'a> {
+    pub(super) id: &'a str,
+    pub(super) position: [f64; 3],
+    pub(super) velocity: [f64; 3],
 }
 
 impl Default for CombatMovement {
@@ -52,6 +76,7 @@ impl Default for CombatMovement {
             dodge: Moves::default(),
             dodge_jump_sent: false,
             last_jump: None,
+            projectiles: Vec::new(),
         }
     }
 }
@@ -62,6 +87,15 @@ pub(super) struct Body {
     pub(super) hit: bool,
     pub(super) grounded: bool,
     pub(super) speed: f64,
+    pub(super) position: [f64; 3],
+    pub(super) yaw: f64,
+}
+
+/// `dodgeSkill` and `reactionTimeMs`.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Skills {
+    pub(super) dodge: f64,
+    pub(super) reaction_ms: f64,
 }
 
 impl CombatMovement {
@@ -73,8 +107,17 @@ impl CombatMovement {
     }
 
     /// `step`, at server tick `tick`.
-    pub(super) fn step(&mut self, tick: u32, skill: f64, body: Body, random: &mut Random) -> Moves {
-        let skill = skill.clamp(0.0, 1.0);
+    pub(super) fn step(
+        &mut self,
+        tick: u32,
+        skills: Skills,
+        body: Body,
+        projectiles: &[Projectile<'_>],
+        random: &mut Random,
+    ) -> Moves {
+        let skill = skills.dodge.clamp(0.0, 1.0);
+        self.track(tick, body.position, projectiles);
+        self.react_to_projectiles(tick, skills, body, projectiles, random);
         // `_reactToHit`.
         if body.hit && !self.dodging(tick) && body.grounded && random.next() < skill {
             let fast = body.speed >= SLIDE_MIN_SPEED;
@@ -101,6 +144,69 @@ impl CombatMovement {
         Moves {
             strafe: if tick < self.stop_until { 0 } else { self.side },
             ..Moves::default()
+        }
+    }
+
+    /// `_trackProjectiles`.
+    fn track(&mut self, tick: u32, position: [f64; 3], projectiles: &[Projectile<'_>]) {
+        self.projectiles.retain(|tracked| {
+            projectiles
+                .iter()
+                .any(|projectile| projectile.id == tracked.id)
+        });
+        for projectile in projectiles {
+            if !self
+                .projectiles
+                .iter()
+                .any(|tracked| tracked.id == projectile.id)
+            {
+                self.projectiles.push(Tracked {
+                    id: projectile.id.to_owned(),
+                    first: tick,
+                    own: distance(projectile.position, position) <= OWN_PROJECTILE_RADIUS,
+                    handled: false,
+                });
+            }
+        }
+    }
+
+    /// `_reactToRocket`: step off the path of the first noticed threat.
+    fn react_to_projectiles(
+        &mut self,
+        tick: u32,
+        skills: Skills,
+        body: Body,
+        projectiles: &[Projectile<'_>],
+        random: &mut Random,
+    ) {
+        if self.dodging(tick) {
+            return;
+        }
+        let notice = (skills.reaction_ms / 1000.0 * TICK_RATE).round() as u32;
+        let skill = skills.dodge.clamp(0.0, 1.0);
+        for projectile in projectiles {
+            let Some(tracked) = self
+                .projectiles
+                .iter_mut()
+                .find(|tracked| tracked.id == projectile.id)
+            else {
+                continue;
+            };
+            if tracked.own
+                || tracked.handled
+                || !incoming(body.position, projectile.position, projectile.velocity)
+                || tick.wrapping_sub(tracked.first) < notice
+            {
+                continue;
+            }
+            tracked.handled = true;
+            if random.next() >= skill {
+                continue;
+            }
+            let side = away_side(body.position, body.yaw, projectile);
+            let jump = body.grounded && random.next() < skill;
+            self.start_dodge(tick, side, jump, false, 0.4);
+            return;
         }
     }
 
@@ -139,6 +245,46 @@ impl CombatMovement {
     }
 }
 
+/// `isIncoming`.
+fn incoming(target: [f64; 3], position: [f64; 3], velocity: [f64; 3]) -> bool {
+    let speed = velocity.iter().map(|v| v * v).sum::<f64>();
+    if speed < 1.0 {
+        return false;
+    }
+    let to = [0, 1, 2].map(|axis| target[axis] - position[axis]);
+    let t = (0..3).map(|axis| to[axis] * velocity[axis]).sum::<f64>() / speed;
+    if t <= 0.0 || t > THREAT_SECONDS {
+        return false;
+    }
+    let closest = [0, 1, 2].map(|axis| position[axis] + velocity[axis] * t);
+    distance(closest, target) <= THREAT_RADIUS
+}
+
+/// `awaySide`: which strafe side steps off the projectile's path.
+fn away_side(position: [f64; 3], yaw: f64, projectile: &Projectile<'_>) -> i8 {
+    let [vx, _, vz] = projectile.velocity;
+    let (ox, oz) = (
+        position[0] - projectile.position[0],
+        position[2] - projectile.position[2],
+    );
+    let sign = if vx * oz - vz * ox >= 0.0 { 1.0 } else { -1.0 };
+    let length = vx.hypot(vz);
+    let length = if length == 0.0 { 1.0 } else { length };
+    let (away_x, away_z) = (-vz / length * sign, vx / length * sign);
+    if away_x * yaw.cos() - away_z * yaw.sin() >= 0.0 {
+        1
+    } else {
+        -1
+    }
+}
+
+fn distance(a: [f64; 3], b: [f64; 3]) -> f64 {
+    (0..3)
+        .map(|axis| (a[axis] - b[axis]).powi(2))
+        .sum::<f64>()
+        .sqrt()
+}
+
 /// The strafe side to take, `wanted` first, if the static geometry has room
 /// for it: no wall beside the origin and floor under the spot.
 pub(super) fn clear_side(sight: &Sight, origin: [f64; 3], yaw: f64, wanted: i8) -> i8 {
@@ -171,6 +317,71 @@ mod tests {
     use super::*;
     use crate::games::washoi::sight::tests::{cube, encode};
 
+    fn skills(dodge: f64) -> Skills {
+        Skills {
+            dodge,
+            reaction_ms: 280.0,
+        }
+    }
+
+    #[test]
+    fn sidesteps_a_noticed_rocket_away_from_its_path() {
+        let mut moves = CombatMovement::default();
+        let mut random = Random::new(9);
+        // A rocket flies down -x along z = -40, so it passes 40 units
+        // from the bot.
+        let body = Body {
+            grounded: true,
+            position: [0.0, 24.0, 0.0],
+            ..Body::default()
+        };
+        let rocket = |x: f64| Projectile {
+            id: "proj_1",
+            position: [x, 24.0, -40.0],
+            velocity: [-900.0, 0.0, 0.0],
+        };
+        // Not before the 280 ms reaction: 35 ticks.
+        for tick in 0..35 {
+            let at = 800.0 - 900.0 * f64::from(tick) / TICK_RATE;
+            assert!(
+                !moves
+                    .step(tick, skills(1.0), body, &[rocket(at)], &mut random)
+                    .jump
+            );
+        }
+        let dodge = moves.step(35, skills(1.0), body, &[rocket(548.0)], &mut random);
+        // A skilled bot jumps it and strafes to the side away from its path.
+        assert!(dodge.jump);
+        assert_eq!(dodge.strafe, away_side(body.position, 0.0, &rocket(548.0)));
+        // Its own rocket, first seen beside it, is never dodged.
+        let mut own = CombatMovement::default();
+        let mine = Projectile {
+            id: "proj_2",
+            position: [0.0, 24.0, 50.0],
+            velocity: [0.0, 0.0, 900.0],
+        };
+        for tick in 0..100 {
+            assert!(
+                !own.step(tick, skills(1.0), body, &[mine.clone_at(tick)], &mut random)
+                    .jump
+            );
+        }
+        assert!(incoming([0.0; 3], [500.0, 0.0, 0.0], [-900.0, 0.0, 0.0]));
+        assert!(!incoming([0.0; 3], [500.0, 0.0, 0.0], [900.0, 0.0, 0.0]));
+        assert!(!incoming([0.0; 3], [500.0, 0.0, 400.0], [-900.0, 0.0, 0.0]));
+    }
+
+    impl Projectile<'_> {
+        fn clone_at(&self, tick: u32) -> Self {
+            let t = f64::from(tick) / TICK_RATE;
+            Projectile {
+                id: self.id,
+                position: [0, 1, 2].map(|axis| self.position[axis] + self.velocity[axis] * t),
+                velocity: self.velocity,
+            }
+        }
+    }
+
     #[test]
     fn strafe_runs_alternate_within_the_typescript_lengths() {
         let mut moves = CombatMovement::default();
@@ -182,7 +393,7 @@ mod tests {
         let mut runs = Vec::new();
         let mut last = (0, 0);
         for tick in 0..5_000 {
-            let strafe = moves.step(tick, 0.0, body, &mut random).strafe;
+            let strafe = moves.step(tick, skills(0.0), body, &[], &mut random).strafe;
             if strafe != last.0 {
                 runs.push((last.0, tick - last.1));
                 last = (strafe, tick);
@@ -202,20 +413,24 @@ mod tests {
             hit: true,
             grounded: true,
             speed: 100.0,
+            ..Body::default()
         };
-        let first = moves.step(10, 1.0, walking, &mut random);
+        let first = moves.step(10, skills(1.0), walking, &[], &mut random);
         assert!(first.jump && !first.crouch && first.strafe != 0);
         let after = Body {
             hit: false,
             ..walking
         };
-        assert!(!moves.step(11, 1.0, after, &mut random).jump);
+        assert!(!moves.step(11, skills(1.0), after, &[], &mut random).jump);
         // The dodge lasts 0.3 s, then the strafe rhythm resumes.
-        assert_eq!(moves.step(48, 1.0, after, &mut random).strafe, first.strafe);
-        assert!(!moves.step(60, 1.0, after, &mut random).jump);
+        assert_eq!(
+            moves.step(48, skills(1.0), after, &[], &mut random).strafe,
+            first.strafe
+        );
+        assert!(!moves.step(60, skills(1.0), after, &[], &mut random).jump);
         // An unskilled bot never dodges.
         let mut steady = CombatMovement::default();
-        assert!(!steady.step(10, 0.0, walking, &mut random).jump);
+        assert!(!steady.step(10, skills(0.0), walking, &[], &mut random).jump);
     }
 
     #[test]
