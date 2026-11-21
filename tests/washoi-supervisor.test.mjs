@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm, rmdir, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 
 import { WashoiSupervisor } from "../tools/washoi-supervisor.mjs";
@@ -13,6 +16,9 @@ test("match ownership is independent of the endpoint and survives zero bots", { 
   const first = supervisor.start("first", endpoint);
   assert.equal(supervisor.start("first", endpoint), first);
   await Promise.all([first, supervisor.start("second", endpoint)]);
+  await assert.rejects(supervisor.launch("first", { name: "test", difficulty: "unknown" }), /unknown_difficulty/);
+  const custom = { reactionTimeMs: 200 };
+  await assert.rejects(supervisor.launch("first", { name: "test", difficulty: custom }), /preset name/);
   await assert.rejects(supervisor.launch("first", { name: "test" }), /admission_error/);
   assert.equal(supervisor.start("first", endpoint), first);
   await supervisor.stop("first");
@@ -30,6 +36,25 @@ test("a match ending during child startup rejects readiness and reaps the child"
   await assert.rejects(supervisor.launch("short", { name: "test" }), /no bot child/);
 });
 
+test("map assets use the match map and reject a file labeled for a different map", { timeout: 5_000 }, async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "shagadelic-nav-"));
+  const supervisor = new WashoiSupervisor(executable, { navigationDir: directory });
+  t.after(async () => {
+    await supervisor.stopAll();
+    await rm(join(directory, "washoi_dm2.json"), { force: true });
+    await rmdir(directory);
+  });
+  const endpoint = "ws://127.0.0.1:1";
+  await supervisor.start("missing", endpoint, "washoi_dm2");
+  await supervisor.stop("missing");
+  const file = join(directory, "washoi_dm2.json");
+  const route = { entry: [0, 0, 0], waypoints: [[32, 0, 0]] };
+  await writeFile(file, JSON.stringify({ map: "other", routes: [route] }));
+  await assert.rejects(supervisor.start("wrong", endpoint, "washoi_dm2"), /wrong map/);
+  await writeFile(file, JSON.stringify({ map: "washoi_dm2", routes: [route] }));
+  await supervisor.start("correct", endpoint, "washoi_dm2");
+});
+
 const endpoint = process.env.SHAGADELIC_TEST_WASHOI;
 test("the supervisor disposes bots and reaps the child with a live bot still connected", {
   timeout: 15_000,
@@ -37,10 +62,10 @@ test("the supervisor disposes bots and reaps the child with a live bot still con
 }, async (t) => {
   const supervisor = new WashoiSupervisor(executable);
   t.after(() => supervisor.stopAll());
-  await supervisor.start("live", endpoint);
+  await supervisor.start("live", endpoint, "washoi_dm2");
   const [first, second] = await Promise.all([
-    supervisor.launch("live", { name: "SHAGADELIC supervised one" }),
-    supervisor.launch("live", { name: "SHAGADELIC supervised two" }),
+    supervisor.launch("live", { name: "SHAGADELIC supervised one", difficulty: "hard" }),
+    supervisor.launch("live", { name: "SHAGADELIC supervised two", difficulty: "easy" }),
   ]);
   assert.notEqual(first.playerId, second.playerId);
   assert.equal(await first.dispose(), "removed");

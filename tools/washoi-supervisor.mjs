@@ -1,4 +1,6 @@
 import { spawn } from "node:child_process";
+import { access, open } from "node:fs/promises";
+import { resolve } from "node:path";
 import { createInterface } from "node:readline";
 
 const STARTUP_MS = 5_000;
@@ -11,20 +13,25 @@ const MAX_RECORD_BYTES = 64 * 1024;
 export class WashoiSupervisor {
   #executable;
   #matches = new Map();
+  #assets;
 
-  constructor(executable) {
+  constructor(executable, {
+    navigationDir = process.env.SHAGADELIC_NAVIGATION_DIR,
+    learnedRoutesDir = process.env.SHAGADELIC_LEARNED_ROUTES_DIR,
+  } = {}) {
     this.#executable = executable;
+    this.#assets = { navigationDir, learnedRoutesDir };
   }
 
-  start(matchId, endpoint) {
+  start(matchId, endpoint, map) {
     const existing = this.#matches.get(matchId);
     if (existing) {
-      if (existing.endpoint !== endpoint || existing.closing) {
+      if (existing.endpoint !== endpoint || existing.map !== map || existing.closing) {
         return Promise.reject(new Error("match already has a different or closing bot child"));
       }
       return existing.ready;
     }
-    const match = new MatchChild(this.#executable, matchId, endpoint);
+    const match = new MatchChild(this.#executable, matchId, endpoint, map, this.#assets);
     this.#matches.set(matchId, match);
     void match.closed.then(() => {
       if (this.#matches.get(matchId) === match) this.#matches.delete(matchId);
@@ -55,12 +62,14 @@ class MatchChild {
   #bots = new Map();
   #nextId = 0;
   #started = false;
+  #initialized = false;
   #closing = false;
   #startupTimer;
   #shutdownTimer;
 
-  constructor(executable, matchId, endpoint) {
+  constructor(executable, matchId, endpoint, map, assets) {
     this.endpoint = endpoint;
+    this.map = map;
     this.#child = spawn(executable, [], { stdio: ["pipe", "pipe", "inherit"], windowsHide: true });
     const output = createInterface({ input: this.#child.stdout });
     output.on("line", (line) => {
@@ -93,18 +102,21 @@ class MatchChild {
       this.#closed.resolve();
     });
     this.#startupTimer = setTimeout(() => this.#fail("bot child readiness timed out"), STARTUP_MS);
-    if (!this.#write({ type: "initialize", version: 1, lobby_id: matchId, washoi_endpoint: endpoint })) {
-      this.#fail("bot child initialization could not be sent");
-    }
+    void this.#initialize(matchId, endpoint, map, assets);
   }
 
   get ready() { return this.#ready.promise; }
   get closed() { return this.#closed.promise; }
   get closing() { return this.#closing; }
 
-  launch({ name, ticket, team }) {
+  launch({ name, ticket, team, difficulty }) {
     if (this.#closing) throw new Error("bot child is closing");
     if (this.#bots.size >= MAX_BOTS) throw new Error("bot child capacity reached");
+    // A malformed record ends the whole child, so reject custom BotDifficulty
+    // objects here. The child reports unknown preset names per request.
+    if (difficulty !== undefined && typeof difficulty !== "string") {
+      throw new Error("bot difficulty must be a preset name");
+    }
     const id = `bot-${++this.#nextId}`;
     const admission = Promise.withResolvers();
     const ended = Promise.withResolvers();
@@ -116,7 +128,7 @@ class MatchChild {
       }, ADMISSION_MS),
     };
     this.#bots.set(id, bot);
-    if (!this.#write({ type: "spawn", id, name, ticket, team })) this.#finish(id, "control_write_failed");
+    if (!this.#write({ type: "spawn", id, name, ticket, team, difficulty })) this.#finish(id, "control_write_failed");
     return admission.promise;
   }
 
@@ -125,10 +137,24 @@ class MatchChild {
       this.#closing = true;
       clearTimeout(this.#startupTimer);
       if (!this.#started) this.#ready.reject(new Error("bot child stopped before readiness"));
-      if (this.#write({ type: "shutdown" })) this.#child.stdin.end();
+      if (this.#initialized) this.#write({ type: "shutdown" });
+      this.#child.stdin.end();
       this.#shutdownTimer = setTimeout(() => this.#child.kill("SIGKILL"), SHUTDOWN_MS);
     }
     return this.closed;
+  }
+
+  async #initialize(matchId, endpoint, map, assets) {
+    try {
+      const options = await mapAssets(map, assets);
+      if (this.#closing) return;
+      this.#initialized = this.#write({
+        type: "initialize", version: 1, lobby_id: matchId, washoi_endpoint: endpoint, ...options,
+      });
+      if (!this.#initialized) this.#fail("bot child initialization could not be sent");
+    } catch (error) {
+      this.#fail(`could not load bot map assets: ${error.message}`);
+    }
   }
 
   #write(record) {
@@ -147,7 +173,7 @@ class MatchChild {
       bot.generation = event.generation;
       if (bot.removing) this.#remove(event.id, bot);
     } else if (event.type === "bot_request_failed") {
-      this.#finish(event.id, "request_failed");
+      this.#finish(event.id, typeof event.reason === "string" ? event.reason : "request_failed");
     } else if (event.generation === bot.generation && bot.generation !== undefined) {
       if (event.type === "bot_admitted" && !bot.removing) {
         if (typeof event.player_id !== "string" || !event.player_id) throw new Error();
@@ -188,5 +214,45 @@ class MatchChild {
     clearTimeout(this.#startupTimer);
     this.#ready.reject(new Error(reason));
     this.#child.kill("SIGKILL");
+  }
+}
+
+async function mapAssets(map, { navigationDir, learnedRoutesDir }) {
+  if (!map || (!navigationDir && !learnedRoutesDir)) return {};
+  if (!/^[A-Za-z0-9_-]+$/.test(map)) throw new Error("invalid Washoi map name");
+  const name = map + ".json";
+  const [navigation, learned_routes_file] = await Promise.all([
+    navigationDir ? optionalFile(resolve(navigationDir, name), async (path) => {
+      const file = await open(path, "r");
+      try {
+        const buffer = Buffer.alloc(MAX_RECORD_BYTES);
+        let length = 0;
+        while (length < buffer.length) {
+          const { bytesRead } = await file.read(buffer, length, buffer.length - length, null);
+          if (!bytesRead) break;
+          length += bytesRead;
+        }
+        if (length === buffer.length) throw new Error("navigation file exceeds control record limit");
+        const data = JSON.parse(buffer.toString("utf8", 0, length));
+        if (data?.map !== map) throw new Error("navigation file has the wrong map");
+        return data;
+      } finally {
+        await file.close();
+      }
+    }) : undefined,
+    learnedRoutesDir ? optionalFile(resolve(learnedRoutesDir, name), async (path) => {
+      await access(path);
+      return path;
+    }) : undefined,
+  ]);
+  return { navigation, learned_routes_file };
+}
+
+async function optionalFile(path, use) {
+  try {
+    return await use(path);
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+    return undefined;
   }
 }
