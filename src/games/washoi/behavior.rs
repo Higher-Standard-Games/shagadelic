@@ -101,7 +101,9 @@ impl BotPlayer {
     }
 
     pub(crate) fn uses_exact_movement(&self) -> bool {
-        self.traversal.active() || matches!(self.traversal, Traversal::Approaching { .. })
+        self.route.exact()
+            || self.traversal.active()
+            || matches!(self.traversal, Traversal::Approaching { .. })
     }
 
     pub fn with_navigation(mut self, navigation: Arc<WashoiNavigation>) -> Self {
@@ -174,7 +176,8 @@ impl BotPlayer {
             self.traversal = Traversal::default();
             self.aim.clear();
             self.combat.respawned();
-        } else if let Some(library) = &self.learned
+        } else if !self.route.traversing()
+            && let Some(library) = &self.learned
             && let Some(entity) = own
         {
             if let Some(input) = self.traversal.approach(library, entity, now) {
@@ -189,7 +192,8 @@ impl BotPlayer {
                 return true;
             }
         }
-        if self.respawn_at.is_none()
+        if !self.route.traversing()
+            && self.respawn_at.is_none()
             && let Some(entity) = own
             && let Some(position) = entity.position
             && let Some(input) = self.orders.input(
@@ -233,6 +237,9 @@ impl BotPlayer {
                         fighting: self.engagement.is_some(),
                     },
                 );
+                if self.route.exact() {
+                    return true;
+                }
                 if let Some(library) = &self.learned
                     && let Some(id) = self.route.takeoff(navigation)
                     && self.traversal.begin_approach(library, id, position, now)

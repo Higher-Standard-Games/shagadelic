@@ -4,6 +4,7 @@ use std::time::Duration;
 use shagger_shared::net::game_state::{Vec3, Velocity};
 use tokio::time::Instant;
 
+use super::traversal::{Outcome, Traversal};
 use super::{MAX_HEIGHT_DELTA, PlayerInput, Route, WashoiNavigation, horizontal_distance};
 use crate::games::washoi::{Difficulty, Sight, goals::OwnVitals};
 
@@ -76,6 +77,7 @@ struct ActiveRoute {
     arrived: Option<Instant>,
     /// The bot saw the route's item in place from close by.
     seen_up: bool,
+    traversal: Option<Traversal>,
 }
 
 #[derive(Default)]
@@ -88,6 +90,7 @@ pub(in crate::games::washoi) struct RouteFollower {
     /// The last waypoint the bot reached. Momentum can carry a bot past the
     /// end of a route and out of every node's attach radius.
     anchor: Option<[f64; 3]>,
+    exact: bool,
 }
 
 impl RouteFollower {
@@ -99,6 +102,17 @@ impl RouteFollower {
         self.last_position = None;
         self.replan_at = None;
         self.anchor = None;
+        self.exact = false;
+    }
+
+    pub(in crate::games::washoi) fn traversing(&self) -> bool {
+        self.active
+            .as_ref()
+            .is_some_and(|route| route.traversal.is_some())
+    }
+
+    pub(in crate::games::washoi) fn exact(&self) -> bool {
+        self.exact
     }
 
     pub(in crate::games::washoi) fn takeoff<'a>(
@@ -107,6 +121,9 @@ impl RouteFollower {
     ) -> Option<&'a str> {
         let active = self.active.as_ref()?;
         let route = active.route.get(navigation);
+        if self.exact || route.maneuver_at(active.next).is_some() {
+            return None;
+        }
         (active.next >= route.waypoints.len() - 1)
             .then_some(route.learned_route.as_deref())
             .flatten()
@@ -130,12 +147,23 @@ impl RouteFollower {
             sight,
             fighting,
         } = observation;
+        self.exact = false;
+        let traversing = self.traversing();
         self.blocked.retain(|(_, until)| now < *until);
         self.pickup_unavailable.retain(|_, until| now < *until);
-        if self
-            .last_position
-            .replace(position)
-            .is_some_and(|previous| {
+        let previous = self.last_position.replace(position);
+        let observed_exit = previous.is_some_and(|before| {
+            self.active.as_ref().is_some_and(|active| {
+                active
+                    .route
+                    .get(navigation)
+                    .maneuver_at(active.next + 1)
+                    .is_some_and(|action| action.observed_teleport(before, position))
+            })
+        });
+        if !traversing
+            && !observed_exit
+            && previous.is_some_and(|previous| {
                 (position.x - previous.x)
                     .hypot(position.z - previous.z)
                     .hypot(position.y - previous.y)
@@ -204,6 +232,7 @@ impl RouteFollower {
                 progress: None,
                 arrived: None,
                 seen_up: false,
+                traversal: None,
             });
         }
 
@@ -213,12 +242,50 @@ impl RouteFollower {
             progress,
             arrived,
             seen_up,
+            traversal,
         } = self.active.as_mut().expect("route selected");
         let route = route.get(navigation);
         let reached = *next;
+        if observed_exit
+            || route.maneuver_at(*next + 1).is_some_and(|action| {
+                if traversal.is_some() {
+                    action.enter_before_waypoint(position) && action.pad_launch(position, velocity)
+                } else {
+                    action.enter_before_waypoint(position) || action.pad_launch(position, velocity)
+                }
+            })
+        {
+            *next += 1;
+            *traversal = None;
+        }
         let input = WashoiNavigation::steer(route, next, position, velocity);
         if *next > reached {
             self.anchor = Some(route.waypoints[*next - 1]);
+        }
+        if let Some(maneuver) = route.maneuver_at(*next) {
+            self.exact = true;
+            let state = traversal.get_or_insert_with(|| Traversal::new(maneuver, now));
+            return match state.update(position, velocity, now) {
+                Outcome::Running(input) => input,
+                Outcome::Arrived(yaw) => {
+                    self.anchor = Some(route.waypoints[*next]);
+                    *next += 1;
+                    *traversal = None;
+                    *progress = None;
+                    PlayerInput {
+                        yaw: yaw.unwrap_or(input.yaw),
+                        ..PlayerInput::default()
+                    }
+                }
+                Outcome::Failed => {
+                    if self.blocked.len() == MAX_BLOCKS {
+                        self.blocked.remove(0);
+                    }
+                    self.blocked.push((route.leg(*next), now + RETRY_DELAY));
+                    self.active = None;
+                    PlayerInput::default()
+                }
+            };
         }
         if let Some(pickup) = route.pickup
             && let Some(&target) = route.waypoints.last()
@@ -311,6 +378,55 @@ impl Route {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn verifies_jump_pad_and_teleport_then_continues_the_route() {
+        let graph: WashoiNavigation = serde_json::from_str(
+            r#"{"map":"test","graph":{
+                "bsp_sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                "nodes":[[0,24,0],[80,24,0],[80,100,160],[1000,24,500],[1064,24,500]],
+                "edges":[[3,4],[4,0]], "entries":[0],"goals":[4],
+                "maneuvers":[
+                    [0,1,{"kind":"jump","takeoff":[0,24,0],"landing":[80,24,0],
+                          "yaw":1.5707963267948966,"speed":0,"radius":48,"ticks":150}],
+                    [1,2,{"kind":"jumppad","min":[70,0,-8],"max":[90,16,8],"landing":[80,100,160]}],
+                    [2,3,{"kind":"teleporter","min":[72,76,152],"max":[88,132,168],
+                          "exit":[1000,24,500],"yaw":1.5}]
+                ]
+            }}"#,
+        )
+        .unwrap();
+        let mut follower = RouteFollower::default();
+        let start = Instant::now();
+        let mut steer = |ms, p: [f64; 3], grounded, vertical| {
+            let now = start + Duration::from_millis(ms);
+            let mut observation = observe(now, false, None);
+            observation.velocity = Some(Velocity {
+                grounded,
+                linear: Vec3::new(0.0, vertical, 0.0),
+                ..Velocity::default()
+            });
+            let input = follower.steer(&graph, Vec3::new(p[0], p[1], p[2]), observation);
+            (input, follower.exact())
+        };
+        let (jump, exact) = steer(0, [0.0, 24.0, 0.0], true, 0.0);
+        assert!(exact);
+        assert_eq!(jump.buttons & (1 << 4), 1 << 4);
+        let (airborne, exact) = steer(16, [12.0, 48.0, 0.0], false, 260.0);
+        assert!(exact);
+        assert_eq!(airborne.buttons & (1 << 4), 0);
+        steer(600, [80.0, 24.0, 0.0], true, 0.0);
+        assert!(steer(616, [80.0, 24.0, 0.0], true, 0.0).1);
+        assert!(steer(632, [80.0, 50.0, 0.0], false, 500.0).1);
+        assert!(steer(1000, [80.0, 100.0, 160.0], true, 0.0).1);
+        assert!(steer(1016, [80.0, 100.0, 160.0], true, 0.0).1);
+        let (exit, exact) = steer(1032, [1000.0, 24.0, 500.0], true, 0.0);
+        assert!(exact);
+        assert_eq!(exit.yaw, 1.5);
+        let (walk, exact) = steer(1048, [1000.0, 24.0, 500.0], true, 0.0);
+        assert!(!exact);
+        assert_eq!(walk.direction, [1.0, 0.0, 0.0]);
+    }
 
     fn observe(now: Instant, allow_takeoff: bool, landed_id: Option<&str>) -> RouteObservation<'_> {
         RouteObservation {

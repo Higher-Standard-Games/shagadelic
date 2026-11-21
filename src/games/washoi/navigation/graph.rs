@@ -3,6 +3,7 @@ use std::{
     collections::{BTreeMap, BinaryHeap},
 };
 
+use super::traversal::Maneuver;
 use serde::Deserialize;
 
 use shagger_shared::net::game_state::Vec3;
@@ -22,6 +23,7 @@ const MAX_CORNERS: usize = 32;
 
 /// Intermediate points of a walk edge, from the TypeScript nav cache `via`.
 type Corners = BTreeMap<(usize, usize), Vec<[f64; 3]>>;
+type Maneuvers = BTreeMap<(usize, usize), Maneuver>;
 
 /// `[from, to]`, or `[from, to, corners]` for a walk that turns corners.
 #[derive(Deserialize)]
@@ -36,6 +38,8 @@ pub(super) struct WalkGraph {
     bsp_sha256: String,
     nodes: Vec<[f64; 3]>,
     edges: Vec<Edge>,
+    #[serde(default)]
+    maneuvers: Vec<(usize, usize, Maneuver)>,
     entries: Vec<usize>,
     goals: Vec<usize>,
     #[serde(default)]
@@ -53,6 +57,7 @@ pub(super) struct Planner {
     nodes: Vec<[f64; 3]>,
     neighbors: Vec<Vec<usize>>,
     corners: Corners,
+    maneuvers: Maneuvers,
     goals: Vec<PlannedGoal>,
     areas: Areas,
 }
@@ -202,6 +207,9 @@ impl Planner {
                 }
             }
             for &next in &self.neighbors[node] {
+                if self.maneuvers.contains_key(&(node, next)) {
+                    continue;
+                }
                 if recovery.and_then(|edge| edge.avoid) == Some((node, next)) {
                     continue;
                 }
@@ -234,6 +242,7 @@ impl Planner {
             Route {
                 entry: self.nodes[start],
                 waypoints,
+                maneuvers: Vec::new(),
                 learned_route: None,
                 resumed_from: None,
                 pickup: None,
@@ -329,15 +338,20 @@ impl Planner {
                 continue;
             }
             let mut waypoints = lead.clone();
+            let mut maneuvers = Vec::new();
             let mut node = start;
             while let Some(next) = goal.toward[node] {
                 let next = usize::from(next);
+                if let Some(&maneuver) = self.maneuvers.get(&(node, next)) {
+                    maneuvers.push((waypoints.len(), maneuver));
+                }
                 walk_edge(&mut waypoints, &self.nodes, &self.corners, node, next);
                 node = next;
             }
             let route = Route {
                 entry: lead.first().copied().unwrap_or(self.nodes[start]),
                 waypoints,
+                maneuvers,
                 learned_route: None,
                 resumed_from: None,
                 pickup: goal.pickup,
@@ -363,7 +377,7 @@ impl WalkGraph {
             || !(1..=MAX_ENTRIES).contains(&self.entries.len())
             || self.goals.is_empty()
             || self.goals.len() > count
-            || self.edges.len() > MAX_EDGES
+            || self.edges.len().saturating_add(self.maneuvers.len()) > MAX_EDGES
             || self.bsp_sha256.len() != 64
             || !self.bsp_sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
             || !self.nodes.iter().flatten().all(|value| value.is_finite())
@@ -417,6 +431,19 @@ impl WalkGraph {
                 corners.entry((from, to)).or_insert_with(|| via.clone());
             }
         }
+        let mut maneuvers = Maneuvers::new();
+        for &(from, to, maneuver) in &self.maneuvers {
+            if from >= count
+                || to >= count
+                || from == to
+                || !maneuver.valid()
+                || neighbors[from].contains(&to)
+                || maneuvers.insert((from, to), maneuver).is_some()
+            {
+                return Err("invalid or duplicate navigation maneuver");
+            }
+            neighbors[from].push(to);
+        }
         for adjacent in &mut neighbors {
             adjacent.sort_unstable();
             adjacent.dedup();
@@ -442,6 +469,7 @@ impl WalkGraph {
                 let walk = Walk {
                     neighbors: &neighbors,
                     corners: &corners,
+                    maneuvers: &maneuvers,
                     areas: &areas,
                     learned: &learned,
                     pickups: &pickups,
@@ -462,7 +490,7 @@ impl WalkGraph {
         goals.dedup();
         let goals = goals
             .into_iter()
-            .map(|node| self.walks_to(node, &reverse, &corners, pickups[node]))
+            .map(|node| self.walks_to(node, &reverse, &corners, &maneuvers, pickups[node]))
             .collect();
         Ok((
             routes,
@@ -470,6 +498,7 @@ impl WalkGraph {
                 nodes: self.nodes,
                 neighbors,
                 corners,
+                maneuvers,
                 goals,
                 areas,
             },
@@ -482,6 +511,7 @@ impl WalkGraph {
         goal: usize,
         reverse: &[Vec<usize>],
         corners: &Corners,
+        maneuvers: &Maneuvers,
         pickup: Option<PickupGoal>,
     ) -> PlannedGoal {
         let mut search = Search::new(self.nodes.len(), goal);
@@ -490,7 +520,7 @@ impl WalkGraph {
                 search.extend(
                     node,
                     previous,
-                    edge_cost(&self.nodes, corners, previous, node),
+                    travel_cost(&self.nodes, corners, maneuvers, previous, node),
                 );
             }
         }
@@ -515,6 +545,7 @@ impl WalkGraph {
         let Walk {
             neighbors,
             corners,
+            maneuvers,
             areas,
             learned,
             pickups,
@@ -546,12 +577,17 @@ impl WalkGraph {
                 }
                 path.reverse();
                 let mut waypoints = Vec::new();
+                let mut actions = Vec::new();
                 for pair in path.windows(2) {
+                    if let Some(&maneuver) = maneuvers.get(&(pair[0], pair[1])) {
+                        actions.push((waypoints.len(), maneuver));
+                    }
                     walk_edge(&mut waypoints, &self.nodes, corners, pair[0], pair[1]);
                 }
                 routes.push(Route {
                     entry: self.nodes[entry],
                     waypoints,
+                    maneuvers: actions,
                     learned_route: learned[node].map(str::to_owned),
                     resumed_from: resumed_from.map(str::to_owned),
                     pickup: pickups[node],
@@ -561,7 +597,11 @@ impl WalkGraph {
                 }
             }
             for &next in &neighbors[node] {
-                search.extend(node, next, edge_cost(&self.nodes, corners, node, next));
+                search.extend(
+                    node,
+                    next,
+                    travel_cost(&self.nodes, corners, maneuvers, node, next),
+                );
             }
         }
         routes
@@ -572,6 +612,7 @@ impl WalkGraph {
 struct Walk<'a> {
     neighbors: &'a [Vec<usize>],
     corners: &'a Corners,
+    maneuvers: &'a Maneuvers,
     areas: &'a Areas,
     learned: &'a [Option<&'a str>],
     pickups: &'a [Option<PickupGoal>],
@@ -677,6 +718,20 @@ fn edge_cost(nodes: &[[f64; 3]], corners: &Corners, from: usize, to: usize) -> f
             (point, distance + edge_length(previous, point))
         });
     travel + edge_length(last, nodes[to])
+}
+
+fn travel_cost(
+    nodes: &[[f64; 3]],
+    corners: &Corners,
+    maneuvers: &Maneuvers,
+    from: usize,
+    to: usize,
+) -> f64 {
+    match maneuvers.get(&(from, to)) {
+        Some(Maneuver::Teleporter { .. }) => 96.0,
+        Some(_) => edge_cost(nodes, corners, from, to) + 96.0,
+        None => edge_cost(nodes, corners, from, to),
+    }
 }
 
 fn edge_length(from: [f64; 3], to: [f64; 3]) -> f64 {

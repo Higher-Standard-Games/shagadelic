@@ -1,5 +1,6 @@
 mod follower;
 mod graph;
+mod traversal;
 
 use std::{
     io::{self, Read},
@@ -117,6 +118,8 @@ struct RouteFile {
 struct Route {
     entry: [f64; 3],
     waypoints: Vec<[f64; 3]>,
+    #[serde(skip)]
+    maneuvers: Vec<(usize, traversal::Maneuver)>,
     learned_route: Option<String>,
     #[serde(default)]
     resumed_from: Option<String>,
@@ -301,6 +304,9 @@ impl WashoiNavigation {
     ) -> PlayerInput {
         let waypoints = &route.waypoints;
         while let Some(&waypoint) = waypoints.get(*next) {
+            if route.maneuver_at(*next).is_some() {
+                break;
+            }
             // Steer toward a waypoint at another height, as on a ramp or
             // over a ledge, but count it reached only on its own level.
             // A bot that passes over or under a waypoint hasn't reached it.
@@ -368,6 +374,16 @@ impl WashoiNavigation {
     }
 }
 
+impl Route {
+    fn maneuver_at(&self, next: usize) -> Option<traversal::Maneuver> {
+        let index = self
+            .maneuvers
+            .binary_search_by_key(&next, |&(at, _)| at)
+            .ok()?;
+        Some(self.maneuvers[index].1)
+    }
+}
+
 /// A short connector on the present floor. The sight geometry supplies
 /// clearance and support samples, while the game server runs player physics.
 fn local_walk(sight: &Sight, from: Vec3, to: Vec3) -> bool {
@@ -415,6 +431,7 @@ mod tests {
             route: Route {
                 entry: [0.0; 3],
                 waypoints: vec![[240.0, 0.0, 0.0], [320.0, -100.0, 0.0]],
+                maneuvers: Vec::new(),
                 learned_route: None,
                 resumed_from: None,
                 pickup: None,

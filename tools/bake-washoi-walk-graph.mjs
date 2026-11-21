@@ -100,7 +100,10 @@ async function cachedGraph() {
   const cache = new BotNavCacheStore();
   const saved = cache.load(data.map, map.bspSha256);
   if (!saved) throw new Error(cache.lastDiagnostic);
-  const { nodes: original, edges: transitions } = saved.exportStaticData();
+  // src/games/fps/bot/BotNavGraph.ts and BotMovementAnalyzer.ts.
+  const { nodes: original, edges: transitions, opportunities } = saved.exportStaticData();
+  const jumps = new Map(opportunities.filter((opportunity) => opportunity.kind === "jump")
+    .map((opportunity) => [opportunity.id, opportunity]));
   const types = new Map();
   const standing = new Map();
   const entries = [];
@@ -109,7 +112,7 @@ async function cachedGraph() {
   const pickupGoals = [];
   const pickupById = new Map(map.pickups.map((pickup) => [pickup.id, pickup]));
   for (const { id, position, type, pickupId } of original) {
-    if (type !== "spawn" && type !== "item" && type !== "floor") continue;
+    if (!["spawn", "item", "floor", "jumppad", "teleporter"].includes(type)) continue;
     // BotNavGraph.walkOrigin lifts floor and item nodes to the standing origin.
     const index = nodes.length;
     standing.set(id, index);
@@ -128,6 +131,7 @@ async function cachedGraph() {
     }
   }
   const edges = [];
+  const maneuvers = [];
   const canWalk = await walkTest();
   const liftedOrigin = (node, id) => {
     const origin = point(nodes[node]);
@@ -148,13 +152,38 @@ async function cachedGraph() {
       // Some team spawns in the cache sit on the floor. The player spawns
       // at hull height, where these links pass the straight walk check.
       edges.push([from, to]);
+    } else if (edge.type === "jump" && edge.validated && jumps.has(edge.opportunityId)) {
+      maneuvers.push([from, to, jumpRecord(jumps.get(edge.opportunityId))]);
+    } else if ((edge.type === "jumppad" || edge.type === "teleporter") && edge.trigger) {
+      const { min, max, dest, destYaw } = edge.trigger;
+      const bounds = { min: rounded(coordinates(min)), max: rounded(coordinates(max)) };
+      maneuvers.push([from, to, edge.type === "jumppad"
+        ? { kind: "jumppad", ...bounds, landing: nodes[to] }
+        : { kind: "teleporter", ...bounds, exit: rounded([dest.x, dest.y + 25, dest.z]), yaw: destYaw ?? 0 }]);
     }
   }
   for (const [node] of pickupGoals) {
     if (entries.length >= 32) break;
     entries.push(node);
   }
-  return { nodes, edges, entries, goals, pickup_goals: pickupGoals };
+  const walks = new Set(edges.map(([from, to]) => `${from}:${to}`));
+  const executable = maneuvers.filter(([from, to, action]) => action.kind !== "jump" || !walks.has(`${from}:${to}`));
+  const special = new Set(executable.map(([from, to]) => `${from}:${to}`));
+  // A trigger intercepts a nominal walk between the same pair of nodes.
+  return { nodes, edges: edges.filter(([from, to]) => !special.has(`${from}:${to}`)),
+    entries, goals, pickup_goals: pickupGoals, maneuvers: executable };
+}
+
+function jumpRecord(jump) {
+  return {
+    kind: "jump",
+    takeoff: rounded(coordinates(jump.takeoff.position)),
+    landing: rounded(coordinates(jump.landing.position)),
+    yaw: (jump.takeoff.yawRange[0] + jump.takeoff.yawRange[1]) / 2,
+    speed: jump.takeoff.minSpeed,
+    radius: jump.landing.radius,
+    ticks: jump.inputPlan.maxTicks,
+  };
 }
 
 /** Keep the navigation file compact with tenth-of-a-unit precision. */
@@ -219,7 +248,8 @@ const graph = {
   ...(await (fromCache ? cachedGraph() : authoredGraph(data.routes))),
 };
 if (learnedFile) await linkLearned(graph, JSON.parse(await readFile(learnedFile, "utf8")));
-if (graph.nodes.length > MAX_NODES || graph.entries.length > MAX_ENTRIES || graph.edges.length > MAX_EDGES) {
+if (graph.nodes.length > MAX_NODES || graph.entries.length > MAX_ENTRIES
+    || graph.edges.length + (graph.maneuvers?.length ?? 0) > MAX_EDGES) {
   throw new Error("Too many navigation nodes, entries, or edges");
 }
 if (graph.edges.some((edge) => (edge[2]?.length ?? 0) > MAX_CORNERS)) {
@@ -231,4 +261,4 @@ if (!graph.edges.length || !graph.entries.length || !graph.goals.length) {
 }
 if (Buffer.byteLength(result) + 1 > MAX_FILE_BYTES) throw new Error("The navigation file is too large");
 await writeFile(output, result + "\n");
-console.log(`Wrote ${graph.nodes.length} nodes and ${graph.edges.length} walk edges for ${data.map}`);
+console.log(`Wrote ${graph.nodes.length} nodes, ${graph.edges.length} walk edges, and ${graph.maneuvers?.length ?? 0} maneuvers for ${data.map}`);
