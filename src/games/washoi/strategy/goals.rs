@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use super::Difficulty;
+use crate::games::washoi::Difficulty;
 use serde::Deserialize;
 
 // Caps from Washoi `shared/items/ItemGrants.ts`.
@@ -12,7 +12,7 @@ const ARMOR_MAX: u16 = 100;
 
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub(super) enum PickupKind {
+pub(in crate::games::washoi) enum PickupKind {
     Health,
     Armor,
     Weapon,
@@ -24,7 +24,7 @@ pub(super) enum PickupKind {
 /// health kinds that overheal change what the bot may take.
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub(super) enum PickupItem {
+pub(in crate::games::washoi) enum PickupItem {
     Small,
     Mega,
     Ultra,
@@ -33,24 +33,24 @@ pub(super) enum PickupItem {
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
-pub(super) struct PickupGoal {
-    pub(super) id: usize,
+pub(in crate::games::washoi) struct PickupGoal {
+    pub(in crate::games::washoi) id: usize,
     kind: PickupKind,
     #[serde(default)]
     item: Option<PickupItem>,
 }
 
 #[derive(Default, Clone, Copy)]
-pub(super) struct OwnVitals {
-    pub(super) health: Option<u16>,
-    pub(super) armor: Option<u16>,
+pub(in crate::games::washoi) struct OwnVitals {
+    pub(in crate::games::washoi) health: Option<u16>,
+    pub(in crate::games::washoi) armor: Option<u16>,
 }
 
 impl PickupGoal {
     /// How long a taken item stays away, from Washoi
     /// `shared/items/ItemRespawn.ts` `itemRespawnSeconds` with its default
     /// weapon time. The TypeScript bot uses the same defaults.
-    pub(super) fn respawn(self) -> Duration {
+    pub(in crate::games::washoi) fn respawn(self) -> Duration {
         Duration::from_secs(match self.kind {
             PickupKind::Weapon | PickupKind::Ammo => 15,
             PickupKind::Armor => 25,
@@ -66,7 +66,7 @@ impl PickupGoal {
     /// `PickupSystem.ts` leaves health and armor in place when they add
     /// nothing. A bot sent to one would wait on it indefinitely. Weapon and
     /// ammo limits depend on inventory the bot doesn't track yet.
-    pub(super) fn benefits(self, vitals: OwnVitals) -> bool {
+    pub(in crate::games::washoi) fn benefits(self, vitals: OwnVitals) -> bool {
         match self.kind {
             PickupKind::Health => {
                 let cap = match self.item {
@@ -83,7 +83,7 @@ impl PickupGoal {
         }
     }
 
-    pub(super) fn value(self, vitals: OwnVitals, difficulty: Difficulty) -> f64 {
+    pub(in crate::games::washoi) fn value(self, vitals: OwnVitals, difficulty: Difficulty) -> f64 {
         // Missing health or armor is unknown until our own CombatState arrives.
         match self.kind {
             PickupKind::Health => {

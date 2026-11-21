@@ -14,10 +14,10 @@
 //!
 //! Each chance is rolled once, at `predictionSkill` odds.
 
-use super::{
-    estimate::{ARMOR_ABSORPTION, Estimate},
+use crate::games::washoi::{
+    combat::weapons,
+    perception::estimate::{ARMOR_ABSORPTION, Estimate},
     random::Random,
-    weapons,
 };
 
 /// Server ticks per second.
@@ -47,23 +47,23 @@ const FINISH_MAX_UNCERTAINTY: f64 = 0.3;
 const PELLETS_LANDING: f64 = 0.5;
 
 /// What the bot knows this tick, for choosing a combo.
-pub(super) struct Situation<'a> {
-    pub(super) tick: u32,
-    pub(super) target: &'a str,
-    pub(super) distance: f64,
-    pub(super) target_rising: f64,
-    pub(super) current: &'a str,
+pub(in crate::games::washoi) struct Situation<'a> {
+    pub(in crate::games::washoi) tick: u32,
+    pub(in crate::games::washoi) target: &'a str,
+    pub(in crate::games::washoi) distance: f64,
+    pub(in crate::games::washoi) target_rising: f64,
+    pub(in crate::games::washoi) current: &'a str,
     /// The weapon the distance picked.
-    pub(super) picked: &'a str,
+    pub(in crate::games::washoi) picked: &'a str,
     /// Whether the bot carries a weapon with ammo for it.
-    pub(super) has: &'a dyn Fn(&str) -> bool,
-    pub(super) weapons: &'a [String],
+    pub(in crate::games::washoi) has: &'a dyn Fn(&str) -> bool,
+    pub(in crate::games::washoi) weapons: &'a [String],
     /// What the bot believes of the target's health and armor.
-    pub(super) estimate: Option<Estimate>,
+    pub(in crate::games::washoi) estimate: Option<Estimate>,
 }
 
 #[derive(Default)]
-pub(super) struct Combos {
+pub(in crate::games::washoi) struct Combos {
     held: Option<Held>,
     last_hit: Option<u32>,
     last_shot: Option<u32>,
@@ -82,21 +82,21 @@ struct Held {
 }
 
 impl Combos {
-    pub(super) fn reset(&mut self) {
+    pub(in crate::games::washoi) fn reset(&mut self) {
         self.held = None;
         self.plasma_since = None;
     }
 
-    pub(super) fn hit(&mut self, weapon: &str, victim: &str, tick: u32) {
+    pub(in crate::games::washoi) fn hit(&mut self, weapon: &str, victim: &str, tick: u32) {
         self.hit = Some((weapon.to_owned(), victim.to_owned(), tick));
     }
 
-    pub(super) fn shot(&mut self, weapon: &str, tick: u32) {
+    pub(in crate::games::washoi) fn shot(&mut self, weapon: &str, tick: u32) {
         self.shot = Some((weapon.to_owned(), tick));
     }
 
     /// `choose`: the weapon to hold in place of the distance pick, if any.
-    pub(super) fn choose(
+    pub(in crate::games::washoi) fn choose(
         &mut self,
         now: &Situation<'_>,
         skill: f64,

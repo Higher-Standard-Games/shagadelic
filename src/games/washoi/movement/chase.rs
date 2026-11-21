@@ -8,7 +8,9 @@ use std::time::Duration;
 use crate::games::washoi::SimTime;
 use shagger_shared::net::game_state::{Vec3, Velocity};
 
-use super::{Sight, WashoiNavigation, navigation::ObjectiveWalk, protocol::PlayerInput};
+use crate::games::washoi::{
+    Sight, WashoiNavigation, navigation::ObjectiveWalk, protocol::PlayerInput,
+};
 
 /// Close enough to the predicted spot to stop walking.
 const ARRIVAL_RADIUS: f64 = 64.0;
@@ -17,18 +19,18 @@ const REPLAN_DISTANCE: f64 = 96.0;
 const RETRY: Duration = Duration::from_millis(500);
 
 #[derive(Default)]
-pub(super) struct Chase {
+pub(in crate::games::washoi) struct Chase {
     walk: Option<(Vec3, ObjectiveWalk)>,
     retry_at: Option<SimTime>,
 }
 
 impl Chase {
-    pub(super) fn reset(&mut self) {
+    pub(in crate::games::washoi) fn reset(&mut self) {
         *self = Self::default();
     }
 
     /// Movement toward `target`, or none when no walk leads there.
-    pub(super) fn steer(
+    pub(in crate::games::washoi) fn steer(
         &mut self,
         navigation: &WashoiNavigation,
         sight: &Sight,

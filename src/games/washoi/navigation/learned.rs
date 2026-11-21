@@ -11,7 +11,7 @@ use crate::games::washoi::{Body, SimTime};
 use serde::Deserialize;
 use shagger_shared::net::game_state::Vec3;
 
-use super::{behavior::INPUT_PERIOD, protocol::PlayerInput};
+use crate::games::washoi::{behavior::INPUT_PERIOD, protocol::PlayerInput};
 
 const MAX_FILE: u64 = 8 * 1024 * 1024;
 const MAX_TICKS: usize = 4096;
@@ -121,19 +121,23 @@ impl LearnedRoutes {
         &self.map
     }
 
-    pub(super) fn approach_target(&self, id: &str, position: Vec3) -> Option<usize> {
+    pub(in crate::games::washoi) fn approach_target(
+        &self,
+        id: &str,
+        position: Vec3,
+    ) -> Option<usize> {
         self.routes.iter().position(|route| {
             route.id == id && route.start.near(position, APPROACH_RADIUS, APPROACH_HEIGHT)
         })
     }
 
-    pub(super) fn matches_takeoff(&self, id: &str, position: Vec3) -> bool {
+    pub(in crate::games::washoi) fn matches_takeoff(&self, id: &str, position: Vec3) -> bool {
         self.routes
             .iter()
             .any(|route| route.id == id && route.start.near(position, START_RADIUS, START_HEIGHT))
     }
 
-    pub(super) fn matches_landing(&self, id: &str, position: Vec3) -> bool {
+    pub(in crate::games::washoi) fn matches_landing(&self, id: &str, position: Vec3) -> bool {
         self.routes
             .iter()
             .any(|route| route.id == id && route.landing.near(position, START_RADIUS, START_HEIGHT))
@@ -141,7 +145,7 @@ impl LearnedRoutes {
 }
 
 #[derive(Default)]
-pub(super) enum Traversal {
+pub(in crate::games::washoi) enum Traversal {
     #[default]
     Waiting,
     Approaching {
@@ -167,7 +171,7 @@ pub(super) enum Traversal {
 }
 
 impl Traversal {
-    pub(super) fn begin_approach(
+    pub(in crate::games::washoi) fn begin_approach(
         &mut self,
         library: &LearnedRoutes,
         id: &str,
@@ -187,7 +191,7 @@ impl Traversal {
         false
     }
 
-    pub(super) fn approach(
+    pub(in crate::games::washoi) fn approach(
         &mut self,
         library: &LearnedRoutes,
         entity: &Body,
@@ -254,7 +258,7 @@ impl Traversal {
         Some(input)
     }
 
-    pub(super) fn observe(
+    pub(in crate::games::washoi) fn observe(
         &mut self,
         library: &LearnedRoutes,
         entity: &Body,
@@ -288,7 +292,7 @@ impl Traversal {
         }
     }
 
-    pub(super) fn drive(
+    pub(in crate::games::washoi) fn drive(
         &mut self,
         library: &LearnedRoutes,
         now: SimTime,
@@ -336,7 +340,7 @@ impl Traversal {
         Some(inputs)
     }
 
-    pub(super) fn abort_if_active(&mut self) {
+    pub(in crate::games::washoi) fn abort_if_active(&mut self) {
         if matches!(
             self,
             Self::Approaching { .. } | Self::Playing { .. } | Self::Landing { .. }
@@ -355,11 +359,11 @@ impl Traversal {
         };
     }
 
-    pub(super) fn active(&self) -> bool {
+    pub(in crate::games::washoi) fn active(&self) -> bool {
         matches!(self, Self::Playing { .. } | Self::Landing { .. })
     }
 
-    pub(super) fn landing_result(&self) -> Option<bool> {
+    pub(in crate::games::washoi) fn landing_result(&self) -> Option<bool> {
         match self {
             Self::Landed { .. } => Some(true),
             Self::Failed => Some(false),
@@ -367,7 +371,10 @@ impl Traversal {
         }
     }
 
-    pub(super) fn landed_id<'a>(&self, library: &'a LearnedRoutes) -> Option<&'a str> {
+    pub(in crate::games::washoi) fn landed_id<'a>(
+        &self,
+        library: &'a LearnedRoutes,
+    ) -> Option<&'a str> {
         match self {
             Self::Landed { route } => Some(library.routes[*route].id.as_str()),
             _ => None,

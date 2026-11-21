@@ -184,6 +184,19 @@ Allocate one receiver per connection. The TypeScript and Rust receivers retain 1
 
 ### Washoi bot player
 
+Code layout under `src/games/washoi/`:
+
+| Path | Holds |
+| --- | --- |
+| `mod.rs`, `observation.rs`, `difficulty.rs`, `random.rs` | Public exports, the brain contract (`Observation`, `Controls`, `SimTime`), difficulty presets, per-bot random draws |
+| `behavior.rs`, `behavior/replay.rs` | `BotPlayer`, which observes, decides, and paces inputs, and its reference trace replay |
+| `perception/` | Noticing enemies (`mod.rs`), static line of sight (`sight.rs`), the enemy health estimate (`estimate.rs`) |
+| `combat/` | Fight decisions (`mod.rs`), the aim controller (`aim.rs`), weapon profiles and choice (`weapons.rs`), weapon combos (`combos.rs`) |
+| `movement/` | Strafing and dodges (`strafe.rs`), cover peeking (`cover.rs`), high ground (`highground.rs`), the chase (`chase.rs`) |
+| `strategy/` | Pickup goals (`goals.rs`) and server orders (`orders.rs`) |
+| `navigation.rs`, `navigation/` | Routes, the walk graph, following, maneuvers, and recorded traversals (`learned.rs`) |
+| `session.rs`, `protocol/` | The hosted session and the Washoi wire adapter |
+
 Start with a concrete `BotPlayer` type in the Washoi integration. It is the simulated player and has an entity key, a proficiency profile, perception memory, an active plan, aim and maneuver execution state, and a reproducible random seed. The Washoi session owns these players after admission, keyed by the same entity keys the runtime tracks for lifecycle and scheduling. The game session keeps map geometry and navigation in shared data and supplies per-connection game updates to observation building.
 
 ```rust

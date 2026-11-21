@@ -8,7 +8,7 @@ use shagger_shared::{
     net::game_state::{Vec3, Velocity},
 };
 
-use super::{
+use crate::games::washoi::{
     Sight, WashoiNavigation,
     navigation::{ObjectiveRecovery, ObjectiveWalk},
     protocol::{PlayerInput, SnapshotEvent},
@@ -76,7 +76,7 @@ enum Target {
 }
 
 #[derive(Default)]
-pub(super) struct Orders {
+pub(in crate::games::washoi) struct Orders {
     directive: Option<Directive>,
     destination: Option<Vec3>,
     via: usize,
@@ -100,7 +100,7 @@ struct Progress {
 }
 
 impl Orders {
-    pub(super) fn observe(&mut self, world: &Observation, own_entity: &str) {
+    pub(in crate::games::washoi) fn observe(&mut self, world: &Observation, own_entity: &str) {
         if self
             .directive
             .as_ref()
@@ -153,7 +153,7 @@ impl Orders {
         };
     }
 
-    pub(super) fn input(
+    pub(in crate::games::washoi) fn input(
         &mut self,
         navigation: Option<&WashoiNavigation>,
         sight: Option<&Sight>,
@@ -313,7 +313,9 @@ impl Orders {
         let room = |side: f64| {
             let (sin, cos) = (yaw + side * std::f64::consts::FRAC_PI_2).sin_cos();
             let to = Vec3::new(position.x + sin * 96.0, position.y, position.z + cos * 96.0);
-            sight.is_none_or(|sight| super::navigation::local_walk(sight, position, to))
+            sight.is_none_or(|sight| {
+                crate::games::washoi::navigation::local_walk(sight, position, to)
+            })
         };
         let side = if room(turn) || !room(-turn) {
             turn
@@ -355,7 +357,7 @@ impl Orders {
                 );
                 if horizontal(point, position) < GUARD_SPACING
                     || last.is_some_and(|last| horizontal(point, last) < GUARD_SPACING)
-                    || !super::navigation::local_walk(sight, position, point)
+                    || !crate::games::washoi::navigation::local_walk(sight, position, point)
                 {
                     continue;
                 }
@@ -376,7 +378,11 @@ impl Orders {
 
     /// A guard whose fight drifted past its order's leash heads back while it
     /// keeps aiming, after TypeScript `BotOrders.applyLeash`.
-    pub(super) fn leash(&self, position: Vec3, mut input: PlayerInput) -> PlayerInput {
+    pub(in crate::games::washoi) fn leash(
+        &self,
+        position: Vec3,
+        mut input: PlayerInput,
+    ) -> PlayerInput {
         let Some(directive) = &self.directive else {
             return input;
         };

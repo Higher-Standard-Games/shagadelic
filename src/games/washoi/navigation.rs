@@ -1,5 +1,6 @@
 mod follower;
 mod graph;
+pub(super) mod learned;
 mod traversal;
 
 use std::{
@@ -10,7 +11,7 @@ use std::{
 use serde::Deserialize;
 use shagger_shared::net::game_state::{Vec3, Velocity};
 
-use super::{Sight, goals::PickupGoal, protocol::PlayerInput};
+use super::{Sight, protocol::PlayerInput, strategy::goals::PickupGoal};
 
 pub(super) use follower::{RouteFollower, RouteObservation};
 
@@ -689,7 +690,7 @@ mod tests {
 
     #[test]
     fn walks_straight_back_to_an_open_node_when_the_anchor_walk_fails() {
-        use super::super::sight::tests::{cube, encode};
+        use super::super::perception::sight::tests::{cube, encode};
         // Off the graph between two nodes. A wall stands between the bot and
         // node 0; node 1 is farther but in the open. The floor spans both.
         let graph: WashoiNavigation = serde_json::from_str(

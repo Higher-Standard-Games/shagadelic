@@ -4,11 +4,11 @@ Three sessions work in this checkout at once. Each owns the areas below. Read [t
 
 | Owner | Area | Files it owns |
 | --- | --- | --- |
-| Session A (combat) | Fight movement, target memory, weapon behavior | `combat.rs`, `strafe.rs`, `aim.rs`, `weapons.rs`, `random.rs`, `sight.rs`, `tools/bake-washoi-sight.mjs` |
+| Session A (combat) | Fight movement, target memory, weapon behavior | `combat/`, `movement/`, `perception/`, `random.rs`, `tools/bake-washoi-sight.mjs` |
 | Session B (traversal and lobby) | Jump, jump pad, and teleporter edges; lobby passing map and difficulty | `tools/bake-washoi-walk-graph.mjs`, a new traversal module, the Washoi `shagadelic-lobby` branch |
-| Session C (game modes) | Server directives, objectives, S&D and team play | `orders.rs`, `tests/washoi_orders.rs`, objective planning in `navigation.rs` and `navigation/graph.rs` |
+| Session C (game modes) | Server directives, objectives, S&D and team play | `strategy/orders.rs`, `tests/washoi_orders.rs`, objective planning in `navigation.rs` and `navigation/graph.rs` |
 
-Shared files: `behavior.rs`, `mod.rs`, `difficulty.rs`, `navigation.rs`, `navigation/graph.rs`, `navigation/follower.rs`, `protocol/`, `control/`, and `SHAGADELIC.md`. Change them in small hunks, and say in the commit message what you touched there.
+Shared files: `behavior.rs`, `mod.rs`, `difficulty.rs`, `strategy/goals.rs`, `navigation.rs`, `navigation/graph.rs`, `navigation/follower.rs`, `navigation/learned.rs`, `protocol/`, `control/`, and `SHAGADELIC.md`. Paths are under `src/games/washoi/`. Change them in small hunks, and say in the commit message what you touched there.
 
 ## Rules for working in one checkout
 
@@ -46,7 +46,7 @@ The compatibility references are `src/games/fps/bot/sequences/TraverseJumppadSeq
 Suggested path:
 1. Bake the extra edge kinds with what executing them needs. That is the takeoff speed and heading for a jump, the trigger volume for a pad, and the teleporter exit. Keep the 64 KiB initialization record limit in mind. The `washoi_dm2` graph is 12 KB today.
 2. Let the planner use them. The area rule in `graph.rs` (`Areas`, Kosaraju) then joins the pockets to the main area. Recheck `walks_only_to_goals_the_bot_can_walk_back_from` and the spawn test.
-3. Execute them as exact-movement sequences, as `learned.rs` `Traversal` does for recorded jumps. `BotPlayer::uses_exact_movement` and the virtual keys in `protocol/keys.rs` already step aside for exact movement. The aim controller resets after a script sets the view.
+3. Execute them as exact-movement sequences, as `navigation/learned.rs` `Traversal` does for recorded jumps. `BotPlayer::uses_exact_movement` and the virtual keys in `protocol/keys.rs` already step aside for exact movement. The aim controller resets after a script sets the view.
 4. Verify live, as `washoi_bot_roams_between_graph_goals` does. A bot should reach the Red Armor and leave again.
 
 ### 2. Lobby passes map and difficulty
@@ -62,5 +62,7 @@ Next:
 3. Bot mistakes from `BotMood.ts`: wild shots, wrong weapon, item glances.
 
 ## Notes between sessions
+
+- The module regrouping moved files into `combat/`, `movement/`, `perception/`, `strategy/`, and `navigation/learned.rs`. Commit hashes in this file and the design refer to the old flat paths.
 
 - `a7e0093` staged the whole design doc and took session A's uncommitted fight-movement paragraph with it. No harm, since the text was right, but stage doc hunks one by one.

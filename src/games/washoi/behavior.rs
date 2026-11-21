@@ -2,17 +2,17 @@ use std::{collections::VecDeque, sync::Arc, time::Duration};
 
 use crate::games::washoi::{Controls, Observation, SimTime};
 
-use super::aim::{AimController, View};
-use super::chase::Chase;
+use super::combat::aim::{AimController, View};
 use super::combat::{ALT_FIRE, Combat, Engagement, FIRE};
-use super::goals::OwnVitals;
-use super::highground::{self, HighGround};
+use super::movement::chase::Chase;
+use super::movement::highground::{self, HighGround};
+use super::movement::strafe::{self, Body, CombatMovement};
 use super::navigation::{RouteFollower, RouteObservation};
-use super::orders::Orders;
 use super::protocol::{PlayerInput, SnapshotEvent};
 use super::random::Random;
-use super::strafe::{self, Body, CombatMovement};
-use super::{Difficulty, LearnedRoutes, Sight, WashoiNavigation, learned::Traversal};
+use super::strategy::goals::OwnVitals;
+use super::strategy::orders::Orders;
+use super::{Difficulty, LearnedRoutes, Sight, WashoiNavigation, navigation::learned::Traversal};
 
 pub(crate) const INPUT_PERIOD: Duration = Duration::from_millis(8);
 // `InputButtons` in `engine/network/components/InputComponent.ts`.
@@ -708,7 +708,7 @@ mod tests {
 
     #[test]
     fn turns_to_and_fires_at_an_enemy_in_sight_but_not_through_walls() {
-        use crate::games::washoi::sight::tests::{cube, encode};
+        use crate::games::washoi::perception::sight::tests::{cube, encode};
         use crate::games::washoi::{PlayerView, Vec3};
         let sight = Sight::parse(&encode(
             "test",
@@ -764,7 +764,7 @@ mod tests {
 
     #[test]
     fn chases_an_enemy_that_ducked_out_of_sight() {
-        use crate::games::washoi::sight::tests::{cube, encode};
+        use crate::games::washoi::perception::sight::tests::{cube, encode};
         use crate::games::washoi::{PlayerView, Vec3};
         // A floor, and a wall that hides x > 200 from the bot at the origin.
         let sight = Sight::parse(&encode(
@@ -874,7 +874,7 @@ mod tests {
     fn a_server_order_outranks_cover_while_fighting() {
         use crate::games::washoi::{
             Vec3,
-            sight::tests::{cube, encode},
+            perception::sight::tests::{cube, encode},
         };
         // No floor anywhere, so strafing never finds room: only the walk and
         // the peek move the bot.
@@ -907,7 +907,7 @@ mod tests {
     fn a_bot_planting_on_order_holds_still_but_a_patrolling_guard_strafes() {
         use crate::games::washoi::{
             Vec3,
-            sight::tests::{cube, encode},
+            perception::sight::tests::{cube, encode},
         };
         // Open floor all round, so strafing always finds room.
         let sight = Sight::parse(&encode(

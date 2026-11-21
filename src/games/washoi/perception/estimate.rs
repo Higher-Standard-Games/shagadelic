@@ -9,7 +9,7 @@
 //! estimate can run low after an unseen Mega Health.
 
 /// `ARMOR_ABSORPTION`: armor takes this share of a hit while it lasts.
-pub(super) const ARMOR_ABSORPTION: f64 = 0.66;
+pub(in crate::games::washoi) const ARMOR_ABSORPTION: f64 = 0.66;
 const SPAWN_HEALTH: f64 = 100.0;
 /// `ESTIMATE_FADE_TICKS`: 15 s without news makes the estimate unknown.
 const FADE_TICKS: f64 = 1875.0;
@@ -17,11 +17,11 @@ const FADE_TICKS: f64 = 1875.0;
 const PAIN_TIER_RANGE: [(f64, f64); 4] = [(1.0, 20.0), (21.0, 35.0), (36.0, 60.0), (61.0, 200.0)];
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(super) struct Estimate {
-    pub(super) health: f64,
-    pub(super) armor: f64,
+pub(in crate::games::washoi) struct Estimate {
+    pub(in crate::games::washoi) health: f64,
+    pub(in crate::games::washoi) armor: f64,
     /// 0 just learned, 1 long without news.
-    pub(super) uncertainty: f64,
+    pub(in crate::games::washoi) uncertainty: f64,
 }
 
 struct Enemy {
@@ -33,7 +33,7 @@ struct Enemy {
 }
 
 #[derive(Default)]
-pub(super) struct Estimates {
+pub(in crate::games::washoi) struct Estimates {
     enemies: Vec<Enemy>,
 }
 
@@ -56,7 +56,7 @@ impl Estimates {
     }
 
     /// An enemy in sight. One not known alive has just spawned.
-    pub(super) fn seen(&mut self, entity: &str, tick: u32) {
+    pub(in crate::games::washoi) fn seen(&mut self, entity: &str, tick: u32) {
         let enemy = self.get_or_spawn(entity, tick);
         if !enemy.alive {
             *enemy = Enemy {
@@ -69,14 +69,20 @@ impl Estimates {
         }
     }
 
-    pub(super) fn died(&mut self, entity: &str) {
+    pub(in crate::games::washoi) fn died(&mut self, entity: &str) {
         if let Some(enemy) = self.enemies.iter_mut().find(|enemy| enemy.entity == entity) {
             enemy.alive = false;
         }
     }
 
     /// `applyHit`: a hit the bot landed, before armor, and its pain tier.
-    pub(super) fn hit(&mut self, entity: &str, damage: f64, pain_tier: Option<u8>, tick: u32) {
+    pub(in crate::games::washoi) fn hit(
+        &mut self,
+        entity: &str,
+        damage: f64,
+        pain_tier: Option<u8>,
+        tick: u32,
+    ) {
         let enemy = self.get_or_spawn(entity, tick);
         let absorbed = enemy.armor.min(damage * ARMOR_ABSORPTION);
         enemy.armor = (enemy.armor - absorbed).max(0.0);
@@ -90,7 +96,7 @@ impl Estimates {
     }
 
     /// The estimate for a living enemy the bot has met.
-    pub(super) fn of(&self, entity: &str, tick: u32) -> Option<Estimate> {
+    pub(in crate::games::washoi) fn of(&self, entity: &str, tick: u32) -> Option<Estimate> {
         let enemy = self
             .enemies
             .iter()

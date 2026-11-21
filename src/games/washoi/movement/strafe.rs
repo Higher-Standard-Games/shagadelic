@@ -8,7 +8,7 @@
 //! (`BotVisionTracer.ts`). Here a strafe side is taken only when a static
 //! sight ray finds no wall beside the bot and a ray down finds floor there.
 
-use super::{Sight, random::Random};
+use crate::games::washoi::{Sight, random::Random};
 
 /// Commands and server ticks per second.
 const TICK_RATE: f64 = 125.0;
@@ -32,14 +32,14 @@ const THREAT_RADIUS: f64 = 150.0;
 const THREAT_SECONDS: f64 = 1.0;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(super) struct Moves {
+pub(in crate::games::washoi) struct Moves {
     /// -1 left, 0 none, 1 right of the view.
-    pub(super) strafe: i8,
-    pub(super) jump: bool,
-    pub(super) crouch: bool,
+    pub(in crate::games::washoi) strafe: i8,
+    pub(in crate::games::washoi) jump: bool,
+    pub(in crate::games::washoi) crouch: bool,
 }
 
-pub(super) struct CombatMovement {
+pub(in crate::games::washoi) struct CombatMovement {
     side: i8,
     run_until: u32,
     stop_until: u32,
@@ -60,10 +60,10 @@ struct Tracked {
 }
 
 /// A projectile in the bot's sight.
-pub(super) struct Projectile<'a> {
-    pub(super) id: &'a str,
-    pub(super) position: [f64; 3],
-    pub(super) velocity: [f64; 3],
+pub(in crate::games::washoi) struct Projectile<'a> {
+    pub(in crate::games::washoi) id: &'a str,
+    pub(in crate::games::washoi) position: [f64; 3],
+    pub(in crate::games::washoi) velocity: [f64; 3],
 }
 
 impl Default for CombatMovement {
@@ -83,23 +83,23 @@ impl Default for CombatMovement {
 
 /// What the bot knows of itself this tick.
 #[derive(Clone, Copy, Debug, Default)]
-pub(super) struct Body {
-    pub(super) hit: bool,
-    pub(super) grounded: bool,
-    pub(super) speed: f64,
-    pub(super) position: [f64; 3],
-    pub(super) yaw: f64,
+pub(in crate::games::washoi) struct Body {
+    pub(in crate::games::washoi) hit: bool,
+    pub(in crate::games::washoi) grounded: bool,
+    pub(in crate::games::washoi) speed: f64,
+    pub(in crate::games::washoi) position: [f64; 3],
+    pub(in crate::games::washoi) yaw: f64,
 }
 
 /// `dodgeSkill` and `reactionTimeMs`.
 #[derive(Clone, Copy, Debug)]
-pub(super) struct Skills {
-    pub(super) dodge: f64,
-    pub(super) reaction_ms: f64,
+pub(in crate::games::washoi) struct Skills {
+    pub(in crate::games::washoi) dodge: f64,
+    pub(in crate::games::washoi) reaction_ms: f64,
 }
 
 impl CombatMovement {
-    pub(super) fn reset(&mut self) {
+    pub(in crate::games::washoi) fn reset(&mut self) {
         *self = Self {
             side: self.side,
             ..Self::default()
@@ -107,7 +107,7 @@ impl CombatMovement {
     }
 
     /// `step`, at server tick `tick`.
-    pub(super) fn step(
+    pub(in crate::games::washoi) fn step(
         &mut self,
         tick: u32,
         skills: Skills,
@@ -210,7 +210,7 @@ impl CombatMovement {
         }
     }
 
-    pub(super) fn dodging(&self, tick: u32) -> bool {
+    pub(in crate::games::washoi) fn dodging(&self, tick: u32) -> bool {
         tick < self.dodge_until
     }
 
@@ -287,7 +287,12 @@ fn distance(a: [f64; 3], b: [f64; 3]) -> f64 {
 
 /// The strafe side to take, `wanted` first, if the static geometry has room
 /// for it: no wall beside the origin and floor under the spot.
-pub(super) fn clear_side(sight: &Sight, origin: [f64; 3], yaw: f64, wanted: i8) -> i8 {
+pub(in crate::games::washoi) fn clear_side(
+    sight: &Sight,
+    origin: [f64; 3],
+    yaw: f64,
+    wanted: i8,
+) -> i8 {
     if wanted == 0 {
         return 0;
     }
@@ -315,7 +320,7 @@ pub(super) fn clear_side(sight: &Sight, origin: [f64; 3], yaw: f64, wanted: i8) 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::games::washoi::sight::tests::{cube, encode};
+    use crate::games::washoi::perception::sight::tests::{cube, encode};
 
     fn skills(dodge: f64) -> Skills {
         Skills {

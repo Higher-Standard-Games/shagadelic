@@ -6,6 +6,9 @@
 //! play them loud enough: shots, beams, pain, pickups, footsteps, jumps, and
 //! explosions next to someone. Being hit reveals the attacker.
 
+pub(super) mod estimate;
+pub(super) mod sight;
+
 use std::f64::consts::PI;
 
 use shagger_shared::net::game_state::Vec3;
@@ -266,7 +269,7 @@ fn distance(a: Vec3, b: Vec3) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::games::washoi::sight::tests::{cube, encode};
+    use crate::games::washoi::perception::sight::tests::{cube, encode};
 
     fn open() -> Sight {
         Sight::parse(&encode("test", &[cube([1000.0; 3], [1001.0; 3])], &[])).unwrap()

@@ -4,27 +4,27 @@
 //! `selectBestWeapon`.
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(super) struct Profile {
-    pub(super) id: &'static str,
-    pub(super) melee: bool,
+pub(in crate::games::washoi) struct Profile {
+    pub(in crate::games::washoi) id: &'static str,
+    pub(in crate::games::washoi) melee: bool,
     /// Zero for hitscan weapons.
-    pub(super) projectile_speed: f64,
-    pub(super) splash: bool,
+    pub(in crate::games::washoi) projectile_speed: f64,
+    pub(in crate::games::washoi) splash: bool,
     dps: f64,
     min_range: f64,
     max_range: f64,
     /// Alt-fire aims down sights and tightens the shot.
-    pub(super) aims_down_sights: bool,
+    pub(in crate::games::washoi) aims_down_sights: bool,
     /// Server ticks aim must be held before a shot counts as aimed.
-    pub(super) ads_ready_ticks: u32,
+    pub(in crate::games::washoi) ads_ready_ticks: u32,
     /// `fireIntervalTicks`: server ticks between shots.
-    pub(super) fire_interval_ticks: u32,
+    pub(in crate::games::washoi) fire_interval_ticks: u32,
     /// `chargeMinTicks` and `chargeMaxTicks` of an alt-fire charged
     /// projectile, in server ticks.
-    pub(super) charge: Option<(u32, u32)>,
+    pub(in crate::games::washoi) charge: Option<(u32, u32)>,
     /// `damagePerHit`, all pellets together, and `pelletCount`.
-    pub(super) damage_per_hit: f64,
-    pub(super) pellets: u32,
+    pub(in crate::games::washoi) damage_per_hit: f64,
+    pub(in crate::games::washoi) pellets: u32,
 }
 
 impl Profile {
@@ -44,20 +44,20 @@ impl Profile {
     }
 
     /// `isHitscan`: no projectile to fly.
-    pub(super) fn hitscan(&self) -> bool {
+    pub(in crate::games::washoi) fn hitscan(&self) -> bool {
         self.projectile_speed == 0.0
     }
 
-    pub(super) fn max_range(&self) -> f64 {
+    pub(in crate::games::washoi) fn max_range(&self) -> f64 {
         self.max_range
     }
 
-    pub(super) fn dps(&self) -> f64 {
+    pub(in crate::games::washoi) fn dps(&self) -> f64 {
         self.dps
     }
 
     /// Within the ideal range, widened by `slack` of it on each side.
-    pub(super) fn fits(&self, distance: f64, slack: f64) -> bool {
+    pub(in crate::games::washoi) fn fits(&self, distance: f64, slack: f64) -> bool {
         distance >= self.min_range * (1.0 - slack) && distance <= self.max_range * (1.0 + slack)
     }
 }
@@ -128,7 +128,7 @@ const PROFILES: [Profile; 8] = [
 const UNKNOWN: Profile = profile("unknown", 0.0, false, 50.0, (100.0, 2000.0), None);
 
 /// `getWeaponProfile`, with `canonicalWeaponId`'s one alias.
-pub(super) fn profile_of(id: &str) -> Profile {
+pub(in crate::games::washoi) fn profile_of(id: &str) -> Profile {
     let id = if id == "lasergun" { "voltaic" } else { id };
     PROFILES
         .into_iter()
@@ -139,7 +139,7 @@ pub(super) fn profile_of(id: &str) -> Profile {
 /// `selectBestWeapon`: the 1-based slot to switch to, or 0 to keep the
 /// current weapon, and the profile chosen. Weapons without ammo are skipped.
 /// A missing ammo count means unlimited.
-pub(super) fn select(
+pub(in crate::games::washoi) fn select(
     weapons: &[String],
     ammo: impl Fn(&str) -> Option<f64>,
     current: &str,

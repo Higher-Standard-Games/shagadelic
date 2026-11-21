@@ -8,7 +8,7 @@
 //! shot of a slow weapon and steps out just before the next is ready. With a
 //! fast weapon it ducks between bursts. Without one it fights in the open.
 
-use super::random::Random;
+use crate::games::washoi::random::Random;
 
 /// Server ticks per second.
 const TICK_RATE: f64 = 125.0;
@@ -32,24 +32,24 @@ const HOLD_TICKS: u32 = 125;
 const STEP_FRESH_TICKS: u32 = 16;
 
 /// One tick of a ranged fight, for `step`.
-pub(super) struct Query<'a> {
-    pub(super) tick: u32,
-    pub(super) position: [f64; 3],
+pub(in crate::games::washoi) struct Query<'a> {
+    pub(in crate::games::washoi) tick: u32,
+    pub(in crate::games::washoi) position: [f64; 3],
     /// Yaw toward the enemy.
-    pub(super) yaw: f64,
+    pub(in crate::games::washoi) yaw: f64,
     /// Whether a spot is out of the enemy's sight.
-    pub(super) hidden: &'a dyn Fn([f64; 3]) -> bool,
+    pub(in crate::games::washoi) hidden: &'a dyn Fn([f64; 3]) -> bool,
     /// Whether the bot can walk straight from where it is to there.
-    pub(super) walkable: &'a dyn Fn([f64; 3]) -> bool,
+    pub(in crate::games::washoi) walkable: &'a dyn Fn([f64; 3]) -> bool,
     /// Ticks between shots of the weapon out.
-    pub(super) refire_ticks: u32,
+    pub(in crate::games::washoi) refire_ticks: u32,
     /// When the bot last fired it.
-    pub(super) fired_tick: Option<u32>,
+    pub(in crate::games::washoi) fired_tick: Option<u32>,
     /// Whether the enemy is in sight now.
-    pub(super) visible: bool,
+    pub(in crate::games::washoi) visible: bool,
 }
 
-pub(super) struct CoverPeek {
+pub(in crate::games::washoi) struct CoverPeek {
     side: i8,
     offset: f64,
     check_tick: Option<u32>,
@@ -78,7 +78,7 @@ impl Default for CoverPeek {
 }
 
 impl CoverPeek {
-    pub(super) fn reset(&mut self) {
+    pub(in crate::games::washoi) fn reset(&mut self) {
         self.side = 0;
         self.check_tick = None;
         self.last_step = None;
@@ -86,7 +86,7 @@ impl CoverPeek {
 
     /// While the bot uses cover and saw the enemy lately: a duck out of
     /// sight is still the same fight.
-    pub(super) fn holding(&self, tick: u32) -> bool {
+    pub(in crate::games::washoi) fn holding(&self, tick: u32) -> bool {
         self.side != 0
             && self
                 .last_step
@@ -98,7 +98,12 @@ impl CoverPeek {
 
     /// The strafe that peeks from cover (−1 left, 1 right, 0 stand), or none
     /// to fight in the open.
-    pub(super) fn step(&mut self, q: &Query<'_>, skill: f64, random: &mut Random) -> Option<i8> {
+    pub(in crate::games::washoi) fn step(
+        &mut self,
+        q: &Query<'_>,
+        skill: f64,
+        random: &mut Random,
+    ) -> Option<i8> {
         if q.visible {
             self.last_visible = Some(q.tick);
         }

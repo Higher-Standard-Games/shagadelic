@@ -10,7 +10,7 @@
 //! TypeScript nodes are floor points. The baked Washoi graph stores standing
 //! origins, 24 units higher, so the comparisons use the floor under a node.
 
-use super::{Vec3, random::Random};
+use crate::games::washoi::{Vec3, random::Random};
 
 /// `HIGH_GROUND_SEARCH_TICKS`: two seconds.
 const SEARCH_TICKS: u32 = 250;
@@ -25,20 +25,20 @@ const REACHED: f64 = 48.0;
 const STANDING_LIFT: f64 = 24.0;
 
 #[derive(Default)]
-pub(super) struct HighGround {
+pub(in crate::games::washoi) struct HighGround {
     spot: Option<Vec3>,
     search_at: u32,
 }
 
 impl HighGround {
-    pub(super) fn reset(&mut self) {
+    pub(in crate::games::washoi) fn reset(&mut self) {
         *self = Self::default();
     }
 
     /// `highGround`: the ledge to make for, if any. `reachable` says whether
     /// a walk on the graph leads to a node.
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn spot(
+    pub(in crate::games::washoi) fn spot(
         &mut self,
         tick: u32,
         nodes: &[[f64; 3]],
@@ -118,7 +118,7 @@ const EDGE_FLOOR_DEPTH: f64 = 64.0;
 /// units along it are walkable with floor beneath. Otherwise the first of a
 /// quarter turn either way or a reversal that is, at full speed. Without
 /// one, the wanted move stands.
-pub(super) fn keep_upper_ground(
+pub(in crate::games::washoi) fn keep_upper_ground(
     direction: [f64; 3],
     position: Vec3,
     enemy: Vec3,

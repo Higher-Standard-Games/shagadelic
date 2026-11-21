@@ -77,7 +77,7 @@ impl Sight {
         &self.map
     }
 
-    pub(super) fn parse(bytes: &[u8]) -> io::Result<Self> {
+    pub(in crate::games::washoi) fn parse(bytes: &[u8]) -> io::Result<Self> {
         let mut reader = Reader(bytes);
         if reader.take(MAGIC.len())? != MAGIC {
             return Err(invalid("not a SHAGADELIC sight file"));
@@ -437,11 +437,11 @@ fn invalid(message: &'static str) -> io::Error {
 }
 
 #[cfg(test)]
-pub(super) mod tests {
+pub(in crate::games::washoi) mod tests {
     use super::*;
 
     /// A sight file in the baker's format.
-    pub(in super::super) fn encode(
+    pub(in crate::games::washoi) fn encode(
         map: &str,
         brushes: &[Vec<[f32; 4]>],
         triangles: &[[f32; 9]],
@@ -469,7 +469,7 @@ pub(super) mod tests {
     }
 
     /// An axis-aligned box brush.
-    pub(in super::super) fn cube(min: [f32; 3], max: [f32; 3]) -> Vec<[f32; 4]> {
+    pub(in crate::games::washoi) fn cube(min: [f32; 3], max: [f32; 3]) -> Vec<[f32; 4]> {
         vec![
             [1.0, 0.0, 0.0, max[0]],
             [-1.0, 0.0, 0.0, -min[0]],

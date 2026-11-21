@@ -7,22 +7,29 @@
 //! Strafing, cover, weapon combos, charged shots, and memory of enemies out
 //! of sight remain open.
 
+pub(super) mod aim;
+pub(super) mod combos;
+pub(super) mod weapons;
+
+use self::{
+    aim::View,
+    combos::{Combos, Situation},
+    weapons::Profile,
+};
+
 use std::collections::HashSet;
 
 use shagger_shared::{json::Value, net::game_state::Vec3};
 
 use super::{
     Observation, Sight,
-    aim::{self, View},
-    combos::{Combos, Situation},
-    cover::{self, CoverPeek},
     difficulty::AimSkill,
-    estimate::Estimates,
+    movement::cover::{self, CoverPeek},
     navigation::local_walk,
+    perception::estimate::Estimates,
     perception::{Enemy, Perception, Senses, Source},
     protocol::SnapshotEvent,
     random::Random,
-    weapons::{self, Profile},
 };
 
 /// `DEFAULT_VIEWHEIGHT` in `engine/physics/PlayerPhysicsConstants.ts`.
@@ -740,7 +747,7 @@ mod tests {
     use super::*;
     use crate::games::washoi::{
         Difficulty,
-        sight::tests::{cube, encode},
+        perception::sight::tests::{cube, encode},
     };
     use crate::games::washoi::{PlayerView, random::Random};
     use shagger_shared::{json::Value, net::game_state::Velocity};

@@ -6,7 +6,7 @@
 
 use std::f64::consts::PI;
 
-use super::{difficulty::AimSkill, random::Random};
+use crate::games::washoi::{difficulty::AimSkill, random::Random};
 
 const DEG: f64 = PI / 180.0;
 const YAW_SPEED_PER_TRACKING: f64 = 100.0 * DEG;
@@ -41,7 +41,7 @@ const DEADZONE_POINTS: [(f64, f64); 4] = [
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(super) struct Tuning {
+pub(in crate::games::washoi) struct Tuning {
     max_yaw_speed: f64,
     max_pitch_speed: f64,
     settle_seconds: f64,
@@ -52,7 +52,7 @@ pub(super) struct Tuning {
 
 impl Tuning {
     /// `aimTuning`.
-    pub(super) fn new(skill: AimSkill) -> Self {
+    pub(in crate::games::washoi) fn new(skill: AimSkill) -> Self {
         let tracking = skill.tracking.max(0.1);
         let max_yaw_speed = YAW_SPEED_PER_TRACKING * tracking;
         let missing = (1.0 - skill.accuracy).clamp(0.0, 1.0);
@@ -82,7 +82,7 @@ fn deadzone_for(tracking: f64) -> f64 {
 }
 
 /// An angle wrapped to (−π, π].
-pub(super) fn wrap(angle: f64) -> f64 {
+pub(in crate::games::washoi) fn wrap(angle: f64) -> f64 {
     angle.sin().atan2(angle.cos())
 }
 
@@ -171,7 +171,7 @@ struct Pending {
     remaining: f64,
 }
 
-pub(super) struct AimController {
+pub(in crate::games::washoi) struct AimController {
     tuning: Tuning,
     accuracy: f64,
     view: Option<(Axis, Axis)>,
@@ -180,13 +180,13 @@ pub(super) struct AimController {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(super) struct View {
-    pub(super) yaw: f64,
-    pub(super) pitch: f64,
+pub(in crate::games::washoi) struct View {
+    pub(in crate::games::washoi) yaw: f64,
+    pub(in crate::games::washoi) pitch: f64,
 }
 
 impl AimController {
-    pub(super) fn new(skill: AimSkill) -> Self {
+    pub(in crate::games::washoi) fn new(skill: AimSkill) -> Self {
         Self {
             tuning: Tuning::new(skill),
             accuracy: skill.accuracy.clamp(0.0, 1.0),
@@ -197,7 +197,7 @@ impl AimController {
     }
 
     /// The view as last sent, if any.
-    pub(super) fn current(&self) -> Option<View> {
+    pub(in crate::games::washoi) fn current(&self) -> Option<View> {
         self.view.map(|(yaw, pitch)| View {
             yaw: yaw.value,
             pitch: pitch.value,
@@ -205,21 +205,21 @@ impl AimController {
     }
 
     /// Forget the view, as on death.
-    pub(super) fn clear(&mut self) {
+    pub(in crate::games::washoi) fn clear(&mut self) {
         self.view = None;
         self.pending = None;
         self.overshoot = None;
     }
 
     /// Look exactly here, at rest: after a script set the view itself.
-    pub(super) fn reset(&mut self, view: View) {
+    pub(in crate::games::washoi) fn reset(&mut self, view: View) {
         self.view = Some((Axis::new(view.yaw), Axis::new(view.pitch)));
         self.pending = None;
         self.overshoot = None;
     }
 
     /// Advance by `dt` seconds toward `wanted` and return the view to send.
-    pub(super) fn step(
+    pub(in crate::games::washoi) fn step(
         &mut self,
         dt: f64,
         wanted: View,
