@@ -78,7 +78,7 @@ Session A, decisions and combat:
 Session B, movement, navigation, and team play:
 - [ ] Movement sequences: `RouteCrouchslideSequence` (158), `RouteStrafeJumpSequence` (384), `ItemSlideApproachSequence` (152), `LedgeSlideJump` (107), and `FlyingStart` (175).
 - [ ] `LiquidEscape.ts` (56) and `TeleportExit.ts`.
-- [ ] Local steering and unsticking: `BotVisionTracer.ts` (534), `movement/BotSteering.ts` (363), and `BotBlockedMove.ts`.
+- [ ] Local steering and unsticking: `BotVisionTracer.ts` (534), `movement/BotSteering.ts` (363), and `BotBlockedMove.ts`. `BotBlockedMove` and the brain's `_turnFromBlock` are in `navigation/unstick.rs`. `BotSteering` and the tracer's probes remain.
 - [ ] Team tactics, callouts, and chat: `BotCallouts.ts` (168), `chat/` (304), and the TeamPlay consideration together with session A.
 - [ ] Game-mode parity: S&D rounds, Duel, FFA, and Amphi.
 

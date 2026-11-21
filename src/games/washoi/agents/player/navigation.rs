@@ -2,6 +2,7 @@ mod follower;
 mod graph;
 pub(in crate::games::washoi) mod learned;
 mod traversal;
+pub(in crate::games::washoi) mod unstick;
 
 use std::{
     io::{self, Read},

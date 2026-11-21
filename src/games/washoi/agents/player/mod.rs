@@ -22,7 +22,10 @@ use crate::games::washoi::agents::player::look::{self as looking, Look};
 use crate::games::washoi::agents::player::movement::chase::Chase;
 use crate::games::washoi::agents::player::movement::highground::{self, HighGround};
 use crate::games::washoi::agents::player::movement::strafe::{self, Body, CombatMovement};
-use crate::games::washoi::agents::player::navigation::{RouteFollower, RouteObservation};
+use crate::games::washoi::agents::player::navigation::{
+    RouteFollower, RouteObservation,
+    unstick::{Unstick, UnstickView},
+};
 use crate::games::washoi::agents::player::strategy::goals::OwnVitals;
 use crate::games::washoi::agents::player::strategy::orders::Orders;
 use crate::games::washoi::difficulty::AimSkill;
@@ -85,6 +88,7 @@ pub struct BotPlayer {
     shooting: bool,
     /// Whether the last decision had a fight, to see fights start and end.
     fighting: bool,
+    unstick: Unstick,
     /// A ledge to fight from with a splash weapon, and the walk there.
     high_ground: HighGround,
     climb: Chase,
@@ -132,6 +136,7 @@ impl BotPlayer {
             allies: Vec::new(),
             shooting: false,
             fighting: false,
+            unstick: Unstick::default(),
             high_ground: HighGround::default(),
             climb: Chase::default(),
             ordered: false,
@@ -303,6 +308,48 @@ impl BotPlayer {
             self.chase.reset();
         }
         self.look_around(world, position);
+        self.turn_from_block(world, position, now);
+    }
+
+    /// Whatever the state, a bot that asks to move and goes nowhere turns
+    /// away from what holds it and thinks again (`navigation::unstick`). A
+    /// recorded maneuver sets its own movement and is left alone.
+    fn turn_from_block(
+        &mut self,
+        world: &Observation,
+        position: Option<shagger_shared::net::game_state::Vec3>,
+        now: SimTime,
+    ) {
+        let Some(position) = position
+            .filter(|_| !self.exact_view && self.respawn_at.is_none() && !self.traversal.active())
+        else {
+            self.unstick.reset();
+            return;
+        };
+        let own = &self.entity_id;
+        let hit = world.events.iter().any(|event| {
+            matches!(event, SnapshotEvent::Damage { entity_id, attacker_id, .. }
+                if entity_id == own && attacker_id != own)
+        });
+        let view = UnstickView {
+            now,
+            position,
+            velocity: world.body(own).and_then(|entity| entity.velocity),
+            fighting: self.engagement.is_some() || self.chasing.is_some() || hit,
+            enemy_near: self.engagement.is_some_and(|fight| {
+                let target = fight.target;
+                (target.x - position.x)
+                    .hypot(target.z - position.z)
+                    .hypot(target.y - position.y)
+                    < 72.0
+            }),
+            sight: self.sight.as_deref(),
+        };
+        let (input, give_up) = self.unstick.filter(&view, self.planned_input);
+        self.planned_input = input;
+        if give_up && let Some(navigation) = &self.navigation {
+            self.route.give_up_leg(navigation, now);
+        }
     }
 
     /// `chase`: walk toward where the enemy should be, watch it, and fire

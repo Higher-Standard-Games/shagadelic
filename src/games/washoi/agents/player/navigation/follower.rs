@@ -107,6 +107,27 @@ impl RouteFollower {
         self.exact = false;
     }
 
+    /// Give up the leg under way, as when the bot is blocked on it, so the
+    /// next plan goes another way for a while.
+    pub(in crate::games::washoi) fn give_up_leg(
+        &mut self,
+        navigation: &WashoiNavigation,
+        now: SimTime,
+    ) {
+        if let Some(active) = self.active.take() {
+            let route = active.route.get(navigation);
+            if active.next < route.waypoints.len() {
+                if self.blocked.len() == MAX_BLOCKS {
+                    self.blocked.remove(0);
+                }
+                self.blocked
+                    .push((route.leg(active.next), now + RETRY_DELAY));
+            }
+        }
+        self.last_position = None;
+        self.exact = false;
+    }
+
     pub(in crate::games::washoi) fn traversing(&self) -> bool {
         self.active
             .as_ref()
