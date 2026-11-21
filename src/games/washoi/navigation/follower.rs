@@ -35,6 +35,8 @@ pub(in crate::games::washoi) struct RouteObservation<'a> {
     pub(in crate::games::washoi) pickup_active: &'a [bool],
     pub(in crate::games::washoi) allow_takeoff: bool,
     pub(in crate::games::washoi) landed_id: Option<&'a str>,
+    /// A uniform draw in [-1, 1] that blurs a remembered take time.
+    pub(in crate::games::washoi) timing_noise: f64,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -120,6 +122,7 @@ impl RouteFollower {
             pickup_active,
             allow_takeoff,
             landed_id,
+            timing_noise,
         } = observation;
         self.blocked.retain(|(_, until)| now < *until);
         self.pickup_unavailable.retain(|_, until| now < *until);
@@ -236,10 +239,18 @@ impl RouteFollower {
                 .filter(|pickup| pickup_active.get(pickup.id) == Some(&false));
             let waited = now - *arrived.get_or_insert(now) >= ARRIVAL_DWELL;
             if let Some(pickup) = taken {
-                // Seen taken: back after its respawn time. Found gone: taken
-                // some time in the last respawn period, so expect it halfway.
+                // Seen taken, here by the bot itself: back after its respawn
+                // time. Found gone: taken some time in the last respawn
+                // period, so expect it halfway, give or take the difficulty's
+                // timing error.
                 let respawn = pickup.respawn();
-                let away = if *seen_up { respawn } else { respawn / 2 };
+                let away = if *seen_up {
+                    respawn
+                } else {
+                    let error = difficulty.item_timing_error().as_secs_f64();
+                    let guess = respawn.as_secs_f64() / 2.0 + timing_noise.clamp(-1.0, 1.0) * error;
+                    Duration::from_secs_f64(guess.max(0.0))
+                };
                 self.pickup_unavailable.insert(pickup.id, now + away);
             } else if waited && let Some(pickup) = route.pickup {
                 self.pickup_unavailable
@@ -304,6 +315,7 @@ mod tests {
             pickup_active: &[],
             allow_takeoff,
             landed_id,
+            timing_noise: 0.0,
         }
     }
 
@@ -347,6 +359,19 @@ mod tests {
         assert_eq!(
             follower.steer(&nav, origin, observation).direction,
             [0.0, 0.0, 1.0]
+        );
+        // Found gone, so expected back after half its 20 s respawn, here
+        // with the most a medium bot can be off: 7.83 - 8.33 * 0.4 s.
+        let mut late = RouteFollower::default();
+        let noisy = RouteObservation {
+            timing_noise: 1.0,
+            ..observation
+        };
+        late.steer(&nav, origin, noisy);
+        late.steer(&nav, health, noisy);
+        assert_eq!(
+            late.pickup_unavailable[&0],
+            now + Duration::from_secs_f64(10.0 + (7.83 - 8.33 * 0.4))
         );
 
         let mut healthy = RouteFollower::default();

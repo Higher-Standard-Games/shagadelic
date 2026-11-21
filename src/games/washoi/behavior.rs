@@ -228,6 +228,7 @@ impl BotPlayer {
                         allow_takeoff: self.learned.is_some()
                             && self.traversal.landing_result().is_none(),
                         landed_id: landed,
+                        timing_noise: 2.0 * self.random.next() - 1.0,
                     },
                 );
                 if let Some(library) = &self.learned

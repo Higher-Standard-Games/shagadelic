@@ -6,7 +6,7 @@
 //! `matchSense` gates the `strategy/Strategist.ts` stances. The Rust bot has
 //! no strategist yet, so match sense scales how strongly health and armor
 //! need shapes pickup choice. `itemTimingSkill` blurs remembered respawn
-//! times in `BotPerception.ts` and awaits a per-bot random seed.
+//! times as in `BotPerception.ts`.
 //!
 //! Unlike `resolveDifficulty`, an unknown name is rejected rather than read as
 //! medium, so a host typo can't silently weaken a bot.
@@ -47,6 +47,18 @@ impl Difficulty {
             tracking,
             prediction,
         }
+    }
+
+    /// How far off a remembered take time may be, from `itemTimingSkill`
+    /// as `BotPerception._believeItems` scales it.
+    pub(super) fn item_timing_error(self) -> std::time::Duration {
+        let skill: f64 = match self {
+            Self::Easy => 0.1,
+            Self::Medium => 0.4,
+            Self::Hard => 0.7,
+            Self::Insane => 0.9,
+        };
+        std::time::Duration::from_secs_f64((7.83 - 8.33 * skill).max(0.5))
     }
 
     pub(super) fn resource_awareness(self) -> f64 {
