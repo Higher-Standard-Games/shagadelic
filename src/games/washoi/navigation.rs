@@ -179,6 +179,13 @@ impl WashoiNavigation {
         &self.map
     }
 
+    /// The walk graph's node positions, standing origins, in graph index
+    /// order and stable for the life of this navigation. Empty for
+    /// authored routes.
+    pub(super) fn nodes(&self) -> &[[f64; 3]] {
+        self.planner.as_ref().map_or(&[], |planner| planner.nodes())
+    }
+
     pub(super) fn objective_walk(
         &self,
         position: Vec3,

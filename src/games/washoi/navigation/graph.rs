@@ -138,6 +138,12 @@ impl PartialEq for Visit {
 impl Eq for Visit {}
 
 impl Planner {
+    /// Node positions, standing origins, in graph index order. The order is
+    /// stable for the life of the planner.
+    pub(super) fn nodes(&self) -> &[[f64; 3]] {
+        &self.nodes
+    }
+
     fn nearest_entry(&self, position: Vec3) -> Option<usize> {
         self.nodes
             .iter()

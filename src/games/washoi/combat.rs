@@ -109,6 +109,10 @@ pub(super) struct Engagement {
     pub(super) peek: Option<i8>,
     /// False while ducked in cover with the enemy out of sight.
     pub(super) in_sight: bool,
+    /// Where the enemy is, or was last seen while ducked.
+    pub(super) target: Vec3,
+    /// The chosen weapon splashes, so high ground pays.
+    pub(super) splash: bool,
 }
 
 impl Combat {
@@ -335,6 +339,8 @@ impl Combat {
             weapon_slot,
             peek,
             in_sight: true,
+            target: enemy.at,
+            splash: profile.splash,
         })
     }
 
@@ -370,6 +376,8 @@ impl Combat {
             weapon_slot: 0,
             peek,
             in_sight: false,
+            target: at,
+            splash: profile.splash,
         })
     }
 

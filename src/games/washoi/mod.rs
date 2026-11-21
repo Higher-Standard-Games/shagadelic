@@ -6,6 +6,7 @@ mod combos;
 mod cover;
 mod difficulty;
 mod goals;
+mod highground;
 mod learned;
 mod navigation;
 mod observation;

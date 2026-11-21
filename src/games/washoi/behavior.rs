@@ -6,6 +6,7 @@ use super::aim::{AimController, View};
 use super::chase::Chase;
 use super::combat::{Combat, Engagement, FIRE};
 use super::goals::OwnVitals;
+use super::highground::HighGround;
 use super::navigation::{RouteFollower, RouteObservation};
 use super::orders::Orders;
 use super::protocol::{PlayerInput, SnapshotEvent};
@@ -53,6 +54,9 @@ pub struct BotPlayer {
     engagement: Option<Engagement>,
     moves: CombatMovement,
     chase: Chase,
+    /// A ledge to fight from with a splash weapon, and the walk there.
+    high_ground: HighGround,
+    climb: Chase,
     /// A server order steered this tick, which takes over from a chase.
     ordered: bool,
     /// Where to look while chasing, and whether to fire into the spot.
@@ -91,6 +95,8 @@ impl BotPlayer {
             engagement: None,
             moves: CombatMovement::default(),
             chase: Chase::default(),
+            high_ground: HighGround::default(),
+            climb: Chase::default(),
             ordered: false,
             chasing: None,
             aim: AimController::new(Difficulty::default().aim()),
@@ -205,7 +211,7 @@ impl BotPlayer {
         };
         match (self.engagement, self.sight.clone(), position) {
             (Some(fight), Some(sight), Some(position)) => {
-                self.fight_moves(world, fight, &sight, position);
+                self.fight_moves(world, fight, &sight, position, now);
             }
             _ => {
                 self.combat.disengage();
@@ -276,7 +282,9 @@ impl BotPlayer {
         fight: Engagement,
         sight: &Sight,
         position: shagger_shared::net::game_state::Vec3,
+        now: SimTime,
     ) {
+        let climb = self.climb_input(world, fight, sight, position, now);
         let own = &self.entity_id;
         let hit = world.events.iter().any(|event| {
             matches!(event, SnapshotEvent::Damage { entity_id, attacker_id, .. }
@@ -325,11 +333,13 @@ impl BotPlayer {
         ));
         let [x, _, z] = self.planned_input.direction;
         // Peeking from cover, the bot keeps its spot: only the side step.
-        let (x, z) = match fight.peek {
-            Some(peek) if !self.moves.dodging(world.tick) => {
+        // Making for high ground, the walk there replaces the strafe.
+        let (x, z) = match (fight.peek, climb) {
+            (Some(peek), _) if !self.moves.dodging(world.tick) => {
                 let peek = f64::from(peek);
                 (peek * yaw.cos(), -peek * yaw.sin())
             }
+            (None, Some([x, _, z])) => (x, z),
             _ => (x + side * yaw.cos(), z - side * yaw.sin()),
         };
         let length = x.hypot(z);
@@ -344,6 +354,49 @@ impl BotPlayer {
         if moves.crouch {
             self.planned_input.buttons |= CROUCH;
         }
+    }
+
+    /// `BotFight.highGround`: with a splash weapon, out of cover, the walk to
+    /// a ledge above the enemy, when one is found and the graph leads there.
+    fn climb_input(
+        &mut self,
+        world: &Observation,
+        fight: Engagement,
+        sight: &Sight,
+        position: shagger_shared::net::game_state::Vec3,
+        now: SimTime,
+    ) -> Option<[f64; 3]> {
+        let navigation = self.navigation.clone()?;
+        if !fight.splash || !fight.in_sight || fight.peek.is_some() {
+            self.high_ground.reset();
+            self.climb.reset();
+            return None;
+        }
+        let can_see = |from: [f64; 3], to: [f64; 3]| sight.clear(from, to);
+        let reachable = |node: super::Vec3| {
+            navigation
+                .objective_walk(position, node, 48.0, None, Some(sight))
+                .is_some()
+        };
+        let spot = self.high_ground.spot(
+            world.tick,
+            navigation.nodes(),
+            position,
+            fight.target,
+            self.difficulty.dodge_skill(),
+            &can_see,
+            &reachable,
+            &mut self.random,
+        );
+        let Some(spot) = spot else {
+            self.climb.reset();
+            return None;
+        };
+        let velocity = world.body(&self.entity_id).and_then(|body| body.velocity);
+        self.climb
+            .steer(&navigation, sight, position, velocity, spot, now)
+            .map(|input| input.direction)
+            .filter(|direction| *direction != [0.0; 3])
     }
 
     /// Movement for the coming commands. True when a traversal set the view.
