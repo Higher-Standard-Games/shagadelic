@@ -192,6 +192,24 @@ impl WashoiNavigation {
     /// The walk graph's node positions, standing origins, in graph index
     /// order and stable for the life of this navigation. Empty for
     /// authored routes.
+    /// Every map pickup the navigation knows, with where to stand for it
+    /// (a standing origin), from the graph's goals and authored routes, once
+    /// per pickup ID. Empty without pickup goals.
+    pub(in crate::games::washoi) fn pickups(&self) -> Vec<(PickupGoal, [f64; 3])> {
+        let mut pickups: Vec<(PickupGoal, [f64; 3])> = Vec::new();
+        let graph = self.planner.iter().flat_map(|planner| planner.pickups());
+        let authored = self
+            .routes
+            .iter()
+            .filter_map(|route| Some((route.pickup?, *route.waypoints.last()?)));
+        for (pickup, at) in graph.chain(authored) {
+            if !pickups.iter().any(|(known, _)| known.id == pickup.id) {
+                pickups.push((pickup, at));
+            }
+        }
+        pickups
+    }
+
     pub(in crate::games::washoi) fn nodes(&self) -> &[[f64; 3]] {
         self.planner.as_ref().map_or(&[], |planner| planner.nodes())
     }

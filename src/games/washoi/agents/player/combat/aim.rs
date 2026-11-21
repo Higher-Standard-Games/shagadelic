@@ -196,6 +196,12 @@ impl AimController {
         }
     }
 
+    /// `setDifficulty`: new rates from here on, keeping the view.
+    pub(in crate::games::washoi) fn set_skill(&mut self, skill: AimSkill) {
+        self.tuning = Tuning::new(skill);
+        self.accuracy = skill.accuracy.clamp(0.0, 1.0);
+    }
+
     /// The view as last sent, if any.
     pub(in crate::games::washoi) fn current(&self) -> Option<View> {
         self.view.map(|(yaw, pitch)| View {

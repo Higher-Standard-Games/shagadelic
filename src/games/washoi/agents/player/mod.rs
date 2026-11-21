@@ -14,6 +14,7 @@ use crate::games::washoi::{
 };
 
 use crate::games::washoi::agents::player::combat::aim::{AimController, View};
+use crate::games::washoi::agents::player::combat::mood::{BotMood, Mistake};
 use crate::games::washoi::agents::player::combat::{ALT_FIRE, Combat, Engagement, FIRE};
 use crate::games::washoi::agents::player::movement::chase::Chase;
 use crate::games::washoi::agents::player::movement::highground::{self, HighGround};
@@ -21,6 +22,7 @@ use crate::games::washoi::agents::player::movement::strafe::{self, Body, CombatM
 use crate::games::washoi::agents::player::navigation::{RouteFollower, RouteObservation};
 use crate::games::washoi::agents::player::strategy::goals::OwnVitals;
 use crate::games::washoi::agents::player::strategy::orders::Orders;
+use crate::games::washoi::difficulty::AimSkill;
 use crate::games::washoi::hosting::net::protocol::{PlayerInput, SnapshotEvent};
 use crate::games::washoi::random::Random;
 use crate::games::washoi::{
@@ -31,6 +33,10 @@ use crate::games::washoi::{
 // `InputButtons` in `engine/network/components/InputComponent.ts`.
 const JUMP: u16 = 1 << 4;
 const CROUCH: u16 = 1 << 5;
+/// `WILD_SHOT_OFFSET`: a wild shot opens fire this far to one side.
+const WILD_SHOT_OFFSET: f64 = 5.0 * std::f64::consts::PI / 180.0;
+/// `ITEM_GLANCE_RANGE`.
+const ITEM_GLANCE_RANGE: f64 = 1200.0;
 const MAX_BURST: u64 = 4;
 const MAX_DEBT: u64 = 25;
 const MAX_OBSERVATION_AGE: Duration = Duration::from_millis(500);
@@ -67,6 +73,9 @@ pub struct BotPlayer {
     engagement: Option<Engagement>,
     moves: CombatMovement,
     chase: Chase,
+    mood: BotMood,
+    /// Whether the last decision had a fight, to see fights start and end.
+    fighting: bool,
     /// A ledge to fight from with a splash weapon, and the walk there.
     high_ground: HighGround,
     climb: Chase,
@@ -108,6 +117,8 @@ impl BotPlayer {
             engagement: None,
             moves: CombatMovement::default(),
             chase: Chase::default(),
+            mood: BotMood::default(),
+            fighting: false,
             high_ground: HighGround::default(),
             climb: Chase::default(),
             ordered: false,
@@ -202,6 +213,21 @@ impl BotPlayer {
         self.combat
             .observe(&world.events, &self.entity_id, world.tick);
         self.exact_view = self.plan(world, now);
+        self.mood.update(
+            &self.entity_id,
+            &world.events,
+            self.vitals.health,
+            self.respawn_at.is_some(),
+            world.tick,
+        );
+        // `aimDifficulty`: a tilted bot aims looser and reacts slower.
+        let base = self.difficulty.aim();
+        let (accuracy, reaction_ms) = self.mood.aim(base.accuracy, base.reaction_ms);
+        self.aim.set_skill(AimSkill {
+            accuracy,
+            reaction_ms,
+            ..base
+        });
         let position = world
             .body(&self.entity_id)
             .and_then(|entity| entity.position);
@@ -223,6 +249,7 @@ impl BotPlayer {
             }
             _ => None,
         };
+        self.apply_mood(world, position);
         match (self.engagement, self.sight.clone(), position) {
             (Some(fight), Some(sight), Some(position)) => {
                 self.fight_moves(world, fight, &sight, position, now);
@@ -242,7 +269,13 @@ impl BotPlayer {
             }
         }
         self.chasing = None;
+        // The `forget` mistake drops an enemy as soon as it is out of sight.
+        let forgot = self
+            .mood
+            .mistake(world.tick)
+            .is_some_and(|(mistake, _)| mistake == Mistake::Forget);
         if self.engagement.is_none()
+            && !forgot
             && !self.exact_view
             && !self.ordered
             && self.respawn_at.is_none()
@@ -258,6 +291,58 @@ impl BotPlayer {
 
     /// `chase`: walk toward where the enemy should be, watch it, and fire
     /// into it within 200 units while the memory is above 0.7.
+    /// `BotMood` around a fight: a new fight may roll a mistake, and an
+    /// ended one clears all but forgetting. While a mistake lasts it bends
+    /// the fight: a wild shot fires 5 degrees off to one side, the wrong
+    /// weapon fights on with whatever is out, and an item glance looks at the
+    /// nearest active pickup within 1,200 units and holds fire.
+    fn apply_mood(&mut self, world: &Observation, position: Option<super::super::Vec3>) {
+        let tick = world.tick;
+        match (self.engagement.is_some(), self.fighting) {
+            (true, false) => {
+                self.mood
+                    .start_fight(tick, self.difficulty.mistake_rate(), &mut self.random);
+            }
+            (false, true) => self.mood.end_fight(),
+            _ => {}
+        }
+        if self.respawn_at.is_some() {
+            self.mood.clear_mistake();
+        }
+        self.fighting = self.engagement.is_some();
+        let Some(fight) = self.engagement.as_mut() else {
+            return;
+        };
+        match self.mood.mistake(tick) {
+            Some((Mistake::WildShot, began)) => {
+                let side = if began % 2 == 0 { 1.0 } else { -1.0 };
+                fight.view.yaw += side * WILD_SHOT_OFFSET;
+            }
+            Some((Mistake::WrongWeapon, _)) => fight.weapon_slot = 0,
+            Some((Mistake::ItemGlance, _)) => {
+                let item = position
+                    .zip(self.navigation.as_ref())
+                    .and_then(|(at, navigation)| {
+                        navigation
+                            .pickups()
+                            .into_iter()
+                            .filter(|(pickup, _)| world.pickup_active.get(pickup.id) == Some(&true))
+                            .map(|(_, [x, _, z])| ((x - at.x).hypot(z - at.z), x - at.x, z - at.z))
+                            .filter(|(distance, _, _)| *distance <= ITEM_GLANCE_RANGE)
+                            .min_by(|a, b| a.0.total_cmp(&b.0))
+                    });
+                if let Some((_, dx, dz)) = item {
+                    fight.view = View {
+                        yaw: dx.atan2(dz),
+                        pitch: 0.0,
+                    };
+                    fight.buttons = 0;
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn chase_lost(
         &mut self,
         world: &Observation,

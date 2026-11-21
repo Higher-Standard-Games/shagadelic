@@ -50,6 +50,16 @@ impl Difficulty {
         }
     }
 
+    /// `mistakeRate`: a new fight errs at `mistakeRate / 16` odds (`BotMood`).
+    pub(super) fn mistake_rate(self) -> f64 {
+        match self {
+            Self::Easy => 8.0,
+            Self::Medium => 3.0,
+            Self::Hard => 1.0,
+            Self::Insane => 0.2,
+        }
+    }
+
     /// `dodgeSkill`, as `BotCombatMovement.ts` uses it.
     pub(in crate::games::washoi) fn dodge_skill(self) -> f64 {
         match self {

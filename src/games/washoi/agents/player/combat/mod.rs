@@ -9,6 +9,7 @@
 
 pub(in crate::games::washoi) mod aim;
 pub(in crate::games::washoi) mod combos;
+pub(in crate::games::washoi) mod mood;
 pub(in crate::games::washoi) mod weapons;
 
 use self::{

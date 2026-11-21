@@ -140,6 +140,15 @@ impl Eq for Visit {}
 impl Planner {
     /// Node positions, standing origins, in graph index order. The order is
     /// stable for the life of the planner.
+    /// Every pickup goal and its node's standing origin.
+    pub(in crate::games::washoi) fn pickups(
+        &self,
+    ) -> impl Iterator<Item = (PickupGoal, [f64; 3])> + '_ {
+        self.goals
+            .iter()
+            .filter_map(|goal| Some((goal.pickup?, self.nodes[goal.node])))
+    }
+
     pub(in crate::games::washoi) fn nodes(&self) -> &[[f64; 3]] {
         &self.nodes
     }
