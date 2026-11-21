@@ -69,6 +69,7 @@ pub(in crate::games::washoi) struct Planner {
     explain: String,
     /// The arbiter's score for the last goal chosen, zero for none.
     desire: f64,
+    timed: bool,
     /// The last decision for its trace: the goal chosen, the best
     /// candidates past the gates, and how many a gate ruled out.
     last_goal: Option<String>,
@@ -97,6 +98,7 @@ impl Planner {
             arbiter: Arbiter::new(&considerations::ALL, mistake_probability(mistake_rate)),
             explain: String::new(),
             desire: 0.0,
+            timed: false,
             last_goal: None,
             last_candidates: Vec::new(),
             last_gated: 0,
@@ -114,6 +116,12 @@ impl Planner {
             &self.last_candidates,
             self.last_gated,
         )
+    }
+
+    /// The last goal chosen is a major item due back, which the bot can be
+    /// at when it returns.
+    pub(in crate::games::washoi) fn timed(&self) -> bool {
+        self.timed
     }
 
     /// What the last goal chosen is worth, in the arbiter's currency.
@@ -195,6 +203,7 @@ impl Planner {
             weights,
         };
         self.desire = 0.0;
+        self.timed = false;
         let Choice {
             goal,
             explain,
@@ -238,6 +247,7 @@ impl Planner {
             return None;
         };
         self.desire = desire;
+        self.timed = goals[index].respawn_tick.is_some();
         let stop = self.stopover(index, &goals, &costs, &traces, &context, between, tick);
         if let Some(stop) = stop {
             let _ = write!(self.explain, " via={}", goals[stop].id);

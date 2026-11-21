@@ -761,6 +761,7 @@ mod tests {
                 .map(|id| PlayerView {
                     entity_id: id.into(),
                     team: "red".into(),
+                    ..PlayerView::default()
                 })
                 .into(),
             events: vec![SnapshotEvent::AgentDirectives {
@@ -883,6 +884,7 @@ mod tests {
             world.players.push(PlayerView {
                 entity_id: id.into(),
                 team: "soba".into(),
+                ..PlayerView::default()
             });
         }
         world.body_or_insert("carrier").position = Some(Vec3::new(300.0, 0.0, 0.0));

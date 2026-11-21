@@ -771,6 +771,31 @@ impl Combat {
             .collect()
     }
 
+    /// An enemy's estimated health plus armor, for one alive and met.
+    pub(in crate::games::washoi) fn enemy_stack(&self, entity: &str, tick: u32) -> Option<f64> {
+        self.estimates
+            .of(entity, tick)
+            .map(|estimate| estimate.health + estimate.armor)
+    }
+
+    /// An enemy's stack and how unsure it is.
+    pub(in crate::games::washoi) fn enemy_estimate(
+        &self,
+        entity: &str,
+        tick: u32,
+    ) -> Option<(f64, f64)> {
+        self.estimates
+            .of(entity, tick)
+            .map(|estimate| (estimate.health + estimate.armor, estimate.uncertainty))
+    }
+
+    /// The freshest living enemy's stack and how unsure it is.
+    pub(in crate::games::washoi) fn freshest_enemy(&self, tick: u32) -> Option<(f64, f64)> {
+        self.estimates
+            .freshest(tick)
+            .map(|estimate| (estimate.health + estimate.armor, estimate.uncertainty))
+    }
+
     /// Enemies the bot believes alive, from what it saw, heard, and hit.
     pub(in crate::games::washoi) fn known_enemies(&self) -> usize {
         self.estimates.alive()
@@ -878,6 +903,7 @@ mod tests {
             world.players.push(PlayerView {
                 entity_id: id.into(),
                 team: team.into(),
+                ..PlayerView::default()
             });
             world.body_or_insert(id).position = Some(Vec3::new(x, y, z));
         }

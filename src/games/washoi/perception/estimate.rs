@@ -100,6 +100,16 @@ impl Estimates {
         self.enemies.iter().filter(|enemy| enemy.alive).count()
     }
 
+    /// The living enemy the bot heard of last, with its estimate.
+    pub(in crate::games::washoi) fn freshest(&self, tick: u32) -> Option<Estimate> {
+        let enemy = self
+            .enemies
+            .iter()
+            .filter(|enemy| enemy.alive)
+            .max_by_key(|enemy| enemy.known)?;
+        self.of(&enemy.entity, tick)
+    }
+
     /// The estimate for a living enemy the bot has met.
     pub(in crate::games::washoi) fn of(&self, entity: &str, tick: u32) -> Option<Estimate> {
         let enemy = self

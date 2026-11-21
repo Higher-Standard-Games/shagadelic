@@ -174,6 +174,12 @@ impl Opponents {
         contested
     }
 
+    /// Major items enemies took in the last seconds, before `tick`.
+    pub(in crate::games::washoi) fn takes(&self, tick: u32, seconds: f64) -> usize {
+        let from = tick.saturating_sub((seconds * f64::from(TICK_RATE)).round() as u32);
+        self.takes.iter().filter(|take| take.tick >= from).count()
+    }
+
     /// An enemy took a major item in the last 30 seconds and has not died
     /// since: `BotMood`'s armed enemy.
     pub(in crate::games::washoi) fn armed_enemy(&self, tick: u32) -> bool {

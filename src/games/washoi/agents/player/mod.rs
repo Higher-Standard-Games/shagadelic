@@ -32,9 +32,11 @@ use crate::games::washoi::agents::player::navigation::{
 use crate::games::washoi::agents::player::strategy::candidates::{Candidate, GoalTarget};
 use crate::games::washoi::agents::player::strategy::considerations::{Me, Situation};
 use crate::games::washoi::agents::player::strategy::goals::OwnVitals;
+use crate::games::washoi::agents::player::strategy::match_read::{MatchRead, Moment};
 use crate::games::washoi::agents::player::strategy::opponents::{Opponents, Scene};
 use crate::games::washoi::agents::player::strategy::orders::Orders;
 use crate::games::washoi::agents::player::strategy::planner::{KnownPickup, Planner};
+use crate::games::washoi::agents::player::strategy::strategist::{Reading, Strategist};
 use crate::games::washoi::agents::player::strategy::weights::MatchContext;
 use crate::games::washoi::difficulty::AimSkill;
 use crate::games::washoi::hosting::net::protocol::{PlayerInput, SnapshotEvent};
@@ -109,6 +111,9 @@ pub struct BotPlayer {
     /// What to go for, the match it is chosen in, and the server ticks the
     /// bot was hurt at lately.
     planner: Planner,
+    /// The match as read so far, and the strategy that answers it.
+    match_read: MatchRead,
+    strategist: Strategist,
     /// The ground held in a Duel, and the walk there.
     territory: Territory,
     territory_walk: Chase,
@@ -146,6 +151,10 @@ pub struct BotPlayer {
 impl BotPlayer {
     pub fn new(entity_id: String) -> Self {
         let combat = Combat::seeded(Random::for_bot(&format!("{entity_id}/combos")));
+        let strategist = Strategist::new(
+            Difficulty::default().match_sense(),
+            Random::for_bot(&format!("{entity_id}/strategy")),
+        );
         Self {
             random: Random::for_bot(&entity_id),
             entity_id,
@@ -178,6 +187,8 @@ impl BotPlayer {
             fighting: false,
             unstick: Unstick::default(),
             planner: Planner::new(Difficulty::default().mistake_rate()),
+            match_read: MatchRead::default(),
+            strategist,
             territory: Territory::default(),
             territory_walk: Chase::default(),
             tracing: false,
@@ -221,6 +232,10 @@ impl BotPlayer {
     pub fn with_difficulty(mut self, difficulty: Difficulty) -> Self {
         self.difficulty = difficulty;
         self.planner = Planner::new(difficulty.mistake_rate());
+        self.strategist = Strategist::new(
+            difficulty.match_sense(),
+            Random::for_bot(&format!("{}/strategy", self.entity_id)),
+        );
         self.aim = AimController::new(difficulty.aim());
         self
     }
@@ -301,6 +316,7 @@ impl BotPlayer {
             .observe(&world.events, &self.entity_id, world.tick);
         self.exact_view = self.plan(world, now);
         self.read_opponents(world);
+        self.read_match(world);
         self.mood.update(
             &self.entity_id,
             &world.events,
@@ -343,7 +359,10 @@ impl BotPlayer {
         self.allies = self.combat.allies(world, &self.entity_id);
         match (self.engagement, self.sight.clone(), position) {
             (Some(fight), Some(sight), Some(position)) => {
-                self.fight_moves(world, fight, &sight, position, now);
+                // Fading keeps to the route, to health, aim still on the enemy.
+                if !self.should_fade(world) {
+                    self.fight_moves(world, fight, &sight, position, now);
+                }
                 // A guard answers the fight from the ground it was sent to hold.
                 self.planned_input = self.orders.leash(position, self.planned_input);
             }
@@ -373,6 +392,7 @@ impl BotPlayer {
             && self.respawn_at.is_none()
             && let (Some(navigation), Some(sight), Some(position)) =
                 (self.navigation.clone(), self.sight.clone(), position)
+            && self.strategist.stance().chase
             && let Some(lost) = self.combat.lost(world.tick)
             && !self.divert_to_item(world, position, lost, was_chasing)
         {
@@ -439,6 +459,7 @@ impl BotPlayer {
             health: self.vitals.health,
             armor: self.vitals.armor,
             weapon: self.combat.weapon().to_owned(),
+            strategy: self.strategist.explain(),
         }
     }
 
@@ -1014,9 +1035,6 @@ impl BotPlayer {
     ) {
         const HOLD_DESIRE_PER_CONTROL: f64 = 0.5;
         const HOLD_HEALTH: u16 = 60;
-        let team = world
-            .player(&self.entity_id)
-            .map_or("", |player| player.team.as_str());
         let roaming = self.engagement.is_none()
             && self.chasing.is_none()
             && !self.exact_view
@@ -1027,7 +1045,7 @@ impl BotPlayer {
             .match_context
             .as_ref()
             .filter(|context| context.keeps_territory());
-        let (Some(context), Some(position), Some(navigation), Some(sight), true) = (
+        let (Some(_), Some(position), Some(navigation), Some(sight), true) = (
             context,
             position,
             self.navigation.clone(),
@@ -1037,7 +1055,7 @@ impl BotPlayer {
             self.territory_walk.reset();
             return;
         };
-        let hold = HOLD_DESIRE_PER_CONTROL * context.weights(team).map_control;
+        let hold = HOLD_DESIRE_PER_CONTROL * self.weights(world).map_control;
         if self.vitals.health.is_none_or(|health| health < HOLD_HEALTH)
             || !self.combat.armed()
             || self.planner.desire() >= hold
@@ -1100,25 +1118,96 @@ impl BotPlayer {
         const SEEK_DESIRE_BASE: f64 = 0.2;
         const SEEK_DESIRE_PER_AGGRESSION: f64 = 0.25;
         let health = f64::from(self.vitals.health.unwrap_or(100));
-        if health < 50.0 || health < self.mood.retreat_health(LOW_HEALTH_THRESHOLD) {
+        let stance = self.strategist.stance();
+        let retreat = self.mood.retreat_health(LOW_HEALTH_THRESHOLD) * stance.retreat_scale;
+        if health < 50.0 || health < retreat {
             return self.planner.desire() > 0.0;
         }
         if self.combat.current_ammo().is_some_and(|ammo| ammo < 3.0) {
             return true;
         }
-        if self.vitals.armor.unwrap_or(0) >= 25 {
+        if self.vitals.armor.unwrap_or(0) >= 25 && !stance.shop_armored {
             return false;
         }
+        let aggression = self.weights(world).aggression;
+        let worth =
+            (SEEK_DESIRE_BASE + SEEK_DESIRE_PER_AGGRESSION * aggression) * stance.seek_scale;
+        self.planner.desire() > 0.0 && self.planner.desire() >= worth
+    }
+
+    /// `_shouldFade`: a strategy that fades (Recover, Protect lead), 40 or
+    /// more damage taken in this fight, and no stack advantage by the
+    /// estimate. TypeScript then retreats out of sight and to health; here the
+    /// bot keeps walking its route, the arbiter's goal, instead of strafing.
+    fn should_fade(&self, world: &Observation) -> bool {
+        const FADE_DAMAGE: f64 = 40.0;
+        let Some(enemy) = self.combat.tracked() else {
+            return false;
+        };
+        if !self.strategist.stance().fade
+            || self
+                .match_read
+                .open_fight(enemy)
+                .is_none_or(|fight| fight.taken < FADE_DAMAGE)
+        {
+            return false;
+        }
+        let own = f64::from(self.vitals.health.unwrap_or(100))
+            + f64::from(self.vitals.armor.unwrap_or(0));
+        self.combat
+            .enemy_estimate(enemy, world.tick)
+            .is_none_or(|(stack, uncertainty)| uncertainty > 0.5 || own <= stack)
+    }
+
+    /// `MatchRead.update`, then `Strategist.update`.
+    fn read_match(&mut self, world: &Observation) {
+        let tick = world.tick;
+        let seen = self
+            .engagement
+            .filter(|fight| fight.in_sight)
+            .and(self.combat.tracked());
+        let combat = &self.combat;
+        let stack = |entity: &str| combat.enemy_stack(entity, tick);
+        self.match_read.update(
+            world,
+            &Moment {
+                own: &self.entity_id,
+                health: self.vitals.health,
+                armor: self.vitals.armor,
+                dead: self.respawn_at.is_some(),
+                seen,
+                enemy_stack: &stack,
+                time_remaining: self
+                    .match_context
+                    .as_ref()
+                    .and_then(|context| context.time_remaining),
+            },
+        );
+        let opponents = &self.opponents;
+        let takes = |seconds: f64| opponents.takes(tick, seconds);
+        self.strategist.update(
+            &self.match_read,
+            &Reading {
+                own_stack: f64::from(self.vitals.health.unwrap_or(100))
+                    + f64::from(self.vitals.armor.unwrap_or(0)),
+                enemy: self.combat.freshest_enemy(tick),
+                others_takes: &takes,
+                timed_item_in_reach: self.planner.timed(),
+            },
+        );
+    }
+
+    /// The gametype's weight profile for this bot's team, scaled by its
+    /// strategy (`_weights`).
+    fn weights(&self, world: &Observation) -> strategy::weights::Weights {
         let team = world
             .player(&self.entity_id)
             .map_or("", |player| player.team.as_str());
-        let aggression = self
+        let base = self
             .match_context
             .as_ref()
-            .map_or(strategy::weights::DEFAULT, |context| context.weights(team))
-            .aggression;
-        let worth = SEEK_DESIRE_BASE + SEEK_DESIRE_PER_AGGRESSION * aggression;
-        self.planner.desire() > 0.0 && self.planner.desire() >= worth
+            .map_or(strategy::weights::DEFAULT, |context| context.weights(team));
+        self.strategist.weights(base)
     }
 
     /// Credit the major items enemies were heard or seen taking.
@@ -1164,13 +1253,7 @@ impl BotPlayer {
         self.recent_damage
             .retain(|hit| tick.saturating_sub(*hit) <= DAMAGE_MEMORY_TICKS);
         let navigation = self.navigation.as_deref();
-        let team = world
-            .player(&self.entity_id)
-            .map_or("", |player| player.team.as_str());
-        let weights = self
-            .match_context
-            .as_ref()
-            .map_or(strategy::weights::DEFAULT, |context| context.weights(team));
+        let weights = self.weights(world);
         let costs = navigation
             .map(|navigation| navigation.pickup_costs(position, self.sight.as_deref()))
             .unwrap_or_default();

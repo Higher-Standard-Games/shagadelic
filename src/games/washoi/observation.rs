@@ -58,12 +58,15 @@ impl Sub for SimTime {
     }
 }
 
-/// One player in the scoreboard: the entity that plays it, and its team. The
-/// team is empty, `"ffa"`, or `"spectator"` outside team play.
+/// One player in the scoreboard: the entity that plays it, its team, and its
+/// score. The team is empty, `"ffa"`, or `"spectator"` outside team play.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PlayerView {
     pub entity_id: String,
     pub team: String,
+    /// The scoreboard row: frags, or the mode's points, and deaths.
+    pub score: i32,
+    pub deaths: u32,
 }
 
 /// An entity's physical state, when the snapshot carries it.

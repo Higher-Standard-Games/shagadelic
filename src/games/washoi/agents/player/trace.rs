@@ -44,4 +44,6 @@ pub struct DecisionTrace {
     pub health: Option<u16>,
     pub armor: Option<u16>,
     pub weapon: String,
+    /// The strategy and the diagnosis it answers.
+    pub strategy: String,
 }
