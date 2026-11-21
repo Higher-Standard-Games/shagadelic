@@ -2,10 +2,10 @@
 
 use std::time::Duration;
 
-use crate::games::washoi::SimTime;
+use crate::games::washoi::{Observation, SimTime};
 use shagger_shared::{
     json::Value,
-    net::game_state::{GameState, Vec3, Velocity},
+    net::game_state::{Vec3, Velocity},
 };
 
 use super::{
@@ -59,7 +59,7 @@ struct Progress {
 }
 
 impl Orders {
-    pub(super) fn observe(&mut self, world: &GameState<SnapshotEvent>, own_entity: &str) {
+    pub(super) fn observe(&mut self, world: &Observation, own_entity: &str) {
         if self
             .directive
             .as_ref()
@@ -268,7 +268,7 @@ impl Directive {
 }
 
 impl Target {
-    fn position(&self, world: &GameState<SnapshotEvent>, own_entity: &str) -> Option<Vec3> {
+    fn position(&self, world: &Observation, own_entity: &str) -> Option<Vec3> {
         let carrier = match self {
             Self::Position(position) => return Some(*position),
             Self::Escort(carrier) => carrier,
@@ -278,13 +278,13 @@ impl Target {
         }
         let team = &world
             .players
-            .values()
+            .iter()
             .find(|p| p.entity_id == own_entity)?
             .team;
         if matches!(team.as_str(), "" | "spectator" | "ffa")
             || !world
                 .players
-                .values()
+                .iter()
                 .any(|p| p.entity_id == *carrier && p.team == *team)
         {
             return None;
@@ -299,7 +299,7 @@ impl Target {
         if dead == Some(true) {
             return None;
         }
-        world.entities.get(carrier)?.position.filter(|p| finite(*p))
+        world.body(carrier)?.position.filter(|p| finite(*p))
     }
 }
 
@@ -346,13 +346,13 @@ mod tests {
              "priority":0.9,"expiresAtTick":50,"interrupt":"never",
              "via":[{"x":64,"y":0,"z":0}],"watch":{"x":64,"y":0,"z":0}}
         ]"#).unwrap();
-        let mut state = GameState {
+        let mut state = Observation {
             tick: 1,
             events: vec![SnapshotEvent::AgentDirectives {
                 entity_id: "other".into(),
                 directives: directives.clone(),
             }],
-            ..GameState::default()
+            ..Observation::default()
         };
         let start = SimTime::ZERO;
         let mut orders = Orders::default();
@@ -410,7 +410,7 @@ mod tests {
         )
         .unwrap();
         let mut bot = BotPlayer::new("bot".into()).with_navigation(Arc::new(navigation));
-        let mut world = GameState {
+        let mut world = Observation {
             tick: 1,
             events: vec![SnapshotEvent::AgentDirectives {
                 entity_id: "bot".into(),
@@ -421,7 +421,7 @@ mod tests {
                 )
                 .unwrap(),
             }],
-            ..GameState::default()
+            ..Observation::default()
         };
         let start = SimTime::ZERO;
         for (step, x, direction) in [
@@ -430,13 +430,10 @@ mod tests {
             (2, 62.0, [0.0; 3]),
         ] {
             world.tick += 1;
-            world
-                .entities
-                .get_or_insert_with("bot", Default::default)
-                .position = Some(Vec3::new(x, 0.0, 0.0));
+            world.body_or_insert("bot").position = Some(Vec3::new(x, 0.0, 0.0));
             let now = start + Duration::from_millis(16 * step);
-            bot.observe(&world, now);
-            let mut inputs = bot.inputs(now);
+            bot.observe_at(&world, now);
+            let mut inputs = bot.inputs_at(now);
             assert_eq!(inputs.next().unwrap().direction, direction);
             assert!(inputs.all(|input| input.direction == direction));
         }
@@ -444,9 +441,9 @@ mod tests {
 
     #[test]
     fn escorts_a_moving_teammate_and_drops_an_unavailable_carrier() {
-        use shagger_shared::net::game_state::PlayerState;
+        use crate::games::washoi::PlayerView;
 
-        let mut world = GameState {
+        let mut world = Observation {
             tick: 1,
             events: vec![SnapshotEvent::AgentDirectives {
                 entity_id: "bot".into(),
@@ -457,22 +454,15 @@ mod tests {
                 )
                 .unwrap(),
             }],
-            ..GameState::default()
+            ..Observation::default()
         };
         for id in ["bot", "carrier"] {
-            world.players.insert(
-                id,
-                PlayerState {
-                    entity_id: id.into(),
-                    team: "soba".into(),
-                    ..PlayerState::default()
-                },
-            );
+            world.players.push(PlayerView {
+                entity_id: id.into(),
+                team: "soba".into(),
+            });
         }
-        world
-            .entities
-            .get_or_insert_with("carrier", Default::default)
-            .position = Some(Vec3::new(300.0, 0.0, 0.0));
+        world.body_or_insert("carrier").position = Some(Vec3::new(300.0, 0.0, 0.0));
         let navigation = serde_json::from_str(
             r#"{"map":"snd","graph":{
                 "bsp_sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
@@ -494,7 +484,7 @@ mod tests {
         );
 
         world.tick = 2;
-        world.entities.get_mut("carrier").unwrap().position = Some(Vec3::new(0.0, 0.0, 300.0));
+        world.body_mut("carrier").unwrap().position = Some(Vec3::new(0.0, 0.0, 300.0));
         orders.observe(&world, "bot");
         assert_eq!(
             orders
@@ -517,7 +507,7 @@ mod tests {
                 .is_none()
         );
         world.events.pop();
-        world.players.get_mut("carrier").unwrap().team = "udon".into();
+        world.player_mut("carrier").unwrap().team = "udon".into();
         orders.observe(&world, "bot");
         assert!(
             orders
@@ -536,7 +526,7 @@ mod tests {
             }}"#,
         )
         .unwrap();
-        let world = GameState {
+        let world = Observation {
             tick: 1,
             events: vec![SnapshotEvent::AgentDirectives {
                 entity_id: "bot".into(),
@@ -547,7 +537,7 @@ mod tests {
                 )
                 .unwrap(),
             }],
-            ..GameState::default()
+            ..Observation::default()
         };
         let start = SimTime::ZERO;
         let origin = Vec3::default();

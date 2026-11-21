@@ -9,13 +9,10 @@
 
 use std::collections::HashSet;
 
-use shagger_shared::{
-    json::Value,
-    net::game_state::{GameState, Vec3},
-};
+use shagger_shared::{json::Value, net::game_state::Vec3};
 
 use super::{
-    Sight,
+    Observation, Sight,
     aim::View,
     difficulty::AimSkill,
     perception::{Enemy, Perception, Senses, Source},
@@ -143,7 +140,7 @@ impl Combat {
     /// The fight against the nearest enemy in sight, if any.
     pub(super) fn engage(
         &mut self,
-        world: &GameState<SnapshotEvent>,
+        world: &Observation,
         own: &str,
         position: Vec3,
         view_yaw: f64,
@@ -152,12 +149,12 @@ impl Combat {
     ) -> Option<Engagement> {
         let team = world
             .players
-            .values()
+            .iter()
             .find(|player| player.entity_id == own)
             .map(|player| player.team.as_str());
         let mut enemies: Vec<_> = world
             .players
-            .values()
+            .iter()
             .filter(|player| {
                 player.entity_id != own
                     && player.team != "spectator"
@@ -165,7 +162,7 @@ impl Combat {
                     && !self.dead.contains(&player.entity_id)
             })
             .filter_map(|player| {
-                let entity = world.entities.get(&player.entity_id)?;
+                let entity = world.body(&player.entity_id)?;
                 let at = entity.position.filter(|at| finite(*at))?;
                 let velocity = entity.velocity.unwrap_or_default();
                 Some(Enemy {
@@ -385,30 +382,21 @@ fn distance(a: Vec3, b: Vec3) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::games::washoi::PlayerView;
     use crate::games::washoi::{
         Difficulty,
         sight::tests::{cube, encode},
     };
-    use shagger_shared::{
-        json::Value,
-        net::game_state::{PlayerState, Velocity},
-    };
+    use shagger_shared::{json::Value, net::game_state::Velocity};
 
-    fn world(players: &[(&str, &str, [f64; 3])]) -> GameState<SnapshotEvent> {
-        let mut world = GameState::default();
+    fn world(players: &[(&str, &str, [f64; 3])]) -> Observation {
+        let mut world = Observation::default();
         for &(id, team, [x, y, z]) in players {
-            world.players.insert(
-                id,
-                PlayerState {
-                    entity_id: id.into(),
-                    team: team.into(),
-                    ..PlayerState::default()
-                },
-            );
-            world
-                .entities
-                .get_or_insert_with(id, Default::default)
-                .position = Some(Vec3::new(x, y, z));
+            world.players.push(PlayerView {
+                entity_id: id.into(),
+                team: team.into(),
+            });
+            world.body_or_insert(id).position = Some(Vec3::new(x, y, z));
         }
         world
     }
@@ -427,7 +415,7 @@ mod tests {
     /// it takes to notice one, then engages.
     fn engaged(
         combat: &mut Combat,
-        world: &GameState<SnapshotEvent>,
+        world: &Observation,
         me: Vec3,
         skill: AimSkill,
     ) -> Option<Engagement> {
@@ -470,13 +458,13 @@ mod tests {
         // In free-for-all, the former ally is the target.
         let mut ffa = world.clone();
         for player in ["me", "ally"] {
-            ffa.players.get_mut(player).unwrap().team = "ffa".into();
+            ffa.player_mut(player).unwrap().team = "ffa".into();
         }
         let fight = engaged(&mut combat, &ffa, me, skill).unwrap();
         assert!(fight.view.pitch > 0.0, "looks down at the closer player");
 
         // Nobody in sight but the hidden one: no fight.
-        world.players.get_mut("open").unwrap().team = "red".into();
+        world.player_mut("open").unwrap().team = "red".into();
         assert!(engaged(&mut combat, &world, me, skill).is_none());
     }
 
@@ -514,7 +502,7 @@ mod tests {
             ("me", "", [0.0, 0.0, -100.0]),
             ("foe", "", [0.0, 0.0, -1500.0]),
         ]);
-        world.entities.get_mut("foe").unwrap().velocity = Some(Velocity {
+        world.body_mut("foe").unwrap().velocity = Some(Velocity {
             linear: Vec3::new(300.0, 0.0, 0.0),
             ..Velocity::default()
         });
@@ -602,7 +590,7 @@ mod tests {
         combat.observe(&[armed("blade", &["blade"], &[])], "me");
         let far = engaged(&mut combat, &world, me, skill).unwrap();
         assert!(far.melee && far.buttons == 0);
-        world.entities.get_mut("foe").unwrap().position = Some(Vec3::new(0.0, 0.0, -200.0));
+        world.body_mut("foe").unwrap().position = Some(Vec3::new(0.0, 0.0, -200.0));
         assert_eq!(
             engaged(&mut combat, &world, me, skill).unwrap().buttons,
             FIRE
@@ -616,7 +604,7 @@ mod tests {
             ("me", "", [0.0, 0.0, -100.0]),
             ("foe", "", [0.0, 0.0, -500.0]),
         ]);
-        world.entities.get_mut("foe").unwrap().velocity = Some(Velocity {
+        world.body_mut("foe").unwrap().velocity = Some(Velocity {
             linear: Vec3::new(250.0, 0.0, 0.0),
             ..Velocity::default()
         });
@@ -625,7 +613,7 @@ mod tests {
         world.tick = 1000;
         assert!(engaged(&mut combat, &world, me, skill).is_some());
         // Behind the wall across x = 0 for z > 0, one second later.
-        world.entities.get_mut("foe").unwrap().position = Some(Vec3::new(0.0, 0.0, 300.0));
+        world.body_mut("foe").unwrap().position = Some(Vec3::new(0.0, 0.0, 300.0));
         world.tick = 1125;
         assert!(engaged(&mut combat, &world, me, skill).is_none());
         let lost = combat.lost(1125).unwrap();
@@ -636,7 +624,7 @@ mod tests {
         assert!((last.predicted.x - 700.0).abs() < 1e-9);
         assert!(combat.lost(1000 + 351).is_none());
         // The memory is gone; seeing the foe again brings it back.
-        world.entities.get_mut("foe").unwrap().position = Some(Vec3::new(0.0, 0.0, -500.0));
+        world.body_mut("foe").unwrap().position = Some(Vec3::new(0.0, 0.0, -500.0));
         assert!(engaged(&mut combat, &world, me, skill).is_some());
         // A death ends the memory.
         combat.observe(

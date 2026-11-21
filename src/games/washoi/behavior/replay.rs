@@ -2,11 +2,11 @@
 
 use std::{sync::Arc, time::Duration};
 
-use crate::games::washoi::SimTime;
 use serde::Deserialize;
-use shagger_shared::net::game_state::{GameState, Vec3, Velocity};
 
-use crate::games::washoi::{BotPlayer, LearnedRoutes, protocol::SnapshotEvent};
+use crate::games::washoi::{
+    BotPlayer, LearnedRoutes, Observation, SimTime, Vec3, Velocity, protocol::SnapshotEvent,
+};
 
 #[derive(Deserialize)]
 struct Replay {
@@ -43,13 +43,11 @@ fn replays_exact_inputs_and_remembers_a_one_tick_death() {
     for step in trace.steps {
         let now = start + Duration::from_millis(step.ms);
         if let Some(tick) = step.snapshot_tick {
-            let mut world = GameState {
+            let mut world = Observation {
                 tick,
-                ..GameState::default()
+                ..Observation::default()
             };
-            let own = world
-                .entities
-                .get_or_insert_with(&trace.entity_id, Default::default);
+            let own = world.body_or_insert(&trace.entity_id);
             own.position = Some(Vec3::default());
             own.velocity = Some(Velocity {
                 grounded: true,
@@ -63,11 +61,16 @@ fn replays_exact_inputs_and_remembers_a_one_tick_death() {
                     dead: true,
                 });
             }
-            bot.observe(&world, now);
+            bot.observe_at(&world, now);
         }
-        assert_eq!(bot.request_respawn(now), step.respawn, "at {} ms", step.ms);
+        assert_eq!(
+            bot.request_respawn_at(now),
+            step.respawn,
+            "at {} ms",
+            step.ms
+        );
         let inputs: Vec<_> = bot
-            .inputs(now)
+            .inputs_at(now)
             .map(|i| ExpectedInput(i.direction, i.yaw, i.pitch, i.buttons, i.weapon_slot))
             .collect();
         assert_eq!(inputs, step.inputs, "at {} ms", step.ms);

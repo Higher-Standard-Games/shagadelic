@@ -1,7 +1,8 @@
 use std::{sync::Arc, time::Duration};
 
-use crate::games::washoi::SimTime;
+use crate::games::washoi::{Observation, SimTime};
 use shagger_shared::net::game_state::GameState;
+use tokio::time::Instant;
 
 use super::aim::{AimController, View};
 use super::chase::Chase;
@@ -27,6 +28,8 @@ const RESPAWN_DELAY: Duration = Duration::from_millis(2500);
 /// fights enemies in sight when it has the map's sight file.
 pub struct BotPlayer {
     entity_id: String,
+    /// The hosted clock's instant at simulation time zero.
+    epoch: Option<Instant>,
     respawn_at: Option<SimTime>,
     own_entity_present: bool,
     last_snapshot: Option<SimTime>,
@@ -58,10 +61,39 @@ pub struct BotPlayer {
 }
 
 impl BotPlayer {
+    /// `observe_at` for the hosted session's snapshot and clock. These
+    /// wrappers keep `session.rs` and `connection.rs` working until they call
+    /// the simulation-time methods directly.
+    pub(crate) fn observe(&mut self, state: &GameState<SnapshotEvent>, now: Instant) {
+        let now = self.sim_time(now);
+        self.observe_at(&super::protocol::observe(state), now);
+    }
+
+    pub(crate) fn request_respawn(&mut self, now: Instant) -> bool {
+        let now = self.sim_time(now);
+        self.request_respawn_at(now)
+    }
+
+    pub(crate) fn inputs(&mut self, now: Instant) -> impl Iterator<Item = PlayerInput> {
+        let now = self.sim_time(now);
+        self.inputs_at(now)
+    }
+
+    /// Simulation time on one timebase for every wrapper call: the epoch is
+    /// an hour before the first instant seen, so a slightly earlier
+    /// timestamp delivered later still maps forward of zero.
+    fn sim_time(&mut self, now: Instant) -> SimTime {
+        let epoch = *self
+            .epoch
+            .get_or_insert_with(|| now.checked_sub(Duration::from_secs(3600)).unwrap_or(now));
+        SimTime::from_elapsed(now.saturating_duration_since(epoch))
+    }
+
     pub fn new(entity_id: String) -> Self {
         Self {
             random: Random::for_bot(&entity_id),
             entity_id,
+            epoch: None,
             respawn_at: None,
             own_entity_present: false,
             last_snapshot: None,
@@ -128,12 +160,13 @@ impl BotPlayer {
         self
     }
 
-    pub(crate) fn observe(&mut self, world: &GameState<SnapshotEvent>, now: SimTime) {
+    /// One snapshot's observation at simulation time `now`. The brain
+    /// plans on it at once.
+    pub fn observe_at(&mut self, world: &Observation, now: SimTime) {
         self.combat.observe(&world.events, &self.entity_id);
         self.exact_view = self.plan(world, now);
         let position = world
-            .entities
-            .get(&self.entity_id)
+            .body(&self.entity_id)
             .and_then(|entity| entity.position);
         self.engagement = match (&self.sight, position) {
             (Some(sight), Some(position))
@@ -180,7 +213,7 @@ impl BotPlayer {
     /// into it within 200 units while the memory is above 0.7.
     fn chase_lost(
         &mut self,
-        world: &GameState<SnapshotEvent>,
+        world: &Observation,
         now: SimTime,
         navigation: &WashoiNavigation,
         sight: &Sight,
@@ -188,8 +221,7 @@ impl BotPlayer {
         lost: super::combat::Lost,
     ) {
         let velocity = world
-            .entities
-            .get(&self.entity_id)
+            .body(&self.entity_id)
             .and_then(|entity| entity.velocity);
         let target = lost.predicted;
         let Some(input) = self
@@ -222,7 +254,7 @@ impl BotPlayer {
     /// a held chord.
     fn fight_moves(
         &mut self,
-        world: &GameState<SnapshotEvent>,
+        world: &Observation,
         fight: Engagement,
         sight: &Sight,
         position: shagger_shared::net::game_state::Vec3,
@@ -232,7 +264,7 @@ impl BotPlayer {
             matches!(event, SnapshotEvent::Damage { entity_id, attacker_id, .. }
                 if entity_id == own && attacker_id != own)
         });
-        let velocity = world.entities.get(own).and_then(|entity| entity.velocity);
+        let velocity = world.body(own).and_then(|entity| entity.velocity);
         let origin = [position.x, position.y, position.z];
         let body = Body {
             hit,
@@ -245,7 +277,7 @@ impl BotPlayer {
         // projectile counts only when a sight ray from the eye reaches it.
         let eye = [position.x, position.y + 32.0, position.z];
         let projectiles: Vec<_> = world
-            .entities
+            .bodies
             .iter()
             .filter(|(id, _)| id.starts_with("proj_"))
             .filter_map(|(id, entity)| {
@@ -253,7 +285,7 @@ impl BotPlayer {
                 let velocity = entity.velocity?.linear;
                 let at = [at.x, at.y, at.z];
                 sight.clear(eye, at).then_some(strafe::Projectile {
-                    id,
+                    id: id.as_str(),
                     position: at,
                     velocity: [velocity.x, velocity.y, velocity.z],
                 })
@@ -290,7 +322,7 @@ impl BotPlayer {
     }
 
     /// Movement for the coming commands. True when a traversal set the view.
-    fn plan(&mut self, world: &GameState<SnapshotEvent>, now: SimTime) -> bool {
+    fn plan(&mut self, world: &Observation, now: SimTime) -> bool {
         for event in &world.events {
             match event {
                 SnapshotEvent::CombatState {
@@ -316,7 +348,7 @@ impl BotPlayer {
             }
         }
         self.last_snapshot = Some(now);
-        let own = world.entities.get(&self.entity_id);
+        let own = world.body(&self.entity_id);
         self.own_entity_present = own.is_some();
         self.orders.observe(world, &self.entity_id);
         if self.respawn_at.is_some() || !self.own_entity_present {
@@ -380,7 +412,7 @@ impl BotPlayer {
                         vitals: self.vitals,
                         velocity: own.and_then(|entity| entity.velocity),
                         difficulty: self.difficulty,
-                        pickup_active: &world.pickup_active_mask,
+                        pickup_active: &world.pickup_active,
                         allow_takeoff: self.learned.is_some()
                             && self.traversal.landing_result().is_none(),
                         landed_id: landed,
@@ -405,7 +437,8 @@ impl BotPlayer {
         false
     }
 
-    pub(crate) fn request_respawn(&mut self, now: SimTime) -> bool {
+    /// Whether to ask the server for a respawn now. Asking starts its delay.
+    pub fn request_respawn_at(&mut self, now: SimTime) -> bool {
         if self.has_fresh_snapshot(now) && self.respawn_at.is_some_and(|at| now >= at) {
             self.respawn_at = Some(now + RESPAWN_DELAY);
             return true;
@@ -418,7 +451,8 @@ impl BotPlayer {
             .is_some_and(|at| now - at <= MAX_OBSERVATION_AGE)
     }
 
-    pub(crate) fn inputs(&mut self, now: SimTime) -> impl Iterator<Item = PlayerInput> {
+    /// The commands due by `now`, paced at the Washoi input period.
+    pub fn inputs_at(&mut self, now: SimTime) -> impl Iterator<Item = PlayerInput> {
         let ready =
             self.respawn_at.is_none() && self.own_entity_present && self.has_fresh_snapshot(now);
         let mut learned = None;
@@ -536,21 +570,21 @@ mod tests {
     fn input_debt_is_bounded_and_stale_observations_stop_movement() {
         let start = SimTime::ZERO;
         let mut bot = BotPlayer::new("bot".into());
-        assert_eq!(bot.inputs(start).count(), 0);
+        assert_eq!(bot.inputs_at(start).count(), 0);
         bot.last_snapshot = Some(start);
         bot.own_entity_present = true;
-        assert_eq!(bot.inputs(start).count(), 1);
-        assert_eq!(bot.inputs(start + Duration::from_millis(4)).count(), 0);
-        assert_eq!(bot.inputs(start + Duration::from_millis(40)).count(), 4);
-        assert_eq!(bot.inputs(start + Duration::from_millis(48)).count(), 2);
-        assert_eq!(bot.inputs(start + Duration::from_millis(300)).count(), 1);
-        assert_eq!(bot.inputs(start + Duration::from_millis(501)).count(), 0);
+        assert_eq!(bot.inputs_at(start).count(), 1);
+        assert_eq!(bot.inputs_at(start + Duration::from_millis(4)).count(), 0);
+        assert_eq!(bot.inputs_at(start + Duration::from_millis(40)).count(), 4);
+        assert_eq!(bot.inputs_at(start + Duration::from_millis(48)).count(), 2);
+        assert_eq!(bot.inputs_at(start + Duration::from_millis(300)).count(), 1);
+        assert_eq!(bot.inputs_at(start + Duration::from_millis(501)).count(), 0);
     }
 
     #[test]
     fn turns_to_and_fires_at_an_enemy_in_sight_but_not_through_walls() {
         use crate::games::washoi::sight::tests::{cube, encode};
-        use shagger_shared::net::game_state::{PlayerState, Vec3};
+        use crate::games::washoi::{PlayerView, Vec3};
         let sight = Sight::parse(&encode(
             "test",
             &[cube([-8.0, -100.0, 200.0], [8.0, 200.0, 1000.0])],
@@ -560,24 +594,18 @@ mod tests {
         let mut bot = BotPlayer::new("bot".into())
             .with_difficulty(Difficulty::Insane)
             .with_sight(Arc::new(sight));
-        let mut world = GameState::default();
+        let mut world = Observation::default();
         // The foe stands level with the bot's fire origin, 45° to the right
         // of where the bot starts looking: inside its 55° view.
         for (id, at) in [
             ("bot", Vec3::default()),
             ("foe", Vec3::new(400.0, 34.0, 400.0)),
         ] {
-            world.players.insert(
-                id,
-                PlayerState {
-                    entity_id: id.into(),
-                    ..PlayerState::default()
-                },
-            );
-            world
-                .entities
-                .get_or_insert_with(id, Default::default)
-                .position = Some(at);
+            world.players.push(PlayerView {
+                entity_id: id.into(),
+                ..PlayerView::default()
+            });
+            world.body_or_insert(id).position = Some(at);
         }
         let start = SimTime::ZERO;
         let mut fired = 0;
@@ -585,8 +613,8 @@ mod tests {
         for step in 0..150u64 {
             let now = start + INPUT_PERIOD * step as u32;
             world.tick = step as u32;
-            bot.observe(&world, now);
-            for input in bot.inputs(now) {
+            bot.observe_at(&world, now);
+            for input in bot.inputs_at(now) {
                 fired += usize::from(input.buttons & FIRE != 0);
                 last = input;
             }
@@ -596,17 +624,17 @@ mod tests {
         assert!((last.yaw - std::f64::consts::FRAC_PI_4).abs() < 0.05);
         assert!(fired >= 140);
         // Behind the wall, fire stops.
-        world.entities.get_mut("foe").unwrap().position = Some(Vec3::new(0.0, 34.0, 500.0));
+        world.body_mut("foe").unwrap().position = Some(Vec3::new(0.0, 34.0, 500.0));
         let now = start + INPUT_PERIOD * 150;
         world.tick = 150;
-        bot.observe(&world, now);
-        assert!(bot.inputs(now).all(|input| input.buttons & FIRE == 0));
+        bot.observe_at(&world, now);
+        assert!(bot.inputs_at(now).all(|input| input.buttons & FIRE == 0));
     }
 
     #[test]
     fn chases_an_enemy_that_ducked_out_of_sight() {
         use crate::games::washoi::sight::tests::{cube, encode};
-        use shagger_shared::net::game_state::{PlayerState, Vec3};
+        use crate::games::washoi::{PlayerView, Vec3};
         // A floor, and a wall that hides x > 200 from the bot at the origin.
         let sight = Sight::parse(&encode(
             "test",
@@ -630,34 +658,28 @@ mod tests {
         let mut bot = BotPlayer::new("bot".into())
             .with_navigation(Arc::new(navigation))
             .with_sight(Arc::new(sight));
-        let mut world = GameState::default();
+        let mut world = Observation::default();
         for (id, at) in [
             ("bot", Vec3::new(0.0, 24.0, 0.0)),
             ("foe", Vec3::new(300.0, 24.0, 0.0)),
         ] {
-            world.players.insert(
-                id,
-                PlayerState {
-                    entity_id: id.into(),
-                    ..PlayerState::default()
-                },
-            );
-            world
-                .entities
-                .get_or_insert_with(id, Default::default)
-                .position = Some(at);
+            world.players.push(PlayerView {
+                entity_id: id.into(),
+                ..PlayerView::default()
+            });
+            world.body_or_insert(id).position = Some(at);
         }
         let start = SimTime::ZERO;
         // Ahead along the walk, so in view; noticed after 18 ticks.
         world.tick = 100;
-        bot.observe(&world, start);
+        bot.observe_at(&world, start);
         world.tick = 120;
-        bot.observe(&world, start + Duration::from_millis(160));
+        bot.observe_at(&world, start + Duration::from_millis(160));
         assert!(bot.engagement.is_some());
         // Behind the wall now, so the bot walks toward where it was seen.
-        world.entities.get_mut("foe").unwrap().position = Some(Vec3::new(300.0, 24.0, 150.0));
+        world.body_mut("foe").unwrap().position = Some(Vec3::new(300.0, 24.0, 150.0));
         world.tick = 130;
-        bot.observe(&world, start + Duration::from_millis(240));
+        bot.observe_at(&world, start + Duration::from_millis(240));
         assert!(bot.engagement.is_none());
         let (view, prefire) = bot.chasing.expect("chasing");
         assert!((view.yaw - std::f64::consts::FRAC_PI_2).abs() < 1e-6);
@@ -669,29 +691,29 @@ mod tests {
     fn dead_bots_wait_for_a_fresh_snapshot_before_requesting_respawn() {
         let start = SimTime::ZERO;
         let mut bot = BotPlayer::new("bot".into());
-        let mut world = GameState::default();
-        world.entities.get_or_insert_with("bot", Default::default);
+        let mut world = Observation::default();
+        world.body_or_insert("bot");
         world.events.push(SnapshotEvent::CombatState {
             entity_id: "bot".into(),
             health: 0,
             armor: 0,
             dead: true,
         });
-        bot.observe(&world, start);
-        assert_eq!(bot.inputs(start).count(), 0);
+        bot.observe_at(&world, start);
+        assert_eq!(bot.inputs_at(start).count(), 0);
         let due = start + RESPAWN_DELAY;
-        assert!(!bot.request_respawn(due));
-        bot.observe(&world, due);
-        assert!(bot.request_respawn(due));
-        assert!(!bot.request_respawn(due));
+        assert!(!bot.request_respawn_at(due));
+        bot.observe_at(&world, due);
+        assert!(bot.request_respawn_at(due));
+        assert!(!bot.request_respawn_at(due));
         world.events[0] = SnapshotEvent::CombatState {
             entity_id: "bot".into(),
             health: 100,
             armor: 0,
             dead: false,
         };
-        bot.observe(&world, due);
-        assert_eq!(bot.inputs(due).count(), 1);
+        bot.observe_at(&world, due);
+        assert_eq!(bot.inputs_at(due).count(), 1);
     }
 }
 

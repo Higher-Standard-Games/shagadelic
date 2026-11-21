@@ -7,9 +7,9 @@ use std::{
     time::Duration,
 };
 
-use crate::games::washoi::SimTime;
+use crate::games::washoi::{Body, SimTime};
 use serde::Deserialize;
-use shagger_shared::net::game_state::{Entity, Vec3};
+use shagger_shared::net::game_state::Vec3;
 
 use super::{behavior::INPUT_PERIOD, protocol::PlayerInput};
 
@@ -190,7 +190,7 @@ impl Traversal {
     pub(super) fn approach(
         &mut self,
         library: &LearnedRoutes,
-        entity: &Entity,
+        entity: &Body,
         now: SimTime,
     ) -> Option<PlayerInput> {
         let Self::Approaching {
@@ -257,7 +257,7 @@ impl Traversal {
     pub(super) fn observe(
         &mut self,
         library: &LearnedRoutes,
-        entity: &Entity,
+        entity: &Body,
         now: SimTime,
         auto_start: bool,
     ) {
@@ -414,13 +414,12 @@ mod tests {
                 .is_err()
         );
         let mut traversal = Traversal::default();
-        let mut entity = Entity {
+        let mut entity = Body {
             position: Some(Vec3::default()),
             velocity: Some(Velocity {
                 grounded: true,
                 ..Velocity::default()
             }),
-            ..Entity::default()
         };
         let start = SimTime::ZERO;
         traversal.observe(&library, &entity, start, true);
