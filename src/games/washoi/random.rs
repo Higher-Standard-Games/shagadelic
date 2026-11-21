@@ -12,8 +12,18 @@ impl Random {
         Self(seed)
     }
 
-    /// A seed that differs between bots and between runs.
+    /// A seed that differs between bots and between runs. Tests fix it per
+    /// entity, so a test bot draws the same every run.
     pub(in crate::games::washoi) fn for_bot(entity_id: &str) -> Self {
+        if cfg!(test) {
+            // FNV-1a.
+            let hash = entity_id
+                .bytes()
+                .fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+                    (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+                });
+            return Self(hash);
+        }
         Self(RandomState::new().hash_one(entity_id))
     }
 
