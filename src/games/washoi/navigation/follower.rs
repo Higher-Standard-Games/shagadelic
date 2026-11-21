@@ -13,6 +13,11 @@ const MIN_PROGRESS: f64 = 8.0;
 const DISPLACEMENT: f64 = 128.0;
 const MAX_BLOCKS: usize = 16;
 const LOCAL_PICKUP_RADIUS: f64 = 24.0;
+// Washoi takes a beneficial item on the first tick a player overlaps it. An
+// item that stays after this wait is one the bot can't take, such as full
+// ammo or a new weapon that needs USE to swap.
+const PICKUP_DWELL: Duration = Duration::from_millis(400);
+const DECLINED_PICKUP: Duration = Duration::from_secs(15);
 
 #[derive(Clone, Copy)]
 pub(in crate::games::washoi) struct RouteObservation<'a> {
@@ -40,6 +45,7 @@ struct ActiveRoute {
     index: usize,
     next: usize,
     progress: Option<Progress>,
+    arrived: Option<Instant>,
 }
 
 #[derive(Default)]
@@ -100,9 +106,9 @@ impl RouteFollower {
         }
         if self.active.is_none() {
             let unblocked = |route: &Route| {
-                let available = route
-                    .pickup
-                    .is_none_or(|pickup| !self.pickup_unavailable.contains_key(&pickup.id));
+                let available = route.pickup.is_none_or(|pickup| {
+                    pickup.benefits(vitals) && !self.pickup_unavailable.contains_key(&pickup.id)
+                });
                 available
                     && (0..route.waypoints.len())
                         .all(|next| !self.blocked.iter().any(|(leg, _)| *leg == route.leg(next)))
@@ -141,6 +147,7 @@ impl RouteFollower {
                 index,
                 next: 0,
                 progress: None,
+                arrived: None,
             });
         }
 
@@ -154,11 +161,17 @@ impl RouteFollower {
                 && let Some(&target) = route.waypoints.last()
                 && horizontal_distance(position, target) <= LOCAL_PICKUP_RADIUS
                 && (target[1] - position.y).abs() <= LOCAL_PICKUP_RADIUS
-                && pickup_active.get(pickup.id) == Some(&false)
             {
-                self.pickup_unavailable
-                    .insert(pickup.id, now + difficulty.pickup_recheck());
-                self.active = None;
+                let recheck = if pickup_active.get(pickup.id) == Some(&false) {
+                    Some(difficulty.pickup_recheck())
+                } else {
+                    let arrived = *active.arrived.get_or_insert(now);
+                    (now - arrived >= PICKUP_DWELL).then_some(DECLINED_PICKUP)
+                };
+                if let Some(recheck) = recheck {
+                    self.pickup_unavailable.insert(pickup.id, now + recheck);
+                    self.active = None;
+                }
             }
             return input;
         };
@@ -236,7 +249,7 @@ mod tests {
         let observation = RouteObservation {
             vitals: OwnVitals {
                 health: Some(10),
-                armor: Some(100),
+                armor: Some(50),
             },
             pickup_active: &[false, true],
             ..observe(now, false, None)
@@ -271,6 +284,50 @@ mod tests {
         };
         assert_eq!(
             healthy.steer(&nav, origin, observation).direction,
+            [0.0, 0.0, 1.0]
+        );
+    }
+
+    #[test]
+    fn leaves_a_pickup_that_stays_after_arrival_and_skips_full_health() {
+        let nav: WashoiNavigation = serde_json::from_str(
+            r#"{"map":"test","routes":[
+            {"entry":[0,0,0],"waypoints":[[40,0,0]],"pickup":{"id":0,"kind":"health","item":"large"}},
+            {"entry":[0,0,0],"waypoints":[[0,0,40]],"pickup":{"id":1,"kind":"weapon"}},
+            {"entry":[0,0,40],"waypoints":[[40,0,40]],"pickup":{"id":0,"kind":"health","item":"large"}},
+            {"entry":[0,0,40],"waypoints":[[0,0,80]]}
+        ]}"#,
+        )
+        .unwrap();
+        let now = Instant::now();
+        let observation = |now| RouteObservation {
+            vitals: OwnVitals {
+                health: Some(100),
+                armor: Some(0),
+            },
+            pickup_active: &[true, true],
+            ..observe(now, false, None)
+        };
+        let mut follower = RouteFollower::default();
+        // The health scores higher but full health can't take it.
+        assert_eq!(
+            follower
+                .steer(&nav, Vec3::default(), observation(now))
+                .direction,
+            [0.0, 0.0, 1.0]
+        );
+        let weapon = Vec3::new(0.0, 0.0, 40.0);
+        assert_eq!(
+            follower.steer(&nav, weapon, observation(now)).direction,
+            [0.0; 3]
+        );
+        let waited = now + PICKUP_DWELL;
+        assert_eq!(
+            follower.steer(&nav, weapon, observation(waited)).direction,
+            [0.0; 3]
+        );
+        assert_eq!(
+            follower.steer(&nav, weapon, observation(waited)).direction,
             [0.0, 0.0, 1.0]
         );
     }

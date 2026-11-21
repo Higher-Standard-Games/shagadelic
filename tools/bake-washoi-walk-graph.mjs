@@ -110,7 +110,12 @@ async function cachedGraph() {
     if (type === "item") {
       goals.push(index);
       const pickup = pickupById.get(pickupId);
-      if (pickup) pickupGoals.push([index, { id: pickup.id, kind: pickup.type }]);
+      if (pickup) {
+        // The item kind (e.g. "mega" or "ra") decides how much the server lets a bot take.
+        const goal = { id: pickup.id, kind: pickup.type };
+        if (typeof pickup.kind === "string") goal.item = pickup.kind;
+        pickupGoals.push([index, goal]);
+      }
     }
   }
   const edges = [];
