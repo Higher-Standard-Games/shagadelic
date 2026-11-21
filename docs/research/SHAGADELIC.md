@@ -53,7 +53,7 @@ Keep the current Washoi files and TypeScript generation tools usable. Prototype 
 
 ## HUNCH: a small learned decision policy
 
-**Heuristics Under Nearly Constant Hallucination.** The player holding the doorway prefers *Hold Up, Need Cover Here*. The player who just respawned insists it means *Health Under Nine? Challenge Him.* The working name stays the same across releases of the explanation.
+**HUNCH is the official name.** Today's expansion is *Heuristics Under Nearly Constant Hallucination*. The player holding the doorway prefers *Hold Up, Need Cover Here*. The player who just respawned insists it means *Health Under Nine? Challenge Him.*
 
 HUNCH scores a small set of executable choices at a scheduled decision. Each game defines its own observations, tactics, candidate positions, and execution rules. The reusable Rust library loads weights and scores feature vectors synchronously. An embedded simulation and a supervised Washoi lobby can use the same scorer. During the brain refactor, capture what the existing rule saw, considered, and chose. Model training and rollout follow that milestone.
 
