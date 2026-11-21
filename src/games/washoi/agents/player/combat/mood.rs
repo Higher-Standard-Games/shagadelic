@@ -122,7 +122,6 @@ impl BotMood {
     }
 
     /// `retreatHealth`: the health below which the bot backs off.
-    #[allow(dead_code)]
     pub(in crate::games::washoi) fn retreat_health(&self, base: f64) -> f64 {
         match self.mood {
             Mood::Confident => base * 0.6,

@@ -329,7 +329,7 @@ impl BotPlayer {
                 }
             }
         }
-        self.chasing = None;
+        let was_chasing = self.chasing.take().is_some();
         // The `forget` mistake drops an enemy as soon as it is out of sight.
         let forgot = self
             .mood
@@ -343,6 +343,7 @@ impl BotPlayer {
             && let (Some(navigation), Some(sight), Some(position)) =
                 (self.navigation.clone(), self.sight.clone(), position)
             && let Some(lost) = self.combat.lost(world.tick)
+            && !self.divert_to_item(world, position, lost, was_chasing)
         {
             self.chase_lost(world, now, &navigation, &sight, position, lost);
         } else {
@@ -835,6 +836,53 @@ impl BotPlayer {
             }
         }
         false
+    }
+
+    /// A distant sound does not pull a bot off an item it needs, from
+    /// `StateMachineBrain` priority 2.5: a track only heard, more than 384
+    /// units off, while not chasing yet, gives way to the item run
+    /// (`_evaluateItemState`). Once chasing, it keeps chasing.
+    fn divert_to_item(
+        &self,
+        world: &Observation,
+        position: super::super::Vec3,
+        lost: crate::games::washoi::agents::player::combat::Lost,
+        was_chasing: bool,
+    ) -> bool {
+        const SOUND_DIVERT_DISTANCE: f64 = 384.0;
+        let far = (lost.predicted.x - position.x).hypot(lost.predicted.z - position.z)
+            > SOUND_DIVERT_DISTANCE;
+        lost.heard && far && !was_chasing && self.should_seek_items(world)
+    }
+
+    /// `_shouldSeekItems` and the retreat: hurt or out of ammo, always;
+    /// with 25 armor or more, no; else when the arbiter's best item is
+    /// worth more than the hunt, by the mode's aggression. Only called
+    /// with an enemy to hunt.
+    fn should_seek_items(&self, world: &Observation) -> bool {
+        const LOW_HEALTH_THRESHOLD: f64 = 40.0;
+        const SEEK_DESIRE_BASE: f64 = 0.2;
+        const SEEK_DESIRE_PER_AGGRESSION: f64 = 0.25;
+        let health = f64::from(self.vitals.health.unwrap_or(100));
+        if health < 50.0 || health < self.mood.retreat_health(LOW_HEALTH_THRESHOLD) {
+            return self.planner.desire() > 0.0;
+        }
+        if self.combat.current_ammo().is_some_and(|ammo| ammo < 3.0) {
+            return true;
+        }
+        if self.vitals.armor.unwrap_or(0) >= 25 {
+            return false;
+        }
+        let team = world
+            .player(&self.entity_id)
+            .map_or("", |player| player.team.as_str());
+        let aggression = self
+            .match_context
+            .as_ref()
+            .map_or(strategy::weights::DEFAULT, |context| context.weights(team))
+            .aggression;
+        let worth = SEEK_DESIRE_BASE + SEEK_DESIRE_PER_AGGRESSION * aggression;
+        self.planner.desire() > 0.0 && self.planner.desire() >= worth
     }
 
     /// Credit the major items enemies were heard or seen taking.

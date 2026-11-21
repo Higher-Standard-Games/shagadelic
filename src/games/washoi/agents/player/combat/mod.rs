@@ -128,6 +128,8 @@ impl Track {
 pub(in crate::games::washoi) struct Lost {
     pub(in crate::games::washoi) predicted: Vec3,
     pub(in crate::games::washoi) confidence: f64,
+    /// Only heard, not seen or felt.
+    pub(in crate::games::washoi) heard: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -675,6 +677,7 @@ impl Combat {
         (confidence >= CHASE_CONFIDENCE).then_some(Lost {
             predicted,
             confidence,
+            heard: track.initial == SOUND_CONFIDENCE && track.decay == SOUND_DECAY_TICKS,
         })
     }
 
@@ -770,6 +773,14 @@ impl Combat {
     /// Enemies the bot believes alive, from what it saw, heard, and hit.
     pub(in crate::games::washoi) fn known_enemies(&self) -> usize {
         self.estimates.alive()
+    }
+
+    /// Ammo for the weapon out, when known.
+    pub(in crate::games::washoi) fn current_ammo(&self) -> Option<f64> {
+        self.ammo
+            .iter()
+            .find(|(weapon, _)| *weapon == self.weapon)
+            .map(|(_, ammo)| *ammo)
     }
 
     /// The bot's weapons, in slot order, and ammo by weapon.

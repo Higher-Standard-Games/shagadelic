@@ -65,6 +65,8 @@ pub(in crate::games::washoi) struct KnownPickup {
 pub(in crate::games::washoi) struct Planner {
     arbiter: Arbiter,
     explain: String,
+    /// The arbiter's score for the last goal chosen, zero for none.
+    desire: f64,
     /// The pickup pursued, and how it is going.
     pursuit: Option<Pursuit>,
     /// Goals given up on, and the server tick they may be tried again.
@@ -87,10 +89,16 @@ impl Planner {
         Self {
             arbiter: Arbiter::new(&considerations::ALL, mistake_probability(mistake_rate)),
             explain: String::new(),
+            desire: 0.0,
             pursuit: None,
             failed: Vec::new(),
             stopover: None,
         }
+    }
+
+    /// What the last goal chosen is worth, in the arbiter's currency.
+    pub(in crate::games::washoi) fn desire(&self) -> f64 {
+        self.desire
     }
 
     /// The last decision on one line.
@@ -163,11 +171,12 @@ impl Planner {
             route_cost: costs[index],
             weights,
         };
+        self.desire = 0.0;
         let Choice {
             goal,
             explain,
             traces,
-            ..
+            desire,
         } = self.arbiter.select(
             &goals,
             |goal| {
@@ -192,6 +201,7 @@ impl Planner {
             self.stopover = None;
             return None;
         };
+        self.desire = desire;
         let stop = self.stopover(index, &goals, &costs, &traces, &context, between, tick);
         if let Some(stop) = stop {
             let _ = write!(self.explain, " via={}", goals[stop].id);
