@@ -55,8 +55,8 @@ struct Bounds {
 
 struct Node {
     bounds: Bounds,
-    /// A leaf holds `solids[first..first + count]`. An inner node's children
-    /// are the next node and `first`.
+    /// A leaf holds `solids[first..first + count]`. An inner node starts
+    /// its children at the next index and skips them by jumping to `first`.
     first: u32,
     count: u32,
 }
@@ -147,18 +147,15 @@ impl Sight {
         }
         let delta = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
         let inverse = delta.map(|d| 1.0 / d);
-        let mut stack = Vec::with_capacity(64);
-        if !self.nodes.is_empty() {
-            stack.push(0usize);
-        }
-        while let Some(index) = stack.pop() {
-            let node = &self.nodes[index];
-            if !node.bounds.crossed(from, inverse) {
-                continue;
-            }
-            if node.count == 0 {
-                stack.push(node.first as usize);
-                stack.push(index + 1);
+        let mut index = 0;
+        while let Some(node) = self.nodes.get(index) {
+            let crossed = node.bounds.crossed(from, inverse);
+            index = if node.count == 0 && !crossed {
+                node.first as usize
+            } else {
+                index + 1
+            };
+            if node.count == 0 || !crossed {
                 continue;
             }
             let leaf = &self.solids[node.first as usize..(node.first + node.count) as usize];
@@ -189,7 +186,7 @@ impl Sight {
     }
 
     /// Median split along the widest axis of the solids' centers.
-    fn split(&mut self, first: usize, end: usize) -> usize {
+    fn split(&mut self, first: usize, end: usize) {
         let index = self.nodes.len();
         let solids = &mut self.solids[first..end];
         let bounds = solids
@@ -202,7 +199,7 @@ impl Sight {
             count: (end - first) as u32,
         });
         if solids.len() <= LEAF_SIZE {
-            return index;
+            return;
         }
         let centers = solids.iter().map(|solid| solid.bounds.center()).fold(
             Bounds::empty(),
@@ -224,10 +221,9 @@ impl Sight {
         });
         let middle = first + middle;
         self.split(first, middle);
-        let right = self.split(middle, end);
-        self.nodes[index].first = right as u32;
+        self.split(middle, end);
+        self.nodes[index].first = self.nodes.len() as u32;
         self.nodes[index].count = 0;
-        index
     }
 }
 
