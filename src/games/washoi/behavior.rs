@@ -109,7 +109,7 @@ impl BotPlayer {
         self.own_entity_present = own.is_some();
         if self.respawn_at.is_some() || !self.own_entity_present {
             self.started = None;
-            self.route = RouteFollower::default();
+            self.route.detach();
             self.traversal = Traversal::default();
         } else if let Some(library) = &self.learned
             && let Some(entity) = own
@@ -122,7 +122,7 @@ impl BotPlayer {
                 .observe(library, entity, now, !self.linked_takeoffs);
             if self.traversal.active() {
                 self.planned_input = PlayerInput::default();
-                self.route = RouteFollower::default();
+                self.route.detach();
                 return;
             }
         }
@@ -155,7 +155,7 @@ impl BotPlayer {
                     && let Some(id) = self.route.takeoff(navigation)
                     && self.traversal.begin_approach(library, id, position, now)
                 {
-                    self.route = RouteFollower::default();
+                    self.route.detach();
                     self.planned_input = PlayerInput::default();
                 }
             }

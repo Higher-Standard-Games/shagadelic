@@ -51,6 +51,14 @@ pub(in crate::games::washoi) struct RouteFollower {
 }
 
 impl RouteFollower {
+    /// Drop the active route, such as on death or a learned traversal, and
+    /// keep what the bot learned about blocked legs and missing pickups.
+    /// Both memories expire on their own.
+    pub(in crate::games::washoi) fn detach(&mut self) {
+        self.active = None;
+        self.last_position = None;
+    }
+
     pub(in crate::games::washoi) fn takeoff<'a>(
         &self,
         navigation: &'a WashoiNavigation,
@@ -243,6 +251,13 @@ mod tests {
         );
         assert_eq!(
             follower.steer(&nav, health, observation).direction,
+            [0.0, 0.0, 1.0]
+        );
+        // A death or learned traversal detaches the route. The missing
+        // health stays remembered until its recheck time.
+        follower.detach();
+        assert_eq!(
+            follower.steer(&nav, origin, observation).direction,
             [0.0, 0.0, 1.0]
         );
 
