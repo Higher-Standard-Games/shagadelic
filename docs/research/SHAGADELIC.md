@@ -26,6 +26,7 @@ The current milestone is an **opt-in, playable Washoi bot service**. The bundled
 | Rollout | Ratings and match reports | Planned | Rust bot matches run unrated on the integration branches. Rating identity and match report parity are required before enabling rated play. |
 | Extensibility | Additional games and protocol adapters | Planned | The embeddable session boundary has tests. Washoi is the only real integration, and the generic protocol adapter interface remains a design sketch. |
 | Extensibility | Transport-independent Washoi decisions | Next after the current gameplay patch | Replay the production brain from typed observations on a simulation clock, then verify the same brain through the live adapter. |
+| Decisions | HUNCH learned tactic and position scoring | Research proposal | First experiment targets Washoi Duel. Capture decision traces during brain separation, then train offline and compare with the current rule in replay and private matches. |
 
 **Initial route recovery is implemented.** A bot stops after 800 ms without enough progress, temporarily avoids the failed segment, and tries an alternative route if it is still near a usable entry. A large displacement discards the active route and allows a fresh attachment. Baked graphs provide up to three reachable goals per entry. When no precomputed route attaches, a bot within 48 units of any graph node plans from that node, using next hops toward each goal that the lobby computes once and shares. The same pickup gates, scores, and blocked-leg memory apply. A bot moves on 400 ms after reaching a plain goal. A bot that momentum carries off the graph plans from the last waypoint it reached, within 128 units, and walks back to it first. From a corner of a walk between two nodes, it finishes that walk to its end node. Farther away, it retries planning every 250 ms. A walk stays within the bot's strongly connected area of the graph, or leaves it one way for an area with more goals. Without that rule, a bot could walk into a pocket whose only exits are jumps and stay there. Authored route files have no graph to plan over. Recovery from off-graph positions and live collision checks remain open.
 
@@ -49,6 +50,44 @@ After the brain separation, evaluate a versioned waypoint format using the autho
 Washoi owns the meaning and eligibility of a traversal, including jump speed, trigger volumes, teleporter exits, pickup goals, and recorded controls. Associate those fields with the relevant node or link in a Washoi extension. A reader that cannot execute a required traversal must exclude that link from planning. A shared graph reader should never silently turn it into a walking edge.
 
 Keep the current Washoi files and TypeScript generation tools usable. Prototype a reader or conversion from the existing assets before committing to a new on-disk schema. Compare waypoint order, directed connectivity, and executable maneuvers on DM2, including a one-way edge and a teleporter. Adopt the shared format once those checks pass and the basic graph can be read without enabling Washoi.
+
+## HUNCH: a small learned decision policy
+
+**Heuristics Under Nearly Constant Hallucination.** The player holding the doorway prefers *Hold Up, Need Cover Here*. The player who just respawned insists it means *Health Under Nine? Challenge Him.* The working name stays the same across releases of the explanation.
+
+HUNCH scores a small set of executable choices at a scheduled decision. Each game defines its own observations, tactics, candidate positions, and execution rules. The reusable Rust library loads weights and scores feature vectors synchronously. An embedded simulation and a supervised Washoi lobby can use the same scorer. During the brain refactor, capture what the existing rule saw, considered, and chose. Model training and rollout follow that milestone.
+
+### First experiment in Washoi Duel
+
+Score each **tactic together with the position or target that makes it viable**. Washoi proposes candidates using the bot's own perception, memory, and reachable navigation links. Include the current position. Keep the candidate set small, retain the current plan among eligible options, and reconsider on a decision deadline or a meaningful event. Washoi still owns interruption rules and exact input sequences.
+
+| Candidate | Evidence the bot can use at decision time |
+| --- | --- |
+| Attack here or move to attack | Weapon and ammo, effective range, current sightline, expected exposure on the way to a firing position, and time until it can shoot there. |
+| Break contact or seek resources | Own health and armor, first reachable cover, travel time, remembered pickup availability, and whether the route crosses the last known line of fire. |
+| Pursue after losing sight | Age and uncertainty of the last sighting or sound, reachable intercept positions, and the resources or ground surrendered by chasing. |
+| Deal damage from a losing position | Chance of escaping and denying a frag, chance of landing another shot, and whether the opponent is likely to recover before the next encounter. |
+
+For example, at nine health a bot can still have a good reason to fire. If the only exit crosses the opponent's sightline and the bot recently saw the nearby health pickup taken, one more hit may give it an advantage after respawn. With cover a step away or health available to the opponent, the same shot can be a poor trade. On death, clear the firing plan, target lock, and movement sequence. Within the same match, retain permitted evidence such as a perceived hit and its time. Decay confidence as the opponent has time to move or heal. At respawn, score fresh options from the new position and loadout. Awarding a fixed bonus for damage before dying would miss both the cost of the frag and the value of survival.
+
+### Training data and tools
+
+Inspect the earlier Washoi experiment in `src/games/fps/models/{tactical,combat}/` and `models/training_stats.json` under the FPS game directory. Verify its feature ordering, labels, and provenance before considering its weights. The existing `training_demo` and `bot:learn` workflow supplies movement recordings. Tactical supervision needs decision moments from human Duel play.
+
+| Proposed offline CLI operation | Contract |
+| --- | --- |
+| `hunch extract` | Use the live integration's observation and candidate builders against recorded player POV. Emit one record per decision with match, life, tick, schema version, eligible candidates, and their features. Flag missing POV evidence. Keep later outcomes in separate fields for review. |
+| `hunch inspect` | Show a clip and its proposed positions. Label the player's tactic and destination separately. Allow unclear intent and a missing candidate. Keep those cases for diagnosis and exclude ambiguous choices from supervised fitting. |
+| `hunch train` | Fit on reviewed human choices. Split by whole match before normalization or tuning, record the split and seed, and retain untouched matches for final evaluation. Bot traces provide a rule baseline and examples for disagreement review. |
+| `hunch evaluate` | Compare the model and rule on identical observations. Report tactic agreement, position preference within a tactic, missing candidate rates, and results for rare losing-position choices. Review clips across death through the next encounter, including opponent recovery and the frag conceded. A later kill alone cannot establish that the earlier trade paid off. |
+
+### Rust implementation and rollout
+
+Start with a linear candidate scorer trained from scratch. For each eligible candidate, build a fixed-order vector containing a tactic indicator, candidate-specific features, and selected interactions such as health deficit times route exposure. A feature identical for every candidate cancels out of their ranking unless it interacts with a candidate feature. Compute one dot product per candidate. During offline training apply a numerically stable softmax across choices from the **same decision**, minimize negative log probability of the reviewed choice with L2 regularization, and update weights with seeded minibatch gradient descent. This needs vector arithmetic on a CPU. Try a small hidden layer only if systematic errors on held-out matches justify its additional complexity.
+
+Expose a game-independent operation such as `model.score_into(candidates, scores)` with caller-owned buffers. Washoi maps scores back to eligible tactic and target IDs and breaks ties reproducibly. Store the model version, feature schema and order, normalization parameters fitted on training data, and finite weights in a versioned artifact. Validate dimensions and schema at load. Share one immutable model per lobby and retain the existing decision rule as a fallback. Verify a known trace produces the same scores in the trainer and runtime.
+
+First run in shadow mode: log what HUNCH would choose while the existing rule plays. Review disagreements for missing positions, poor rankings, or execution failures. Then compare the two in private Duels, including blinded human judgments, frequency of plan reversals, successful disengagements, and pressure retained after respawn. Measure decision latency and input gaps at representative bot counts. A model earns adoption by improving the decisions players see within the lobby's timing budget.
 
 ## Washoi process ownership
 
