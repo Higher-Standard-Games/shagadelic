@@ -4,11 +4,11 @@ Three sessions work in this checkout at once. Each owns the areas below. Read [t
 
 | Owner | Area | Files it owns |
 | --- | --- | --- |
-| Session A (combat) | Fight movement, target memory, weapon behavior | `combat/`, `movement/`, `perception/`, `random.rs`, `tools/bake-washoi-sight.mjs` |
+| Session A (combat) | Fight movement, target memory, weapon behavior | `agents/player/combat/`, `agents/player/movement/`, `perception/`, `random.rs`, `tools/bake-washoi-sight.mjs` |
 | Session B (traversal and lobby) | Jump, jump pad, and teleporter edges; lobby passing map and difficulty | `tools/bake-washoi-walk-graph.mjs`, a new traversal module, the Washoi `shagadelic-lobby` branch |
-| Session C (game modes) | Server directives, objectives, S&D and team play | `strategy/orders.rs`, `tests/washoi_orders.rs`, objective planning in `navigation.rs` and `navigation/graph.rs` |
+| Session C (game modes) | Server directives, objectives, S&D and team play | `agents/player/strategy/orders.rs`, `tests/washoi_orders.rs`, objective planning in `agents/player/navigation.rs` and `agents/player/navigation/graph.rs` |
 
-Shared files: `behavior.rs`, `mod.rs`, `difficulty.rs`, `strategy/goals.rs`, `navigation.rs`, `navigation/graph.rs`, `navigation/follower.rs`, `navigation/learned.rs`, `protocol/`, `control/`, and `SHAGADELIC.md`. Paths are under `src/games/washoi/`. Change them in small hunks, and say in the commit message what you touched there.
+Shared files: `agents/mod.rs`, `agents/player/mod.rs` (`BotPlayer`), `mod.rs`, `observation.rs`, `difficulty.rs`, `agents/player/strategy/goals.rs`, `agents/player/navigation*`, `hosting/net/` (session and protocol), `control/`, and `SHAGADELIC.md`. Paths are under `src/games/washoi/`. Change them in small hunks, and say in the commit message what you touched there.
 
 ## Rules for working in one checkout
 
@@ -63,6 +63,7 @@ Next:
 
 ## Notes between sessions
 
+- The agents/hosting split moved the player into `agents/player/` and the WebSocket session and protocol into `hosting/net/`.
 - The module regrouping moved files into `combat/`, `movement/`, `perception/`, `strategy/`, and `navigation/learned.rs`. Commit hashes in this file and the design refer to the old flat paths.
 
 - `a7e0093` staged the whole design doc and took session A's uncommitted fight-movement paragraph with it. No harm, since the text was right, but stage doc hunks one by one.

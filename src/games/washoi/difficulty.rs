@@ -34,7 +34,7 @@ impl Difficulty {
     /// `aimAccuracy`, `reactionTimeMs`, `trackingSpeed`, and
     /// `predictionSkill` from `DIFFICULTY_PRESETS`, as `BotAimController.ts`
     /// and `states/BotFight.ts` use them.
-    pub(super) fn aim(self) -> AimSkill {
+    pub(in crate::games::washoi) fn aim(self) -> AimSkill {
         let (accuracy, reaction_ms, tracking, prediction) = match self {
             Self::Easy => (0.25, 450.0, 1.5, 0.2),
             Self::Medium => (0.5, 280.0, 3.0, 0.5),
@@ -51,7 +51,7 @@ impl Difficulty {
     }
 
     /// `dodgeSkill`, as `BotCombatMovement.ts` uses it.
-    pub(super) fn dodge_skill(self) -> f64 {
+    pub(in crate::games::washoi) fn dodge_skill(self) -> f64 {
         match self {
             Self::Easy => 0.15,
             Self::Medium => 0.4,
@@ -62,7 +62,7 @@ impl Difficulty {
 
     /// How far off a remembered take time may be, from `itemTimingSkill`
     /// as `BotPerception._believeItems` scales it.
-    pub(super) fn item_timing_error(self) -> std::time::Duration {
+    pub(in crate::games::washoi) fn item_timing_error(self) -> std::time::Duration {
         let skill: f64 = match self {
             Self::Easy => 0.1,
             Self::Medium => 0.4,
@@ -72,7 +72,7 @@ impl Difficulty {
         std::time::Duration::from_secs_f64((7.83 - 8.33 * skill).max(0.5))
     }
 
-    pub(super) fn resource_awareness(self) -> f64 {
+    pub(in crate::games::washoi) fn resource_awareness(self) -> f64 {
         let match_sense = match self {
             Self::Easy => 0.0,
             Self::Medium => 0.45,
@@ -84,13 +84,13 @@ impl Difficulty {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(super) struct AimSkill {
-    pub(super) accuracy: f64,
-    pub(super) reaction_ms: f64,
-    pub(super) tracking: f64,
-    pub(super) prediction: f64,
+pub(in crate::games::washoi) struct AimSkill {
+    pub(in crate::games::washoi) accuracy: f64,
+    pub(in crate::games::washoi) reaction_ms: f64,
+    pub(in crate::games::washoi) tracking: f64,
+    pub(in crate::games::washoi) prediction: f64,
     /// `dodgeSkill`, which also rolls cover use in `BotFight`.
-    pub(super) dodge: f64,
+    pub(in crate::games::washoi) dodge: f64,
 }
 
 #[cfg(test)]

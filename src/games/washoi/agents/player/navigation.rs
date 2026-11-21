@@ -1,6 +1,6 @@
 mod follower;
 mod graph;
-pub(super) mod learned;
+pub(in crate::games::washoi) mod learned;
 mod traversal;
 
 use std::{
@@ -11,9 +11,11 @@ use std::{
 use serde::Deserialize;
 use shagger_shared::net::game_state::{Vec3, Velocity};
 
-use super::{Sight, protocol::PlayerInput, strategy::goals::PickupGoal};
+use crate::games::washoi::{
+    Sight, agents::player::strategy::goals::PickupGoal, hosting::net::protocol::PlayerInput,
+};
 
-pub(super) use follower::{RouteFollower, RouteObservation};
+pub(in crate::games::washoi) use follower::{RouteFollower, RouteObservation};
 
 const ENTRY_RADIUS: f64 = 48.0;
 const MAX_FILE: u64 = 4 * 1024 * 1024;
@@ -37,7 +39,7 @@ const LEDGE_SPEED: f64 = 100.0;
 const LEDGE_BRAKE_RADIUS: f64 = 96.0;
 const MIN_STEP_SPEED: f64 = 30.0;
 
-pub(super) struct ObjectiveWalk {
+pub(in crate::games::washoi) struct ObjectiveWalk {
     route: Route,
     edges: Vec<ObjectiveEdge>,
     next: usize,
@@ -50,13 +52,17 @@ struct ObjectiveEdge {
 }
 
 #[derive(Clone, Copy)]
-pub(super) struct ObjectiveRecovery {
-    pub(super) anchor: Option<usize>,
-    pub(super) avoid: Option<(usize, usize)>,
+pub(in crate::games::washoi) struct ObjectiveRecovery {
+    pub(in crate::games::washoi) anchor: Option<usize>,
+    pub(in crate::games::washoi) avoid: Option<(usize, usize)>,
 }
 
 impl ObjectiveWalk {
-    pub(super) fn steer(&mut self, position: Vec3, velocity: Option<Velocity>) -> PlayerInput {
+    pub(in crate::games::washoi) fn steer(
+        &mut self,
+        position: Vec3,
+        velocity: Option<Velocity>,
+    ) -> PlayerInput {
         let mut input = WashoiNavigation::steer_with_arrival(
             &self.route,
             &mut self.next,
@@ -75,7 +81,7 @@ impl ObjectiveWalk {
         input
     }
 
-    pub(super) fn blocked_edge(&self) -> Option<ObjectiveRecovery> {
+    pub(in crate::games::washoi) fn blocked_edge(&self) -> Option<ObjectiveRecovery> {
         let (previous, edge) = self
             .edges
             .iter()
@@ -94,7 +100,7 @@ impl ObjectiveWalk {
         })
     }
 
-    pub(super) fn progress(&self, position: Vec3) -> Option<(usize, f64)> {
+    pub(in crate::games::washoi) fn progress(&self, position: Vec3) -> Option<(usize, f64)> {
         let waypoint = *self.route.waypoints.get(self.next)?;
         let distance = horizontal_distance(position, waypoint).hypot(position.y - waypoint[1]);
         Some((self.next, distance))
@@ -186,11 +192,11 @@ impl WashoiNavigation {
     /// The walk graph's node positions, standing origins, in graph index
     /// order and stable for the life of this navigation. Empty for
     /// authored routes.
-    pub(super) fn nodes(&self) -> &[[f64; 3]] {
+    pub(in crate::games::washoi) fn nodes(&self) -> &[[f64; 3]] {
         self.planner.as_ref().map_or(&[], |planner| planner.nodes())
     }
 
-    pub(super) fn objective_walk(
+    pub(in crate::games::washoi) fn objective_walk(
         &self,
         position: Vec3,
         target: Vec3,
@@ -214,7 +220,7 @@ impl WashoiNavigation {
         })
     }
 
-    pub(super) fn has_learned_links(&self) -> bool {
+    pub(in crate::games::washoi) fn has_learned_links(&self) -> bool {
         self.routes
             .iter()
             .any(|route| route.learned_route.is_some())
@@ -222,7 +228,7 @@ impl WashoiNavigation {
 
     pub fn validate_learned_links(
         &self,
-        library: Option<&super::LearnedRoutes>,
+        library: Option<&crate::games::washoi::LearnedRoutes>,
     ) -> Result<(), &'static str> {
         for route in &self.routes {
             if let Some(id) = &route.learned_route
@@ -397,7 +403,7 @@ impl Route {
 
 /// A short connector on the present floor. The sight geometry supplies
 /// clearance and support samples, while the game server runs player physics.
-pub(super) fn local_walk(sight: &Sight, from: Vec3, to: Vec3) -> bool {
+pub(in crate::games::washoi) fn local_walk(sight: &Sight, from: Vec3, to: Vec3) -> bool {
     let (dx, dz) = (to.x - from.x, to.z - from.z);
     let distance = dx.hypot(dz);
     if !(1.0..=LOCAL_WALK_RADIUS).contains(&distance) || (from.y - to.y).abs() > MAX_HEIGHT_DELTA {
@@ -539,7 +545,7 @@ mod tests {
 
     #[test]
     fn baked_graph_uses_the_detour_instead_of_the_blocked_shortcut() {
-        let baked = include_str!("../../../tests/fixtures/washoi_dm2_walk_graph.json");
+        let baked = include_str!("../../../../../tests/fixtures/washoi_dm2_walk_graph.json");
         let routes: WashoiNavigation = serde_json::from_str(baked).unwrap();
         let route = routes
             .route_at(Vec3::new(-184.0, 192.0, 288.0), |_| true)
@@ -559,7 +565,7 @@ mod tests {
 
     #[test]
     fn the_cached_washoi_dm2_graph_plans_from_its_spawns() {
-        let baked = include_str!("../../../tests/fixtures/washoi_dm2_cache_graph.json");
+        let baked = include_str!("../../../../../tests/fixtures/washoi_dm2_cache_graph.json");
         // The navigation object travels inside one 64 KiB control record.
         assert!(baked.len() < 48 * 1024);
         let graph: WashoiNavigation = serde_json::from_str(baked).unwrap();
@@ -731,7 +737,7 @@ mod tests {
 
     #[test]
     fn walks_straight_back_to_an_open_node_when_the_anchor_walk_fails() {
-        use super::super::perception::sight::tests::{cube, encode};
+        use crate::games::washoi::perception::sight::tests::{cube, encode};
         // Off the graph between two nodes. A wall stands between the bot and
         // node 0; node 1 is farther but in the open. The floor spans both.
         let graph: WashoiNavigation = serde_json::from_str(

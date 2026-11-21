@@ -9,10 +9,13 @@ use tokio::{sync::mpsc, task::JoinHandle};
 
 use crate::runtime::{Deadlines, EntityKey, GameSession, SessionEvent, Update};
 
-use super::{
+use crate::games::washoi::{
     BotPlayer, Difficulty, LearnedRoutes, Sight, SimTime, WashoiNavigation,
-    behavior::INPUT_PERIOD,
-    protocol::{self, AdmissionError, InputBatch, SnapshotEvent, WashoiEvents, connect},
+    agents::NetworkedPlayer,
+    hosting::net::protocol::{
+        self, AdmissionError, InputBatch, SnapshotEvent, WashoiEvents, connect,
+    },
+    observation::INPUT_PERIOD,
 };
 
 const MAX_BOTS: usize = 64;
@@ -69,7 +72,8 @@ struct BotTask {
     task: JoinHandle<()>,
     actions: mpsc::Sender<InputBatch>,
     difficulty: Difficulty,
-    player: Option<BotPlayer>,
+    /// Built as a `BotPlayer`, driven only as a `NetworkedPlayer`.
+    player: Option<Box<dyn NetworkedPlayer>>,
 }
 
 /// One lobby. Each connection handles I/O while the session owns its bot brain.
@@ -179,7 +183,7 @@ impl GameSession for WashoiSession {
                     if let Some(sight) = &self.assets.sight {
                         player = player.with_sight(sight.clone());
                     }
-                    bot.player = Some(player);
+                    bot.player = Some(Box::new(player));
                     self.reports.push_back(BotReport::Admitted {
                         key: key.clone(),
                         player_id,
@@ -232,7 +236,10 @@ impl GameSession for WashoiSession {
             Update::Input => {
                 // Reserve before advancing an exact maneuver or respawn timer.
                 if let Ok(slot) = bot.actions.try_reserve() {
-                    slot.send(InputBatch::from_player(player, SimTime::from_elapsed(now)));
+                    slot.send(InputBatch::from_player(
+                        player.as_mut(),
+                        SimTime::from_elapsed(now),
+                    ));
                 }
                 now.checked_add(INPUT_PERIOD)
             }

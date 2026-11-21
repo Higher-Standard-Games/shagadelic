@@ -1,20 +1,33 @@
+//! The player bot: a Washoi agent that plays as a networked player.
+
+pub(in crate::games::washoi) mod combat;
+pub(in crate::games::washoi) mod movement;
+pub(in crate::games::washoi) mod navigation;
+pub(in crate::games::washoi) mod strategy;
+
 use std::{collections::VecDeque, sync::Arc, time::Duration};
 
-use crate::games::washoi::{Controls, Observation, SimTime};
+use crate::games::washoi::{
+    Controls, Observation, SimTime,
+    agents::{Agent, NetworkedPlayer},
+    observation::INPUT_PERIOD,
+};
 
-use super::combat::aim::{AimController, View};
-use super::combat::{ALT_FIRE, Combat, Engagement, FIRE};
-use super::movement::chase::Chase;
-use super::movement::highground::{self, HighGround};
-use super::movement::strafe::{self, Body, CombatMovement};
-use super::navigation::{RouteFollower, RouteObservation};
-use super::protocol::{PlayerInput, SnapshotEvent};
-use super::random::Random;
-use super::strategy::goals::OwnVitals;
-use super::strategy::orders::Orders;
-use super::{Difficulty, LearnedRoutes, Sight, WashoiNavigation, navigation::learned::Traversal};
+use crate::games::washoi::agents::player::combat::aim::{AimController, View};
+use crate::games::washoi::agents::player::combat::{ALT_FIRE, Combat, Engagement, FIRE};
+use crate::games::washoi::agents::player::movement::chase::Chase;
+use crate::games::washoi::agents::player::movement::highground::{self, HighGround};
+use crate::games::washoi::agents::player::movement::strafe::{self, Body, CombatMovement};
+use crate::games::washoi::agents::player::navigation::{RouteFollower, RouteObservation};
+use crate::games::washoi::agents::player::strategy::goals::OwnVitals;
+use crate::games::washoi::agents::player::strategy::orders::Orders;
+use crate::games::washoi::hosting::net::protocol::{PlayerInput, SnapshotEvent};
+use crate::games::washoi::random::Random;
+use crate::games::washoi::{
+    Difficulty, LearnedRoutes, Sight, WashoiNavigation,
+    agents::player::navigation::learned::Traversal,
+};
 
-pub(crate) const INPUT_PERIOD: Duration = Duration::from_millis(8);
 // `InputButtons` in `engine/network/components/InputComponent.ts`.
 const JUMP: u16 = 1 << 4;
 const CROUCH: u16 = 1 << 5;
@@ -252,7 +265,7 @@ impl BotPlayer {
         navigation: &WashoiNavigation,
         sight: &Sight,
         position: shagger_shared::net::game_state::Vec3,
-        lost: super::combat::Lost,
+        lost: crate::games::washoi::agents::player::combat::Lost,
     ) {
         let velocity = world
             .body(&self.entity_id)
@@ -370,7 +383,9 @@ impl BotPlayer {
             [0.0; 3]
         };
         if body.grounded {
-            let walkable = |to: super::Vec3| super::navigation::local_walk(sight, position, to);
+            let walkable = |to: crate::games::washoi::Vec3| {
+                crate::games::washoi::agents::player::navigation::local_walk(sight, position, to)
+            };
             let floor_below = |from: [f64; 3], to: [f64; 3]| !sight.clear(from, to);
             self.planned_input.direction = highground::keep_upper_ground(
                 self.planned_input.direction,
@@ -405,7 +420,7 @@ impl BotPlayer {
             return None;
         }
         let can_see = |from: [f64; 3], to: [f64; 3]| sight.clear(from, to);
-        let reachable = |node: super::Vec3| {
+        let reachable = |node: crate::games::washoi::Vec3| {
             navigation
                 .objective_walk(position, node, 48.0, None, Some(sight))
                 .is_some()
@@ -687,6 +702,26 @@ impl BotPlayer {
     }
 }
 
+impl Agent for BotPlayer {
+    fn observe_at(&mut self, observation: Observation, now: SimTime) {
+        BotPlayer::observe_at(self, observation, now);
+    }
+
+    fn decide(&mut self, now: SimTime) {
+        BotPlayer::decide(self, now);
+    }
+}
+
+impl NetworkedPlayer for BotPlayer {
+    fn request_respawn_at(&mut self, now: SimTime) -> bool {
+        BotPlayer::request_respawn_at(self, now)
+    }
+
+    fn inputs_at(&mut self, now: SimTime) -> Vec<Controls> {
+        BotPlayer::inputs_at(self, now)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -936,7 +971,7 @@ mod tests {
             attacker_id: "foe".into(),
             damage: 10,
             weapon_id: "machinegun".into(),
-            at: crate::games::washoi::protocol::Point {
+            at: crate::games::washoi::hosting::net::protocol::Point {
                 x: 0.0,
                 y: 0.0,
                 z: 0.0,

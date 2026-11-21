@@ -8,7 +8,7 @@ use crate::games::washoi::SimTime;
 use serde::Deserialize;
 use shagger_shared::net::game_state::{Vec3, Velocity};
 
-use super::PlayerInput;
+use crate::games::washoi::agents::player::navigation::PlayerInput;
 
 const FORWARD: u16 = 1;
 const JUMP: u16 = 1 << 4;
@@ -17,7 +17,7 @@ const TICK_MS: u64 = 8;
 
 #[derive(Clone, Copy, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub(super) enum Maneuver {
+pub(in crate::games::washoi) enum Maneuver {
     Jump {
         takeoff: [f64; 3],
         landing: [f64; 3],
@@ -40,7 +40,7 @@ pub(super) enum Maneuver {
 }
 
 impl Maneuver {
-    pub(super) fn enter_before_waypoint(self, position: Vec3) -> bool {
+    pub(in crate::games::washoi) fn enter_before_waypoint(self, position: Vec3) -> bool {
         match self {
             Self::Jumppad { min, max, .. } | Self::Teleporter { min, max, .. } => {
                 near_trigger(position, min, max, 0.0)
@@ -49,18 +49,22 @@ impl Maneuver {
         }
     }
 
-    pub(super) fn observed_teleport(self, before: Vec3, after: Vec3) -> bool {
+    pub(in crate::games::washoi) fn observed_teleport(self, before: Vec3, after: Vec3) -> bool {
         matches!(self, Self::Teleporter { min, max, exit, .. }
             if near_trigger(before, min, max, 24.0) && near(after, exit, 72.0, 72.0))
     }
 
-    pub(super) fn pad_launch(self, position: Vec3, velocity: Option<Velocity>) -> bool {
+    pub(in crate::games::washoi) fn pad_launch(
+        self,
+        position: Vec3,
+        velocity: Option<Velocity>,
+    ) -> bool {
         matches!(self, Self::Jumppad { min, max, .. }
             if near_trigger(position, min, max, 64.0)
                 && velocity.is_some_and(|v| !v.grounded && v.linear.y >= 80.0))
     }
 
-    pub(super) fn valid(self) -> bool {
+    pub(in crate::games::washoi) fn valid(self) -> bool {
         let point = |p: [f64; 3]| p.into_iter().all(f64::is_finite);
         let bounds = |min: [f64; 3], max: [f64; 3]| {
             point(min) && point(max) && min.into_iter().zip(max).all(|(a, b)| a <= b)
@@ -92,13 +96,13 @@ impl Maneuver {
     }
 }
 
-pub(super) enum Outcome {
+pub(in crate::games::washoi) enum Outcome {
     Running(PlayerInput),
     Arrived(Option<f64>),
     Failed,
 }
 
-pub(super) struct Traversal {
+pub(in crate::games::washoi) struct Traversal {
     maneuver: Maneuver,
     started: SimTime,
     activated: Option<SimTime>,
@@ -106,7 +110,7 @@ pub(super) struct Traversal {
 }
 
 impl Traversal {
-    pub(super) fn new(maneuver: Maneuver, now: SimTime) -> Self {
+    pub(in crate::games::washoi) fn new(maneuver: Maneuver, now: SimTime) -> Self {
         Self {
             maneuver,
             started: now,
@@ -115,7 +119,7 @@ impl Traversal {
         }
     }
 
-    pub(super) fn update(
+    pub(in crate::games::washoi) fn update(
         &mut self,
         position: Vec3,
         velocity: Option<Velocity>,

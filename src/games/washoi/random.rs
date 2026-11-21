@@ -4,21 +4,21 @@
 use std::hash::{BuildHasher, RandomState};
 
 #[derive(Default)]
-pub(super) struct Random(u64);
+pub(in crate::games::washoi) struct Random(u64);
 
 impl Random {
     #[cfg(test)]
-    pub(super) fn new(seed: u64) -> Self {
+    pub(in crate::games::washoi) fn new(seed: u64) -> Self {
         Self(seed)
     }
 
     /// A seed that differs between bots and between runs.
-    pub(super) fn for_bot(entity_id: &str) -> Self {
+    pub(in crate::games::washoi) fn for_bot(entity_id: &str) -> Self {
         Self(RandomState::new().hash_one(entity_id))
     }
 
     /// Uniform in [0, 1).
-    pub(super) fn next(&mut self) -> f64 {
+    pub(in crate::games::washoi) fn next(&mut self) -> f64 {
         self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
         let mut z = self.0;
         z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);

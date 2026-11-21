@@ -4,9 +4,11 @@ use std::time::Duration;
 use crate::games::washoi::SimTime;
 use shagger_shared::net::game_state::{Vec3, Velocity};
 
-use super::traversal::{Outcome, Traversal};
-use super::{MAX_HEIGHT_DELTA, PlayerInput, Route, WashoiNavigation, horizontal_distance};
-use crate::games::washoi::{Difficulty, Sight, strategy::goals::OwnVitals};
+use crate::games::washoi::agents::player::navigation::traversal::{Outcome, Traversal};
+use crate::games::washoi::agents::player::navigation::{
+    MAX_HEIGHT_DELTA, PlayerInput, Route, WashoiNavigation, horizontal_distance,
+};
+use crate::games::washoi::{Difficulty, Sight, agents::player::strategy::goals::OwnVitals};
 
 const STALL_TIMEOUT: Duration = Duration::from_millis(800);
 const RETRY_DELAY: Duration = Duration::from_secs(5);

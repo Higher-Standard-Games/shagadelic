@@ -15,7 +15,7 @@
 //! Each chance is rolled once, at `predictionSkill` odds.
 
 use crate::games::washoi::{
-    combat::weapons,
+    agents::player::combat::weapons,
     perception::estimate::{ARMOR_ABSORPTION, Estimate},
     random::Random,
 };

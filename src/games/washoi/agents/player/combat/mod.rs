@@ -7,9 +7,9 @@
 //! Strafing, cover, weapon combos, charged shots, and memory of enemies out
 //! of sight remain open.
 
-pub(super) mod aim;
-pub(super) mod combos;
-pub(super) mod weapons;
+pub(in crate::games::washoi) mod aim;
+pub(in crate::games::washoi) mod combos;
+pub(in crate::games::washoi) mod weapons;
 
 use self::{
     aim::View,
@@ -21,14 +21,14 @@ use std::collections::HashSet;
 
 use shagger_shared::{json::Value, net::game_state::Vec3};
 
-use super::{
+use crate::games::washoi::{
     Observation, Sight,
+    agents::player::movement::cover::{self, CoverPeek},
+    agents::player::navigation::local_walk,
     difficulty::AimSkill,
-    movement::cover::{self, CoverPeek},
-    navigation::local_walk,
+    hosting::net::protocol::SnapshotEvent,
     perception::estimate::Estimates,
     perception::{Enemy, Perception, Senses, Source},
-    protocol::SnapshotEvent,
     random::Random,
 };
 
@@ -63,11 +63,11 @@ const MAX_EXTRAPOLATION_TICKS: u32 = 375;
 const TICK_RATE: f64 = 125.0;
 const CHASE_CONFIDENCE: f64 = 0.3;
 // `InputButtons` in `engine/network/components/InputComponent.ts`.
-pub(super) const FIRE: u16 = 1 << 8;
-pub(super) const ALT_FIRE: u16 = 1 << 9;
+pub(in crate::games::washoi) const FIRE: u16 = 1 << 8;
+pub(in crate::games::washoi) const ALT_FIRE: u16 = 1 << 9;
 
 #[derive(Default)]
-pub(super) struct Combat {
+pub(in crate::games::washoi) struct Combat {
     dead: HashSet<String>,
     /// From our own `WeaponState`: the weapon out, the slots in order, and
     /// clip plus reserve per weapon, as `normalizeBotAmmo` sums them.
@@ -123,38 +123,43 @@ impl Track {
 
 /// An enemy out of sight: where it should be by now, and how sure the bot is.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(super) struct Lost {
-    pub(super) predicted: Vec3,
-    pub(super) confidence: f64,
+pub(in crate::games::washoi) struct Lost {
+    pub(in crate::games::washoi) predicted: Vec3,
+    pub(in crate::games::washoi) confidence: f64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(super) struct Engagement {
-    pub(super) view: View,
+pub(in crate::games::washoi) struct Engagement {
+    pub(in crate::games::washoi) view: View,
     /// `FIRE` and `ALT_FIRE`.
-    pub(super) buttons: u16,
+    pub(in crate::games::washoi) buttons: u16,
     /// Melee fire must be pressed afresh for each swing.
-    pub(super) melee: bool,
-    pub(super) weapon_slot: u8,
+    pub(in crate::games::washoi) melee: bool,
+    pub(in crate::games::washoi) weapon_slot: u8,
     /// A strafe that peeks from cover, `BotCoverPeek`: −1, 1, or 0 to stand.
-    pub(super) peek: Option<i8>,
+    pub(in crate::games::washoi) peek: Option<i8>,
     /// False while ducked in cover with the enemy out of sight.
-    pub(super) in_sight: bool,
+    pub(in crate::games::washoi) in_sight: bool,
     /// Where the enemy is, or was last seen while ducked.
-    pub(super) target: Vec3,
+    pub(in crate::games::washoi) target: Vec3,
     /// The chosen weapon splashes, so high ground pays.
-    pub(super) splash: bool,
+    pub(in crate::games::washoi) splash: bool,
 }
 
 impl Combat {
-    pub(super) fn seeded(random: Random) -> Self {
+    pub(in crate::games::washoi) fn seeded(random: Random) -> Self {
         Self {
             random,
             ..Self::default()
         }
     }
 
-    pub(super) fn observe(&mut self, events: &[SnapshotEvent], own: &str, tick: u32) {
+    pub(in crate::games::washoi) fn observe(
+        &mut self,
+        events: &[SnapshotEvent],
+        own: &str,
+        tick: u32,
+    ) {
         for event in events {
             match event {
                 SnapshotEvent::Damage {
@@ -218,7 +223,7 @@ impl Combat {
     }
 
     /// The fight against the nearest enemy in sight, if any.
-    pub(super) fn engage(
+    pub(in crate::games::washoi) fn engage(
         &mut self,
         world: &Observation,
         own: &str,
@@ -538,7 +543,7 @@ impl Combat {
     /// for two seconds. Otherwise the blade goes away for the gun a fight at
     /// 800 units would pick: whoever comes round the next corner is more
     /// likely at mid range than in swing reach.
-    pub(super) fn ready_slot(&mut self, tick: u32, skill: AimSkill) -> u8 {
+    pub(in crate::games::washoi) fn ready_slot(&mut self, tick: u32, skill: AimSkill) -> u8 {
         let ammo = |id: &str| {
             self.ammo
                 .iter()
@@ -597,7 +602,7 @@ impl Combat {
 
     /// `carryCharge`: out of a fight, a charge is still held for up to two
     /// seconds while its weapon stays out, to let go when the enemy is back.
-    pub(super) fn carry_charge(&mut self, tick: u32) -> bool {
+    pub(in crate::games::washoi) fn carry_charge(&mut self, tick: u32) -> bool {
         let carried = self.charge.as_ref().is_some_and(|charge| {
             charge.weapon == self.weapon && tick.wrapping_sub(charge.start) < CHARGE_CARRY_TICKS
         });
@@ -651,7 +656,7 @@ impl Combat {
 
     /// `_getActiveTrackedEnemies` for the last enemy fought, while it is out
     /// of sight: forgotten once dead or faded, chased above 0.3 confidence.
-    pub(super) fn lost(&mut self, tick: u32) -> Option<Lost> {
+    pub(in crate::games::washoi) fn lost(&mut self, tick: u32) -> Option<Lost> {
         let track = self.track.as_ref()?;
         let elapsed = tick.wrapping_sub(track.tick);
         let confidence = track.confidence(tick);
@@ -695,17 +700,17 @@ impl Combat {
         });
     }
 
-    pub(super) fn holding_melee(&self) -> bool {
+    pub(in crate::games::washoi) fn holding_melee(&self) -> bool {
         weapons::profile_of(&self.weapon).melee
     }
 
     /// Out of a fight, aim is released.
-    pub(super) fn disengage(&mut self) {
+    pub(in crate::games::washoi) fn disengage(&mut self) {
         self.ads_since = None;
     }
 
     /// Forget the weapon on death. Other players' state stays current.
-    pub(super) fn respawned(&mut self) {
+    pub(in crate::games::washoi) fn respawned(&mut self) {
         self.weapon.clear();
         self.weapons.clear();
         self.ammo.clear();
@@ -905,7 +910,7 @@ mod tests {
             attacker_id: "me".into(),
             damage: 80,
             weapon_id: "rlauncher".into(),
-            at: crate::games::washoi::protocol::Point {
+            at: crate::games::washoi::hosting::net::protocol::Point {
                 x: 0.0,
                 y: 0.0,
                 z: -900.0,
@@ -936,7 +941,7 @@ mod tests {
 
     #[test]
     fn peeks_from_a_pillar_and_holds_the_fight_while_ducked() {
-        use crate::games::washoi::protocol::Point;
+        use crate::games::washoi::hosting::net::protocol::Point;
         // A floor, and a wall that hides the spot 112 units to the bot's
         // right (−x, facing the foe down −z) but not the spot at 64.
         let sight = Sight::parse(&encode(

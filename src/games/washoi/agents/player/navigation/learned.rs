@@ -11,7 +11,7 @@ use crate::games::washoi::{Body, SimTime};
 use serde::Deserialize;
 use shagger_shared::net::game_state::Vec3;
 
-use crate::games::washoi::{behavior::INPUT_PERIOD, protocol::PlayerInput};
+use crate::games::washoi::{hosting::net::protocol::PlayerInput, observation::INPUT_PERIOD};
 
 const MAX_FILE: u64 = 8 * 1024 * 1024;
 const MAX_TICKS: usize = 4096;

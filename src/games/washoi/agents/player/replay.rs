@@ -5,7 +5,8 @@ use std::{sync::Arc, time::Duration};
 use serde::Deserialize;
 
 use crate::games::washoi::{
-    BotPlayer, LearnedRoutes, Observation, SimTime, Vec3, Velocity, protocol::SnapshotEvent,
+    BotPlayer, LearnedRoutes, Observation, SimTime, Vec3, Velocity,
+    hosting::net::protocol::SnapshotEvent,
 };
 
 #[derive(Deserialize)]
@@ -33,7 +34,7 @@ struct ExpectedInput([f64; 3], f64, f64, u16, u8);
 #[test]
 fn replays_exact_inputs_and_remembers_a_one_tick_death() {
     let trace: Replay = serde_json::from_str(include_str!(
-        "../../../../tests/fixtures/washoi_decision_replay.json"
+        "../../../../../tests/fixtures/washoi_decision_replay.json"
     ))
     .unwrap();
     let mut bot =

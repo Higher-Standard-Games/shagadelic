@@ -79,13 +79,62 @@ pub(crate) trait NetworkedPlayer: Agent {
 
 ### Adding a single-player drone later
 
-A drone is simulated by the game server, not logged in over a socket. It needs:
+Networked hosting stays the default for networked games, single player included. The game server keeps authority and simulates the world, SHAGADELIC runs the enemy AI beside it, and the client mostly draws. A Washoi drone therefore also plugs in over the network. Embedding is for games that need the AI in process, such as the hockey game.
 
-1. **An embedded hosting adapter** in `hosting/embedded/`, next to `hosting/net/`. It builds observations from the server world in process and applies the drone's actions to its entity. Admission, acknowledgments, and input pacing do not apply. This adapter also settles the "smallest shared adapter interface" question left in this design.
-2. **A drone agent** in `agents/drone/`. It implements `Agent`, adds an embedded-hosting trait for its own action type, and has free 3D flight navigation checked against the static sight geometry. It reuses `perception/`, `difficulty.rs`, `random.rs`, and likely the aim controller for a turret.
-3. **Kind-aware spawning.** Spawn options name a kind, and the hosting session keeps each entity's agent by kind. `src/runtime/` does not change.
+A drone is not a player, though. `NetworkedPlayer` joins with player admission and sends player input frames, which fits bots in a match but not a server-spawned enemy. A drone needs:
 
-Build the embedded adapter against a real drone, not before. An abstraction guessed without its second user is usually wrong.
+1. **An agent-control channel in `hosting/net/`.** SHAGADELIC holds one connection, or a few, to the server and controls server-spawned NPC entities through it. It receives per-entity observations and sends each entity's actions, with no player admission or seat. This is the multiplexed adapter sketched under the game protocol adapter. It needs a new SHAG server interface for connecting entities other than players. That interface is not part of this milestone, which covers only the player. Snapshot reconstruction, acknowledgments, and backpressure can reuse the player path's machinery.
+2. **A drone agent** in `agents/drone/`. It implements `Agent`, plus a hosting trait for its own action type, such as a 3D velocity and a turret command. It has free 3D flight navigation checked against the static sight geometry. It reuses `perception/`, `difficulty.rs`, `random.rs`, and likely the aim controller for a turret.
+3. **Kind-aware spawning.** Spawn options name a kind, or the server announces NPC entities on the channel. The hosting session keeps each entity's agent by kind. `src/runtime/` does not change.
+
+An embedded adapter, `hosting/embedded/`, follows when the hockey game needs one. It builds observations from the host's world in process and applies actions directly. Build each adapter against its real user, not before. An abstraction guessed without its second user is usually wrong.
+
+### Status
+
+Implemented. The layout above is in place. `hosting/net` drives the player through `Agent` and `NetworkedPlayer` and names `BotPlayer` only to construct it. The pilot in `control/` and a test do the same. The logical input period moved to `observation.rs`, because hosting paces with it. The trace replay and hosted replay pass unchanged.
+
+### Next step: a generic connection and per-agent wire codecs
+
+`hosting/net/protocol/` still mixes the Washoi connection with what the player speaks over it. Split the two:
+
+| Concern | Today | Belongs to |
+| --- | --- | --- |
+| WebSocket transport: frames, ping, close, backpressure | `connection.rs` | Generic connection |
+| Snapshot reconstruction: baselines, stale ticks, ACK after decoding | `snapshot.rs` | Generic connection |
+| Washoi's snapshot event catalogue | `events.rs` | Generic connection (the game's, not an agent's) |
+| Command sequence numbers and command ticks | `connection.rs` `send_input` | Generic connection |
+| Join, Welcome, JoinAccept, JoinGame, team, seat ticket | `admission.rs` | Player codec |
+| Snapshot to `Observation`: whose body, which players | `observation.rs` | Player codec |
+| `Controls` to virtual keys to `Command`, respawn requests | `keys.rs`, `send_input`, `InputBatch` | Player codec |
+
+A `Connection<W>` owns the socket, receiver, acknowledgments, sequencing, and pacing for a wire codec `W`:
+
+```rust
+/// What one agent kind speaks over a Washoi connection.
+pub(crate) trait WireAgent {
+    type Join;      // player: name, ticket, team
+    type Identity;  // player: player and entity IDs
+    type Action;    // player: Controls, and respawn requests
+
+    /// The handshake messages, and how the server's replies admit or reject.
+    fn admission(&mut self, join: Self::Join) -> Admission<Self::Identity>;
+    /// One reconstructed snapshot, as this agent observes it.
+    fn observe(&self, identity: &Self::Identity, state: &GameState<SnapshotEvent>) -> Observation;
+    /// One action as wire commands. The connection supplies the sequence and tick.
+    fn encode(&mut self, action: Self::Action, commands: &mut CommandSink);
+}
+```
+
+SHAG defines the messages, because the server has to understand them. An agent kind chooses which server interface it speaks and owns the codec for it. The player's interface exists today, and today's admission, observation, and key code become `PlayerWire`. A drone's `DroneWire` waits for the SHAG interface for non-player entities.
+
+```text
+hosting/net/
+  connection.rs, snapshot.rs, events.rs    the generic Washoi connection
+  player/                                  admission, observation mapping, keys, Controls encoding
+  session.rs
+```
+
+This is a behavior-preserving refactor. Verify it with both replays (the hosted replay exercises real WebSocket acknowledgments and inputs), the hosted live fights, and the lobby smoke.
 
 ### Verification for this milestone
 
@@ -253,14 +302,11 @@ Code layout under `src/games/washoi/`:
 
 | Path | Holds |
 | --- | --- |
-| `mod.rs`, `observation.rs`, `difficulty.rs`, `random.rs` | Public exports, the brain contract (`Observation`, `Controls`, `SimTime`), difficulty presets, per-bot random draws |
-| `behavior.rs`, `behavior/replay.rs` | `BotPlayer`, which observes, decides, and paces inputs, and its reference trace replay |
-| `perception/` | Noticing enemies (`mod.rs`), static line of sight (`sight.rs`), the enemy health estimate (`estimate.rs`) |
-| `combat/` | Fight decisions (`mod.rs`), the aim controller (`aim.rs`), weapon profiles and choice (`weapons.rs`), weapon combos (`combos.rs`) |
-| `movement/` | Strafing and dodges (`strafe.rs`), cover peeking (`cover.rs`), high ground (`highground.rs`), the chase (`chase.rs`) |
-| `strategy/` | Pickup goals (`goals.rs`) and server orders (`orders.rs`) |
-| `navigation.rs`, `navigation/` | Routes, the walk graph, following, maneuvers, and recorded traversals (`learned.rs`) |
-| `session.rs`, `protocol/` | The hosted session and the Washoi wire adapter |
+| `mod.rs`, `observation.rs`, `difficulty.rs`, `random.rs` | Public exports, the shared contract (`Observation`, `Controls`, `SimTime`, `INPUT_PERIOD`), difficulty presets, per-bot random draws |
+| `perception/` | Senses any agent kind can use: noticing enemies (`mod.rs`), static line of sight (`sight.rs`), the enemy health estimate (`estimate.rs`) |
+| `agents/mod.rs` | The `Agent` and `NetworkedPlayer` traits |
+| `agents/player/` | The player bot: `BotPlayer` (`mod.rs`) and its trace replay, `combat/`, `movement/`, `strategy/`, `navigation.rs` and `navigation/` |
+| `hosting/net/` | WebSocket hosting: the session (`session.rs`) and the wire adapter (`protocol/`) |
 
 Start with a concrete `BotPlayer` type in the Washoi integration. It is the simulated player and has an entity key, a proficiency profile, perception memory, an active plan, aim and maneuver execution state, and a reproducible random seed. The Washoi session owns these players after admission, keyed by the same entity keys the runtime tracks for lifecycle and scheduling. The game session keeps map geometry and navigation in shared data and supplies per-connection game updates to observation building.
 

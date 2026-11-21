@@ -20,7 +20,10 @@ use std::{
 
 pub use shagger_shared::net::game_state::{Vec3, Velocity};
 
-use super::protocol::SnapshotEvent;
+use crate::games::washoi::hosting::net::protocol::SnapshotEvent;
+
+/// Washoi's logical input tick: commands are paced one per period.
+pub(crate) const INPUT_PERIOD: Duration = Duration::from_millis(8);
 
 /// Simulation time since the session started. It never goes backward.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]

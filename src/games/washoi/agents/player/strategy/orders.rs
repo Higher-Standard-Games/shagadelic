@@ -10,8 +10,8 @@ use shagger_shared::{
 
 use crate::games::washoi::{
     Sight, WashoiNavigation,
-    navigation::{ObjectiveRecovery, ObjectiveWalk},
-    protocol::{PlayerInput, SnapshotEvent},
+    agents::player::navigation::{ObjectiveRecovery, ObjectiveWalk},
+    hosting::net::protocol::{PlayerInput, SnapshotEvent},
 };
 
 const DEFAULT_RADIUS: f64 = 160.0;
@@ -314,7 +314,7 @@ impl Orders {
             let (sin, cos) = (yaw + side * std::f64::consts::FRAC_PI_2).sin_cos();
             let to = Vec3::new(position.x + sin * 96.0, position.y, position.z + cos * 96.0);
             sight.is_none_or(|sight| {
-                crate::games::washoi::navigation::local_walk(sight, position, to)
+                crate::games::washoi::agents::player::navigation::local_walk(sight, position, to)
             })
         };
         let side = if room(turn) || !room(-turn) {
@@ -357,7 +357,9 @@ impl Orders {
                 );
                 if horizontal(point, position) < GUARD_SPACING
                     || last.is_some_and(|last| horizontal(point, last) < GUARD_SPACING)
-                    || !crate::games::washoi::navigation::local_walk(sight, position, point)
+                    || !crate::games::washoi::agents::player::navigation::local_walk(
+                        sight, position, point,
+                    )
                 {
                     continue;
                 }

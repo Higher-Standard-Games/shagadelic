@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use crate::games::washoi::agents::NetworkedPlayer;
 use futures_util::{SinkExt, StreamExt};
 use shagger_shared::net::{
     DecodeError,
@@ -91,10 +92,10 @@ impl Connection<WashoiEvents> {
     /// Drive the pilot behavior. Return false from the observer to stop.
     pub async fn play(
         &mut self,
-        bot: super::super::BotPlayer,
+        bot: impl NetworkedPlayer,
         observe: impl FnMut(&GameState<SnapshotEvent>) -> bool,
     ) -> Result<(), AdmissionError> {
-        use super::super::behavior::INPUT_PERIOD;
+        use crate::games::washoi::observation::INPUT_PERIOD;
         use tokio::time::{MissedTickBehavior, interval};
 
         let mut updates = interval(INPUT_PERIOD);
@@ -194,7 +195,7 @@ pub(crate) struct InputBatch {
 }
 
 impl InputBatch {
-    pub(crate) fn from_player(bot: &mut super::super::BotPlayer, now: SimTime) -> Self {
+    pub(crate) fn from_player(bot: &mut dyn NetworkedPlayer, now: SimTime) -> Self {
         let respawn = bot.request_respawn_at(now);
         let controls = bot.inputs_at(now);
         Self { controls, respawn }

@@ -3,12 +3,12 @@ use std::{
     collections::{BTreeMap, BinaryHeap},
 };
 
-use super::traversal::Maneuver;
+use crate::games::washoi::agents::player::navigation::traversal::Maneuver;
 use serde::Deserialize;
 
 use shagger_shared::net::game_state::Vec3;
 
-use super::{
+use crate::games::washoi::agents::player::navigation::{
     ANCHOR_RADIUS, ARRIVAL_RADIUS, ENTRY_RADIUS, MAX_HEIGHT_DELTA, ObjectiveEdge,
     ObjectiveRecovery, PickupGoal, Route, horizontal_distance,
 };
@@ -34,7 +34,7 @@ enum Edge {
 }
 
 #[derive(Deserialize)]
-pub(super) struct WalkGraph {
+pub(in crate::games::washoi) struct WalkGraph {
     bsp_sha256: String,
     nodes: Vec<[f64; 3]>,
     edges: Vec<Edge>,
@@ -53,7 +53,7 @@ pub(super) struct WalkGraph {
 /// Shortest walks to every ordinary goal from every node, computed once and
 /// shared by all bots. This lets a bot replan from any graph node instead of
 /// only from the entries with precomputed routes.
-pub(super) struct Planner {
+pub(in crate::games::washoi) struct Planner {
     nodes: Vec<[f64; 3]>,
     neighbors: Vec<Vec<usize>>,
     corners: Corners,
@@ -140,7 +140,7 @@ impl Eq for Visit {}
 impl Planner {
     /// Node positions, standing origins, in graph index order. The order is
     /// stable for the life of the planner.
-    pub(super) fn nodes(&self) -> &[[f64; 3]] {
+    pub(in crate::games::washoi) fn nodes(&self) -> &[[f64; 3]] {
         &self.nodes
     }
 
@@ -157,7 +157,7 @@ impl Planner {
             .map(|(node, _)| node)
     }
 
-    pub(super) fn plan_to(
+    pub(in crate::games::washoi) fn plan_to(
         &self,
         position: Vec3,
         target: Vec3,
@@ -326,7 +326,7 @@ impl Planner {
     /// it starts there. Otherwise the bot walks back to its anchor, or,
     /// when that walk is blocked or missing, to one of the nearest nodes
     /// `local_walk` finds a straight walk to.
-    pub(super) fn plan(
+    pub(in crate::games::washoi) fn plan(
         &self,
         position: Vec3,
         anchor: Option<[f64; 3]>,
@@ -422,7 +422,7 @@ impl Planner {
 }
 
 impl WalkGraph {
-    pub(super) fn routes(self) -> Result<(Vec<Route>, Planner), &'static str> {
+    pub(in crate::games::washoi) fn routes(self) -> Result<(Vec<Route>, Planner), &'static str> {
         let count = self.nodes.len();
         if !(2..=MAX_NODES).contains(&count)
             || !(1..=MAX_ENTRIES).contains(&self.entries.len())

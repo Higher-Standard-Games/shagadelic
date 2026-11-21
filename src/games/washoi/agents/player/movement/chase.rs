@@ -9,7 +9,8 @@ use crate::games::washoi::SimTime;
 use shagger_shared::net::game_state::{Vec3, Velocity};
 
 use crate::games::washoi::{
-    Sight, WashoiNavigation, navigation::ObjectiveWalk, protocol::PlayerInput,
+    Sight, WashoiNavigation, agents::player::navigation::ObjectiveWalk,
+    hosting::net::protocol::PlayerInput,
 };
 
 /// Close enough to the predicted spot to stop walking.

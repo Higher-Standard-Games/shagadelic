@@ -6,16 +6,16 @@
 //! play them loud enough: shots, beams, pain, pickups, footsteps, jumps, and
 //! explosions next to someone. Being hit reveals the attacker.
 
-pub(super) mod estimate;
-pub(super) mod sight;
+pub(in crate::games::washoi) mod estimate;
+pub(in crate::games::washoi) mod sight;
 
 use std::f64::consts::PI;
 
 use shagger_shared::net::game_state::Vec3;
 
-use super::{
+use crate::games::washoi::{
     Sight,
-    protocol::{Point, SnapshotEvent},
+    hosting::net::protocol::{Point, SnapshotEvent},
 };
 
 /// Server ticks per second.
@@ -44,16 +44,16 @@ const EYE_HEIGHT: f64 = 32.0;
 
 /// An enemy the snapshot holds, whether or not the bot notices it.
 #[derive(Clone, Copy, Debug)]
-pub(super) struct Enemy<'a> {
-    pub(super) entity: &'a str,
-    pub(super) at: Vec3,
-    pub(super) velocity: Vec3,
-    pub(super) grounded: bool,
-    pub(super) sliding: bool,
+pub(in crate::games::washoi) struct Enemy<'a> {
+    pub(in crate::games::washoi) entity: &'a str,
+    pub(in crate::games::washoi) at: Vec3,
+    pub(in crate::games::washoi) velocity: Vec3,
+    pub(in crate::games::washoi) grounded: bool,
+    pub(in crate::games::washoi) sliding: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Source {
+pub(in crate::games::washoi) enum Source {
     Sound,
     /// It hit the bot.
     Damage,
@@ -61,24 +61,24 @@ pub(super) enum Source {
 
 /// What the bot noticed this snapshot. `seen` indexes the enemies given.
 #[derive(Debug, Default, PartialEq)]
-pub(super) struct Noticed {
-    pub(super) seen: Vec<usize>,
-    pub(super) heard: Vec<(String, Vec3, Source)>,
+pub(in crate::games::washoi) struct Noticed {
+    pub(in crate::games::washoi) seen: Vec<usize>,
+    pub(in crate::games::washoi) heard: Vec<(String, Vec3, Source)>,
 }
 
 /// The bot's own side of a snapshot.
 #[derive(Clone, Copy)]
-pub(super) struct Senses<'a> {
-    pub(super) own: &'a str,
-    pub(super) position: Vec3,
-    pub(super) view_yaw: f64,
-    pub(super) reaction_ms: f64,
-    pub(super) tick: u32,
-    pub(super) sight: &'a Sight,
+pub(in crate::games::washoi) struct Senses<'a> {
+    pub(in crate::games::washoi) own: &'a str,
+    pub(in crate::games::washoi) position: Vec3,
+    pub(in crate::games::washoi) view_yaw: f64,
+    pub(in crate::games::washoi) reaction_ms: f64,
+    pub(in crate::games::washoi) tick: u32,
+    pub(in crate::games::washoi) sight: &'a Sight,
 }
 
 #[derive(Default)]
-pub(super) struct Perception {
+pub(in crate::games::washoi) struct Perception {
     /// By entity: first and last tick in sight while noticed.
     sightings: Vec<(String, u32, u32)>,
     /// By entity: grounded last snapshot.
@@ -86,7 +86,7 @@ pub(super) struct Perception {
 }
 
 impl Perception {
-    pub(super) fn perceive(
+    pub(in crate::games::washoi) fn perceive(
         &mut self,
         senses: Senses<'_>,
         events: &[SnapshotEvent],
