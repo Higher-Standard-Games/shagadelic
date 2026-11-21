@@ -776,6 +776,25 @@ impl Combat {
         self.estimates.alive()
     }
 
+    /// Where the enemy last fought or heard was noticed, and when.
+    pub(in crate::games::washoi) fn last_known(&self) -> Option<(Vec3, u32)> {
+        let track = self.track.as_ref()?;
+        (!self.dead.contains(&track.entity)).then_some((track.at, track.tick))
+    }
+
+    /// Whether a gun other than a melee weapon has 3 shots or more. A gun
+    /// without a known count counts as loaded.
+    pub(in crate::games::washoi) fn armed(&self) -> bool {
+        self.weapons.iter().any(|weapon| {
+            !weapons::profile_of(weapon).melee
+                && self
+                    .ammo
+                    .iter()
+                    .find(|(id, _)| id == weapon)
+                    .is_none_or(|(_, ammo)| *ammo >= 3.0)
+        })
+    }
+
     /// The enemy last fought or heard, while alive.
     pub(in crate::games::washoi) fn tracked(&self) -> Option<&str> {
         let track = self.track.as_ref()?;

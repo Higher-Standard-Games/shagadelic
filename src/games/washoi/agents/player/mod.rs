@@ -24,6 +24,7 @@ use crate::games::washoi::agents::player::look::{self as looking, Look};
 use crate::games::washoi::agents::player::movement::chase::Chase;
 use crate::games::washoi::agents::player::movement::highground::{self, HighGround};
 use crate::games::washoi::agents::player::movement::strafe::{self, Body, CombatMovement};
+use crate::games::washoi::agents::player::movement::territory::Territory;
 use crate::games::washoi::agents::player::navigation::{
     RouteFollower, RouteObservation,
     unstick::{Unstick, UnstickView},
@@ -108,6 +109,9 @@ pub struct BotPlayer {
     /// What to go for, the match it is chosen in, and the server ticks the
     /// bot was hurt at lately.
     planner: Planner,
+    /// The ground held in a Duel, and the walk there.
+    territory: Territory,
+    territory_walk: Chase,
     /// `BotOptions.trace`: a record of each decision.
     tracing: bool,
     trace: Option<trace::DecisionTrace>,
@@ -174,6 +178,8 @@ impl BotPlayer {
             fighting: false,
             unstick: Unstick::default(),
             planner: Planner::new(Difficulty::default().mistake_rate()),
+            territory: Territory::default(),
+            territory_walk: Chase::default(),
             tracing: false,
             trace: None,
             arbitrated: false,
@@ -374,6 +380,7 @@ impl BotPlayer {
         } else {
             self.chase.reset();
         }
+        self.hold_ground(world, position, now);
         self.look_around(world, position);
         self.turn_from_block(world, position, now);
         if self.tracing {
@@ -806,6 +813,7 @@ impl BotPlayer {
             self.aim.clear();
             self.combat.respawned();
             self.planner.reset();
+            self.territory.reset();
             self.walkable.clear();
             self.route.set_goal(None);
         } else if !self.route.traversing()
@@ -990,6 +998,79 @@ impl BotPlayer {
             self.planned_input = input;
             self.exact_view = true;
             self.moves.reset();
+        }
+    }
+
+    /// `RoamChoice` in a mode that keeps a territory: holding ground is
+    /// worth `0.5 x mapControl`, and when that beats the arbiter's best item
+    /// (an item wins ties), a roaming bot healthy and armed enough walks to
+    /// the high ground `BotTerritory` picks. Hunting a fresh sighting is the
+    /// chase, which comes first.
+    fn hold_ground(
+        &mut self,
+        world: &Observation,
+        position: Option<super::super::Vec3>,
+        now: SimTime,
+    ) {
+        const HOLD_DESIRE_PER_CONTROL: f64 = 0.5;
+        const HOLD_HEALTH: u16 = 60;
+        let team = world
+            .player(&self.entity_id)
+            .map_or("", |player| player.team.as_str());
+        let roaming = self.engagement.is_none()
+            && self.chasing.is_none()
+            && !self.exact_view
+            && !self.ordered
+            && self.respawn_at.is_none()
+            && !self.lunge.active();
+        let context = self
+            .match_context
+            .as_ref()
+            .filter(|context| context.keeps_territory());
+        let (Some(context), Some(position), Some(navigation), Some(sight), true) = (
+            context,
+            position,
+            self.navigation.clone(),
+            self.sight.clone(),
+            roaming,
+        ) else {
+            self.territory_walk.reset();
+            return;
+        };
+        let hold = HOLD_DESIRE_PER_CONTROL * context.weights(team).map_control;
+        if self.vitals.health.is_none_or(|health| health < HOLD_HEALTH)
+            || !self.combat.armed()
+            || self.planner.desire() >= hold
+        {
+            self.territory_walk.reset();
+            return;
+        }
+        let point = self.territory.choose(
+            world.tick,
+            position,
+            navigation.nodes(),
+            self.combat.last_known(),
+            &sight,
+            None,
+            |at| {
+                navigation
+                    .objective_walk(position, at, 64.0, None, Some(&sight))
+                    .is_some()
+            },
+        );
+        let Some(point) = point else {
+            self.territory_walk.reset();
+            return;
+        };
+        let velocity = world.body(&self.entity_id).and_then(|body| body.velocity);
+        if let Some(input) =
+            self.territory_walk
+                .steer(&navigation, &sight, position, velocity, point, now)
+        {
+            self.planned_input = PlayerInput {
+                weapon_slot: self.planned_input.weapon_slot,
+                ..input
+            };
         }
     }
 

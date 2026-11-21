@@ -196,6 +196,12 @@ impl MatchContext {
             .map(|(_, role)| role.as_str())
     }
 
+    /// `GAMETYPE_HABITS.keepsTerritory`: a Duel is won by holding ground and
+    /// timing items over it.
+    pub(in crate::games::washoi) fn keeps_territory(&self) -> bool {
+        profile_key(&self.gametype) == "duel"
+    }
+
     /// `selectWeightProfile`: the most specific profile for the gametype,
     /// the bot's role, and the round state.
     pub(in crate::games::washoi) fn weights(&self, team: &str) -> Weights {
