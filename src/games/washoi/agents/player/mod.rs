@@ -1225,7 +1225,7 @@ impl BotPlayer {
             .collect();
         let opponents = self.combat.scoreboard_enemies(world, &self.entity_id);
         let position = world.body(&self.entity_id).and_then(|body| body.position);
-        self.opponents.observe(
+        let credited = self.opponents.observe(
             world,
             &Scene {
                 own: &self.entity_id,
@@ -1236,6 +1236,11 @@ impl BotPlayer {
                 sight: self.sight.as_deref(),
             },
         );
+        for (entity, id) in credited {
+            if let Some((pickup, _)) = pickups.iter().find(|(pickup, _)| pickup.id == id) {
+                self.combat.credit_pickup(&entity, *pickup, world.tick);
+            }
+        }
     }
 
     /// `ItemGoalPlanner.select`: the pickup or order to pursue. Until a

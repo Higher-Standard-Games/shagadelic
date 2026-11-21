@@ -22,6 +22,8 @@ use self::{
 
 use std::collections::HashSet;
 
+use crate::games::washoi::agents::player::strategy::goals::PickupGoal;
+
 use shagger_shared::{json::Value, net::game_state::Vec3};
 
 use crate::games::washoi::{
@@ -769,6 +771,26 @@ impl Combat {
             })
             .map(|player| player.entity_id.as_str())
             .collect()
+    }
+
+    /// An enemy was heard or seen taking a pickup: credit what it grants.
+    pub(in crate::games::washoi) fn credit_pickup(
+        &mut self,
+        entity: &str,
+        pickup: PickupGoal,
+        tick: u32,
+    ) {
+        use crate::games::washoi::agents::player::strategy::{goals::PickupKind, items};
+        let item = pickup.item.0;
+        let to_u16 = |value: f64| value.round().clamp(0.0, f64::from(u16::MAX)) as u16;
+        self.estimates
+            .picked(entity, tick, |health, armor| match pickup.kind {
+                PickupKind::Armor => (health, f64::from(items::armor_after(to_u16(armor), item))),
+                PickupKind::Health if matches!(item, "mega" | "ultra" | "large" | "medium") => {
+                    (f64::from(items::health_after(to_u16(health), item)), armor)
+                }
+                _ => (health, armor),
+            });
     }
 
     /// An enemy's estimated health plus armor, for one alive and met.

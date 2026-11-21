@@ -95,6 +95,20 @@ impl Estimates {
         enemy.known = tick;
     }
 
+    /// `applyPickup`: an enemy took an item, so its health or armor is at
+    /// least what the item grants on top of the estimate.
+    pub(in crate::games::washoi) fn picked(
+        &mut self,
+        entity: &str,
+        tick: u32,
+        grant: impl Fn(f64, f64) -> (f64, f64),
+    ) {
+        let enemy = self.get_or_spawn(entity, tick);
+        let (health, armor) = grant(enemy.health, enemy.armor);
+        enemy.health = enemy.health.max(health);
+        enemy.armor = enemy.armor.max(armor);
+    }
+
     /// How many enemies the bot has met and believes alive.
     pub(in crate::games::washoi) fn alive(&self) -> usize {
         self.enemies.iter().filter(|enemy| enemy.alive).count()
@@ -158,5 +172,15 @@ mod tests {
         armored.hit("foe", 100.0, None, 1);
         let after = armored.of("foe", 1).unwrap();
         assert_eq!((after.health, after.armor), (50.0, 0.0));
+    }
+
+    #[test]
+    fn a_take_raises_the_estimate_to_what_it_grants() {
+        let mut estimates = Estimates::default();
+        estimates.seen("foe", 0);
+        estimates.picked("foe", 10, |health, armor| (health, armor + 100.0));
+        estimates.picked("foe", 11, |health, armor| (health - 50.0, armor));
+        let estimate = estimates.of("foe", 11).unwrap();
+        assert_eq!((estimate.health, estimate.armor), (100.0, 100.0));
     }
 }

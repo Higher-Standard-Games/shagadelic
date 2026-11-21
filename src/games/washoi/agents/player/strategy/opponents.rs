@@ -58,8 +58,15 @@ pub(in crate::games::washoi) struct Scene<'a> {
 }
 
 impl Opponents {
-    pub(in crate::games::washoi) fn observe(&mut self, world: &Observation, scene: &Scene) {
+    /// Read one snapshot. Returns the takes credited in it: who took which
+    /// pickup.
+    pub(in crate::games::washoi) fn observe(
+        &mut self,
+        world: &Observation,
+        scene: &Scene,
+    ) -> Vec<(String, usize)> {
         let tick = world.tick;
+        let before = self.takes.len();
         let major = |id: usize| {
             scene
                 .pickups
@@ -135,8 +142,13 @@ impl Opponents {
         if !world.pickup_active.is_empty() {
             self.last_mask.clone_from(&world.pickup_active);
         }
+        let credited = self.takes[before..]
+            .iter()
+            .map(|take| (take.by.clone(), take.pickup))
+            .collect();
         self.takes
             .retain(|take| tick.saturating_sub(take.tick) <= HABIT_WINDOW_TICKS);
+        credited
     }
 
     fn credit(&mut self, by: &str, pickup: usize, tick: u32) {
