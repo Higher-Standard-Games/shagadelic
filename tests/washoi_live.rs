@@ -3,7 +3,7 @@
 use std::{sync::Arc, time::Duration};
 
 use shagadelic::games::washoi::{
-    BotPlayer, LearnedRoutes, WashoiNavigation,
+    BotPlayer, Difficulty, LearnedRoutes, Sight, WashoiNavigation,
     protocol::{SnapshotEvent, WashoiEvents, connect},
 };
 
@@ -362,5 +362,61 @@ async fn washoi_bot_roams_between_graph_goals() {
     assert!(
         reached.len() >= 3 && !died,
         "reached goals {reached:?} (died: {died}): {result:?}"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires a local Washoi server, a baked cache graph, and a sight file"]
+async fn washoi_bots_fight_until_one_kills_the_other() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let endpoint = std::env::var("SHAGADELIC_TEST_WASHOI").expect("local Washoi endpoint");
+    let graph = std::env::var("SHAGADELIC_TEST_WASHOI_ROAM_GRAPH").expect("baked cache graph");
+    let sight = std::env::var("SHAGADELIC_TEST_WASHOI_SIGHT").expect("baked sight file");
+    let navigation: Arc<WashoiNavigation> =
+        Arc::new(serde_json::from_slice(&std::fs::read(graph).unwrap()).unwrap());
+    let sight = Arc::new(Sight::load(sight).unwrap());
+    let deadline = Duration::from_secs(120);
+    let mut connections = Vec::new();
+    for name in ["SHAGADELIC gunner one", "SHAGADELIC gunner two"] {
+        let connection = connect(
+            &endpoint,
+            name.into(),
+            None,
+            None,
+            Duration::from_secs(10),
+            WashoiEvents,
+            |_| {},
+        )
+        .await
+        .unwrap();
+        connections.push(connection);
+    }
+    let fighters: Vec<String> = connections
+        .iter()
+        .map(|connection| connection.identity.entity_id.clone())
+        .collect();
+    let killed = AtomicBool::new(false);
+    let plays = connections.iter_mut().map(|connection| {
+        let bot = BotPlayer::new(connection.identity.entity_id.clone())
+            .with_difficulty(Difficulty::Insane)
+            .with_navigation(navigation.clone())
+            .with_sight(sight.clone());
+        let (fighters, killed) = (&fighters, &killed);
+        connection.play(bot, move |state| {
+            if state.events.iter().any(|event| {
+                matches!(event, SnapshotEvent::Death { entity_id, killer_id, .. }
+                    if entity_id != killer_id
+                        && fighters.contains(entity_id)
+                        && fighters.contains(killer_id))
+            }) {
+                killed.store(true, Ordering::Relaxed);
+            }
+            !killed.load(Ordering::Relaxed)
+        })
+    });
+    let result = tokio::time::timeout(deadline, futures_util::future::join_all(plays)).await;
+    assert!(
+        killed.load(Ordering::Relaxed),
+        "no bot killed the other: {result:?}"
     );
 }

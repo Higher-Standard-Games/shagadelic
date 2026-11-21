@@ -1,12 +1,16 @@
+mod aim;
 mod behavior;
+mod combat;
 mod difficulty;
 mod goals;
 mod learned;
 mod navigation;
 mod orders;
 pub mod protocol;
+mod random;
 mod session;
 mod sight;
+mod weapons;
 pub use behavior::BotPlayer;
 pub use difficulty::Difficulty;
 pub use learned::LearnedRoutes;

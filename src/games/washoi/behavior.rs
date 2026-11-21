@@ -3,10 +3,13 @@ use std::{sync::Arc, time::Duration};
 use shagger_shared::net::game_state::GameState;
 use tokio::time::Instant;
 
+use super::aim::{AimController, View};
+use super::combat::{Combat, Engagement, FIRE};
 use super::goals::OwnVitals;
 use super::navigation::{RouteFollower, RouteObservation};
 use super::orders::Orders;
 use super::protocol::{PlayerInput, SnapshotEvent};
+use super::random::Random;
 use super::{Difficulty, LearnedRoutes, Sight, WashoiNavigation, learned::Traversal};
 
 pub(crate) const INPUT_PERIOD: Duration = Duration::from_millis(8);
@@ -15,7 +18,8 @@ const MAX_DEBT: u64 = 25;
 const MAX_OBSERVATION_AGE: Duration = Duration::from_millis(500);
 const RESPAWN_DELAY: Duration = Duration::from_millis(2500);
 
-/// The pilot walks forward or follows an authored route while alive.
+/// The pilot walks forward or follows an authored route while alive, and
+/// fights enemies in sight when it has the map's sight file.
 pub struct BotPlayer {
     entity_id: String,
     respawn_at: Option<Instant>,
@@ -33,11 +37,19 @@ pub struct BotPlayer {
     vitals: OwnVitals,
     difficulty: Difficulty,
     sight: Option<Arc<Sight>>,
+    combat: Combat,
+    engagement: Option<Engagement>,
+    aim: AimController,
+    random: Random,
+    /// A traversal sets the view itself, so the aim controller stands aside.
+    exact_view: bool,
+    pressed_melee: bool,
 }
 
 impl BotPlayer {
     pub fn new(entity_id: String) -> Self {
         Self {
+            random: Random::for_bot(&entity_id),
             entity_id,
             respawn_at: None,
             own_entity_present: false,
@@ -53,6 +65,11 @@ impl BotPlayer {
             vitals: OwnVitals::default(),
             difficulty: Difficulty::default(),
             sight: None,
+            combat: Combat::default(),
+            engagement: None,
+            aim: AimController::new(Difficulty::default().aim()),
+            exact_view: false,
+            pressed_melee: false,
             planned_input: PlayerInput {
                 direction: [0.0, 0.0, 1.0],
                 ..PlayerInput::default()
@@ -62,6 +79,7 @@ impl BotPlayer {
 
     pub fn with_difficulty(mut self, difficulty: Difficulty) -> Self {
         self.difficulty = difficulty;
+        self.aim = AimController::new(difficulty.aim());
         self
     }
 
@@ -94,6 +112,33 @@ impl BotPlayer {
     }
 
     pub(crate) fn observe(&mut self, world: &GameState<SnapshotEvent>, now: Instant) {
+        self.combat.observe(&world.events, &self.entity_id);
+        self.exact_view = self.plan(world, now);
+        let position = world
+            .entities
+            .get(&self.entity_id)
+            .and_then(|entity| entity.position);
+        self.engagement = match (&self.sight, position) {
+            (Some(sight), Some(position))
+                if !self.exact_view && self.respawn_at.is_none() && !self.traversal.active() =>
+            {
+                self.combat.engage(
+                    world,
+                    &self.entity_id,
+                    position,
+                    sight,
+                    self.difficulty.aim(),
+                )
+            }
+            _ => None,
+        };
+        if self.engagement.is_none() {
+            self.combat.disengage();
+        }
+    }
+
+    /// Movement for the coming commands. True when a traversal set the view.
+    fn plan(&mut self, world: &GameState<SnapshotEvent>, now: Instant) -> bool {
         for event in &world.events {
             match event {
                 SnapshotEvent::CombatState {
@@ -127,19 +172,21 @@ impl BotPlayer {
             self.route.detach();
             self.orders = Orders::default();
             self.traversal = Traversal::default();
+            self.aim.clear();
+            self.combat.respawned();
         } else if let Some(library) = &self.learned
             && let Some(entity) = own
         {
             if let Some(input) = self.traversal.approach(library, entity, now) {
                 self.planned_input = input;
-                return;
+                return true;
             }
             self.traversal
                 .observe(library, entity, now, !self.linked_takeoffs);
             if self.traversal.active() {
                 self.planned_input = PlayerInput::default();
                 self.route.detach();
-                return;
+                return true;
             }
         }
         if self.respawn_at.is_none()
@@ -155,7 +202,7 @@ impl BotPlayer {
         {
             self.route.detach();
             self.planned_input = input;
-            return;
+            return false;
         }
         if let Some(navigation) = &self.navigation {
             self.planned_input = PlayerInput::default();
@@ -189,9 +236,11 @@ impl BotPlayer {
                 {
                     self.route.detach();
                     self.planned_input = PlayerInput::default();
+                    return true;
                 }
             }
         }
+        false
     }
 
     pub(crate) fn request_respawn(&mut self, now: Instant) -> bool {
@@ -225,10 +274,61 @@ impl BotPlayer {
             self.started = None;
             self.traversal.abort_if_active();
         }
-        learned
-            .into_iter()
-            .flatten()
-            .chain(std::iter::repeat_n(self.planned_input, count as usize))
+        let mut commands = learned.unwrap_or_default();
+        if let Some(last) = commands.last() {
+            self.aim.reset(View {
+                yaw: last.yaw,
+                pitch: last.pitch,
+            });
+        }
+        commands.extend((0..count).map(|_| self.next_command()));
+        commands.into_iter()
+    }
+
+    /// One planned command, with the view turned by the aim controller and
+    /// fire pressed in a fight. A blade swings on each fresh press only, so
+    /// melee fire alternates, as in TypeScript `pulseMeleeFire`.
+    fn next_command(&mut self) -> PlayerInput {
+        let mut input = self.planned_input;
+        let planned = View {
+            yaw: input.yaw,
+            pitch: input.pitch,
+        };
+        if self.exact_view {
+            self.aim.reset(planned);
+            return input;
+        }
+        let Some(fight) = self.engagement else {
+            self.pressed_melee = false;
+            let view = self.aim.step(
+                INPUT_PERIOD.as_secs_f64(),
+                planned,
+                false,
+                true,
+                &mut self.random,
+            );
+            input.yaw = view.yaw;
+            input.pitch = view.pitch;
+            return input;
+        };
+        let fire = fight.buttons & FIRE != 0;
+        let view = self.aim.step(
+            INPUT_PERIOD.as_secs_f64(),
+            fight.view,
+            fire,
+            false,
+            &mut self.random,
+        );
+        input.yaw = view.yaw;
+        input.pitch = view.pitch;
+        input.weapon_slot = fight.weapon_slot;
+        let press = fire && !(fight.melee && self.pressed_melee);
+        input.buttons |= fight.buttons & !FIRE;
+        if press {
+            input.buttons |= FIRE;
+        }
+        self.pressed_melee = press && fight.melee;
+        input
     }
 
     fn commands_due(&mut self, now: Instant) -> u64 {
@@ -265,6 +365,58 @@ mod tests {
         assert_eq!(bot.inputs(start + Duration::from_millis(48)).count(), 2);
         assert_eq!(bot.inputs(start + Duration::from_millis(300)).count(), 1);
         assert_eq!(bot.inputs(start + Duration::from_millis(501)).count(), 0);
+    }
+
+    #[test]
+    fn turns_to_and_fires_at_an_enemy_in_sight_but_not_through_walls() {
+        use crate::games::washoi::sight::tests::{cube, encode};
+        use shagger_shared::net::game_state::{PlayerState, Vec3};
+        let sight = Sight::parse(&encode(
+            "test",
+            &[cube([-8.0, -100.0, 200.0], [8.0, 200.0, 1000.0])],
+            &[],
+        ))
+        .unwrap();
+        let mut bot = BotPlayer::new("bot".into())
+            .with_difficulty(Difficulty::Insane)
+            .with_sight(Arc::new(sight));
+        let mut world = GameState::default();
+        // The foe stands level with the bot's fire origin.
+        for (id, at) in [
+            ("bot", Vec3::default()),
+            ("foe", Vec3::new(500.0, 34.0, 0.0)),
+        ] {
+            world.players.insert(
+                id,
+                PlayerState {
+                    entity_id: id.into(),
+                    ..PlayerState::default()
+                },
+            );
+            world
+                .entities
+                .get_or_insert_with(id, Default::default)
+                .position = Some(at);
+        }
+        let start = Instant::now();
+        let mut fired = 0;
+        let mut last = PlayerInput::default();
+        for step in 0..150u64 {
+            let now = start + INPUT_PERIOD * step as u32;
+            bot.observe(&world, now);
+            for input in bot.inputs(now) {
+                fired += usize::from(input.buttons & FIRE != 0);
+                last = input;
+            }
+        }
+        // Insane turns 90° well within 1.2 s, firing all the while.
+        assert!((last.yaw - std::f64::consts::FRAC_PI_2).abs() < 0.05);
+        assert!(fired >= 140);
+        // Behind the wall, fire stops.
+        world.entities.get_mut("foe").unwrap().position = Some(Vec3::new(0.0, 34.0, 500.0));
+        let now = start + INPUT_PERIOD * 150;
+        bot.observe(&world, now);
+        assert!(bot.inputs(now).all(|input| input.buttons & FIRE == 0));
     }
 
     #[test]

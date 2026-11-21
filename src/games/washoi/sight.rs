@@ -77,7 +77,7 @@ impl Sight {
         &self.map
     }
 
-    fn parse(bytes: &[u8]) -> io::Result<Self> {
+    pub(super) fn parse(bytes: &[u8]) -> io::Result<Self> {
         let mut reader = Reader(bytes);
         if reader.take(MAGIC.len())? != MAGIC {
             return Err(invalid("not a SHAGADELIC sight file"));
