@@ -245,6 +245,21 @@ impl Planner {
     ///
     /// Off the graph, the bot can start from `anchor`, the last node it
     /// reached, and walks back to it first. It got here from there.
+    /// Where a bot that left the graph walks back to: the last waypoint it
+    /// reached. That is a node, or a corner of the walk between two nodes,
+    /// in which case the bot finishes that walk to its end node.
+    fn resume_at(&self, anchor: [f64; 3]) -> Option<(usize, Vec<[f64; 3]>)> {
+        if let Some(node) = self.nodes.iter().position(|&node| node == anchor) {
+            return Some((node, vec![anchor]));
+        }
+        self.corners.iter().find_map(|(&(_, to), corners)| {
+            let at = corners.iter().position(|&corner| corner == anchor)?;
+            let mut lead = corners[at..].to_vec();
+            lead.push(self.nodes[to]);
+            Some((to, lead))
+        })
+    }
+
     pub(super) fn plan(
         &self,
         position: Vec3,
@@ -256,13 +271,9 @@ impl Planner {
             horizontal_distance(position, node) <= radius
                 && (node[1] - position.y).abs() <= MAX_HEIGHT_DELTA
         };
-        let (start, back) = match self.nearest_entry(position) {
-            Some(node) => (node, false),
-            None => {
-                let anchor = anchor.filter(|&anchor| here(anchor, ANCHOR_RADIUS))?;
-                let node = self.nodes.iter().position(|&node| node == anchor)?;
-                (node, true)
-            }
+        let (start, lead) = match self.nearest_entry(position) {
+            Some(node) => (node, Vec::new()),
+            None => self.resume_at(anchor.filter(|&anchor| here(anchor, ANCHOR_RADIUS))?)?,
         };
         let mut best: Option<(f64, f32, Route)> = None;
         for goal in &self.goals {
@@ -274,10 +285,7 @@ impl Planner {
             {
                 continue;
             }
-            let mut waypoints = Vec::new();
-            if back {
-                waypoints.push(self.nodes[start]);
-            }
+            let mut waypoints = lead.clone();
             let mut node = start;
             while let Some(next) = goal.toward[node] {
                 let next = usize::from(next);
@@ -285,7 +293,7 @@ impl Planner {
                 node = next;
             }
             let route = Route {
-                entry: self.nodes[start],
+                entry: lead.first().copied().unwrap_or(self.nodes[start]),
                 waypoints,
                 learned_route: None,
                 resumed_from: None,

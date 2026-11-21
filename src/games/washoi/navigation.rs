@@ -612,6 +612,47 @@ mod tests {
     }
 
     #[test]
+    fn walks_back_to_a_reached_corner_after_leaving_the_graph() {
+        // The walk from 0 to 1 turns at two corners. Live bots that last
+        // reached a corner and drifted past the entry radius stood still.
+        let graph: WashoiNavigation = serde_json::from_str(
+            r#"{
+            "map":"test","graph":{
+                "bsp_sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                "nodes":[[0,0,0],[400,0,400]],
+                "edges":[[0,1,[[200,0,0],[400,0,200]]],[1,0]],"entries":[0],"goals":[0,1]
+            }
+        }"#,
+        )
+        .unwrap();
+        let off = Vec3::new(260.0, 0.0, 60.0);
+        let back = graph
+            .plan(off, Some([200.0, 0.0, 0.0]), |_| true, |_| 0.0)
+            .unwrap();
+        assert_eq!(
+            back.waypoints,
+            [
+                [200.0, 0.0, 0.0],
+                [400.0, 0.0, 200.0],
+                [400.0, 0.0, 400.0],
+                [0.0, 0.0, 0.0]
+            ]
+        );
+        assert_eq!(back.entry, [200.0, 0.0, 0.0]);
+        // A node anchor still leads straight back to it, and an unknown point not at all.
+        let node = graph
+            .plan(
+                Vec3::new(60.0, 0.0, 30.0),
+                Some([0.0; 3]),
+                |_| true,
+                |_| 0.0,
+            )
+            .unwrap();
+        assert_eq!(node.waypoints[0], [0.0; 3]);
+        assert!(graph.plan(off, Some([1.0; 3]), |_| true, |_| 0.0).is_none());
+    }
+
+    #[test]
     fn selects_a_nearby_route_on_the_same_floor_and_advances_waypoints() {
         let routes: WashoiNavigation = serde_json::from_str(
             r#"{"map":"test","routes":[
