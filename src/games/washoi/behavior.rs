@@ -213,6 +213,8 @@ impl BotPlayer {
         match (self.engagement, self.sight.clone(), position) {
             (Some(fight), Some(sight), Some(position)) => {
                 self.fight_moves(world, fight, &sight, position, now);
+                // A guard answers the fight from the ground it was sent to hold.
+                self.planned_input = self.orders.leash(position, self.planned_input);
             }
             _ => {
                 self.combat.disengage();

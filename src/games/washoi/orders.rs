@@ -23,9 +23,41 @@ const STALL: Duration = Duration::from_millis(850);
 const BLOCKED_FOR: Duration = Duration::from_secs(5);
 const MIN_PROGRESS: f64 = 8.0;
 
+// Guard patrol, from TypeScript `BotOrders.guardPatrol` and `guardPoint`.
+const GUARD_POINT_REACHED: f64 = 56.0;
+const GUARD_POINT_FOR: Duration = Duration::from_secs(4);
+const GUARD_MIN_RADIUS: f64 = 96.0;
+const GUARD_MAX_RADIUS: f64 = 420.0;
+const GUARD_RINGS: [f64; 2] = [0.45, 0.85];
+const GUARD_DIRECTIONS: usize = 10;
+const GUARD_SPACING: f64 = 96.0;
+const GUARD_EYE: f64 = 40.0;
+// 90 ticks at Washoi's 125 Hz physics.
+const GUARD_STRAFE_PERIOD: f64 = 0.72;
+const HOLD_SWEEP: f64 = 0.3;
+const HOLD_SWEEP_RATE: f64 = 0.9;
+const EYE_HEIGHT: f64 = 32.0;
+const FORWARD: u16 = 1;
+const LEFT: u16 = 1 << 2;
+const RIGHT: u16 = 1 << 3;
+const JUMP: u16 = 1 << 4;
+const CROUCH: u16 = 1 << 5;
+const SPRINT: u16 = 1 << 6;
+const FIRE: u16 = 1 << 8;
+const ALT_FIRE: u16 = 1 << 9;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Kind {
+    MoveTo,
+    /// `hold_area` and `defend`: guard the ground, and come back to it.
+    Guard,
+    Escort,
+}
+
 #[derive(Debug, PartialEq)]
 struct Directive {
     id: String,
+    kind: Kind,
     target: Target,
     radius: f64,
     priority: f64,
@@ -33,6 +65,8 @@ struct Directive {
     immediate: bool,
     watch: Option<Vec3>,
     via: Vec<Vec3>,
+    /// How far a fight may draw a guard from its ground.
+    leash: Option<f64>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -50,6 +84,13 @@ pub(super) struct Orders {
     blocked: Option<(ObjectiveRecovery, SimTime)>,
     retry_at: Option<SimTime>,
     progress: Option<Progress>,
+    patrol: Option<Patrol>,
+    random: u64,
+}
+
+struct Patrol {
+    target: Vec3,
+    until: SimTime,
 }
 
 struct Progress {
@@ -107,6 +148,7 @@ impl Orders {
     fn clear_order(&mut self) {
         *self = Self {
             blocked: self.blocked,
+            random: self.random,
             ..Self::default()
         };
     }
@@ -155,6 +197,13 @@ impl Orders {
             self.walk = None;
             self.progress = None;
             self.retry_at = None;
+            // Planting and defusing use move_to and stay still on arrival.
+            // Guards and escorts keep moving round the ground they hold.
+            if self.via >= directive.via.len() && directive.kind != Kind::MoveTo {
+                let (radius, watch) = (directive.radius, directive.watch);
+                return Some(self.guard_patrol(sight, position, destination, radius, watch, now));
+            }
+            self.patrol = None;
             let watch = directive.watch.unwrap_or(target);
             return Some(PlayerInput {
                 yaw: (watch.x - position.x).atan2(watch.z - position.z),
@@ -206,6 +255,157 @@ impl Orders {
     }
 }
 
+impl Orders {
+    /// On the move round `center`, never standing: run between walkable
+    /// points that see the way in, watching it with a slow sweep. With
+    /// nowhere to run, strafe across it. TypeScript watches one of the graph
+    /// ways into the spot when the order names none. Here the order's watch
+    /// point, or else the walk direction, sets the view.
+    fn guard_patrol(
+        &mut self,
+        sight: Option<&Sight>,
+        position: Vec3,
+        center: Vec3,
+        radius: f64,
+        watch: Option<Vec3>,
+        now: SimTime,
+    ) -> PlayerInput {
+        let seconds = now.elapsed().as_secs_f64();
+        let sweep = (seconds * HOLD_SWEEP_RATE).sin() * HOLD_SWEEP;
+        let last = self.patrol.as_ref().map(|patrol| patrol.target);
+        if self.patrol.as_ref().is_some_and(|patrol| {
+            now >= patrol.until || horizontal(position, patrol.target) <= GUARD_POINT_REACHED
+        }) {
+            self.patrol = None;
+        }
+        if self.patrol.is_none() {
+            self.patrol = sight
+                .and_then(|sight| self.guard_point(sight, position, center, radius, watch, last))
+                .map(|target| Patrol {
+                    target,
+                    until: now + GUARD_POINT_FOR,
+                });
+        }
+        let look = |yaw: f64| {
+            let pitch = watch.map_or(0.0, |watch| {
+                let dy = watch.y - (position.y + EYE_HEIGHT);
+                -dy.atan2(horizontal(position, watch))
+            });
+            (watch.map_or(yaw, |watch| heading(position, watch)), pitch)
+        };
+        if let Some(patrol) = &self.patrol {
+            let heading = heading(position, patrol.target);
+            let (yaw, pitch) = look(heading);
+            return PlayerInput {
+                direction: [heading.sin(), 0.0, heading.cos()],
+                yaw: yaw + sweep,
+                pitch,
+                buttons: FORWARD | SPRINT,
+                weapon_slot: 0,
+            };
+        }
+        let (yaw, pitch) = look(heading(position, center));
+        let turn = if ((seconds / GUARD_STRAFE_PERIOD) as u64).is_multiple_of(2) {
+            1.0
+        } else {
+            -1.0
+        };
+        let room = |side: f64| {
+            let (sin, cos) = (yaw + side * std::f64::consts::FRAC_PI_2).sin_cos();
+            let to = Vec3::new(position.x + sin * 96.0, position.y, position.z + cos * 96.0);
+            sight.is_none_or(|sight| super::navigation::local_walk(sight, position, to))
+        };
+        let side = if room(turn) || !room(-turn) {
+            turn
+        } else {
+            -turn
+        };
+        let (sin, cos) = yaw.sin_cos();
+        PlayerInput {
+            // The view's right is (cos, 0, -sin) in world space.
+            direction: [side * cos, 0.0, -side * sin],
+            yaw: yaw + sweep,
+            pitch,
+            buttons: if side < 0.0 { LEFT } else { RIGHT },
+            weapon_slot: 0,
+        }
+    }
+
+    /// The next patrol point round `center`: walkable from here on this
+    /// floor, away from the last, and seeing the way in when one can.
+    fn guard_point(
+        &mut self,
+        sight: &Sight,
+        position: Vec3,
+        center: Vec3,
+        radius: f64,
+        look: Option<Vec3>,
+        last: Option<Vec3>,
+    ) -> Option<Vec3> {
+        let r = radius.clamp(GUARD_MIN_RADIUS, GUARD_MAX_RADIUS);
+        let offset = self.next_random() * std::f64::consts::TAU;
+        let mut best: Option<(f64, Vec3)> = None;
+        for ring in GUARD_RINGS {
+            for k in 0..GUARD_DIRECTIONS {
+                let angle = offset + k as f64 / GUARD_DIRECTIONS as f64 * std::f64::consts::TAU;
+                let point = Vec3::new(
+                    center.x + angle.sin() * r * ring,
+                    position.y,
+                    center.z + angle.cos() * r * ring,
+                );
+                if horizontal(point, position) < GUARD_SPACING
+                    || last.is_some_and(|last| horizontal(point, last) < GUARD_SPACING)
+                    || !super::navigation::local_walk(sight, position, point)
+                {
+                    continue;
+                }
+                let sees = look.is_some_and(|look| {
+                    sight.clear(
+                        [point.x, point.y + GUARD_EYE, point.z],
+                        [look.x, look.y + GUARD_EYE, look.z],
+                    )
+                });
+                let score = if sees { 2.0 } else { 0.0 } + self.next_random();
+                if best.is_none_or(|(top, _)| score > top) {
+                    best = Some((score, point));
+                }
+            }
+        }
+        best.map(|(_, point)| point)
+    }
+
+    /// A guard whose fight drifted past its order's leash heads back while it
+    /// keeps aiming, after TypeScript `BotOrders.applyLeash`.
+    pub(super) fn leash(&self, position: Vec3, mut input: PlayerInput) -> PlayerInput {
+        let Some(directive) = &self.directive else {
+            return input;
+        };
+        let (Kind::Guard, Target::Position(center), Some(leash)) =
+            (directive.kind, &directive.target, directive.leash)
+        else {
+            return input;
+        };
+        if horizontal(position, *center) <= leash {
+            return input;
+        }
+        let back = heading(position, *center);
+        input.direction = [back.sin(), 0.0, back.cos()];
+        input.buttons = (input.buttons & (FIRE | ALT_FIRE | JUMP | CROUCH)) | FORWARD;
+        input
+    }
+
+    /// A uniform draw in [0, 1) from a per-bot xorshift sequence.
+    fn next_random(&mut self) -> f64 {
+        if self.random == 0 {
+            self.random = 0x9e37_79b9_7f4a_7c15;
+        }
+        self.random ^= self.random << 13;
+        self.random ^= self.random >> 7;
+        self.random ^= self.random << 17;
+        (self.random >> 11) as f64 / (1u64 << 53) as f64
+    }
+}
+
 impl Directive {
     fn parse(value: &Value, tick: u32) -> Option<Self> {
         let id = value.get("id")?.as_str()?.trim();
@@ -226,6 +426,11 @@ impl Directive {
         {
             return None;
         }
+        let kind_of = match kind {
+            "move_to" => Kind::MoveTo,
+            "hold_area" | "defend" => Kind::Guard,
+            _ => Kind::Escort,
+        };
         let destination = match (kind, target.get("type")?.as_str()?) {
             ("move_to" | "hold_area" | "defend", "position") => {
                 Target::Position(point(target.get("position")?)?)
@@ -254,8 +459,13 @@ impl Directive {
             .and_then(Value::as_f64)
             .filter(|radius| radius.is_finite() && *radius > 0.0)
             .map_or(DEFAULT_RADIUS, |radius| radius.clamp(4.0, 1024.0));
+        let leash = value
+            .get("leash")
+            .and_then(Value::as_f64)
+            .filter(|leash| leash.is_finite() && *leash > 0.0);
         Some(Self {
             id: id.to_owned(),
+            kind: kind_of,
             target: destination,
             radius,
             priority,
@@ -263,6 +473,7 @@ impl Directive {
             immediate: interrupt == "never",
             watch: value.get("watch").and_then(point),
             via,
+            leash,
         })
     }
 }
@@ -313,6 +524,14 @@ fn point(value: &Value) -> Option<Vec3> {
 
 fn finite(point: Vec3) -> bool {
     [point.x, point.y, point.z].into_iter().all(f64::is_finite)
+}
+
+fn horizontal(a: Vec3, b: Vec3) -> f64 {
+    (a.x - b.x).hypot(a.z - b.z)
+}
+
+fn heading(from: Vec3, to: Vec3) -> f64 {
+    (to.x - from.x).atan2(to.z - from.z)
 }
 
 fn near(position: Vec3, target: Vec3, radius: f64) -> bool {
@@ -387,8 +606,13 @@ mod tests {
         let hold = orders
             .input(Some(&navigation), None, destination, None, start)
             .unwrap();
-        assert_eq!(hold.direction, [0.0; 3]);
+        // Without sight there is no patrol point, so the guard strafes
+        // across the way in, facing it.
         assert_eq!(hold.yaw, std::f64::consts::PI);
+        assert_eq!(hold.buttons, RIGHT);
+        let [x, _, z] = hold.direction;
+        assert!((x.hypot(z) - 1.0).abs() < 1e-9);
+        assert!((x * hold.yaw.sin() + z * hold.yaw.cos()).abs() < 1e-9);
 
         state.events.clear();
         state.tick = 50;
@@ -401,7 +625,7 @@ mod tests {
     }
 
     #[test]
-    fn bot_inputs_keep_steering_into_a_small_hold_area() {
+    fn bot_inputs_keep_steering_into_a_small_move_to_radius() {
         let navigation = serde_json::from_str(
             r#"{"map":"snd","graph":{
                 "bsp_sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
@@ -415,7 +639,7 @@ mod tests {
             events: vec![SnapshotEvent::AgentDirectives {
                 entity_id: "bot".into(),
                 directives: json::parse(
-                    r#"[{"id":"site","kind":"hold_area",
+                    r#"[{"id":"site","kind":"move_to",
                          "target":{"type":"position","position":{"x":64,"y":0,"z":0},"radius":4},
                          "priority":1,"expiresAtTick":50,"interrupt":"never"}]"#,
                 )
@@ -438,6 +662,56 @@ mod tests {
             assert_eq!(inputs.next().unwrap().direction, direction);
             assert!(inputs.all(|input| input.direction == direction));
         }
+    }
+
+    #[test]
+    fn a_guard_patrols_its_ground_and_a_leash_brings_it_back_from_a_fight() {
+        let orders_for = |kind: &str| {
+            let mut orders = Orders::default();
+            let directive = format!(
+                r#"[{{"id":"site","kind":"{kind}","leash":300,
+                     "target":{{"type":"position","position":{{"x":0,"y":0,"z":0}},"radius":200}},
+                     "priority":1,"expiresAtTick":50,"interrupt":"never"}}]"#
+            );
+            orders.observe(
+                &Observation {
+                    tick: 1,
+                    events: vec![SnapshotEvent::AgentDirectives {
+                        entity_id: "bot".into(),
+                        directives: json::parse(&directive).unwrap(),
+                    }],
+                    ..Observation::default()
+                },
+                "bot",
+            );
+            orders
+        };
+        let now = SimTime::ZERO;
+        let inside = Vec3::new(50.0, 0.0, 0.0);
+        let mut guard = orders_for("defend");
+        let strafe = guard.input(None, None, inside, None, now).unwrap();
+        assert_ne!(strafe.direction, [0.0; 3]);
+        assert!(strafe.buttons & (LEFT | RIGHT) != 0);
+        // Plants and defuses stand still on arrival.
+        let mut planter = orders_for("move_to");
+        let still = planter.input(None, None, inside, None, now).unwrap();
+        assert_eq!(still.direction, [0.0; 3]);
+
+        let fight = PlayerInput {
+            direction: [0.0, 0.0, 1.0],
+            yaw: 1.0,
+            buttons: FIRE | ALT_FIRE | RIGHT | CROUCH,
+            ..PlayerInput::default()
+        };
+        // Past the leash the walk back wins over any fight movement, as in
+        // TypeScript, including a cover peek or a high-ground climb. Those keep
+        // their own state and steer again once the guard is back inside.
+        assert_eq!(guard.leash(Vec3::new(250.0, 0.0, 0.0), fight), fight);
+        let back = guard.leash(Vec3::new(400.0, 0.0, 0.0), fight);
+        assert_eq!(back.yaw, 1.0);
+        assert_eq!(back.buttons, FIRE | ALT_FIRE | CROUCH | FORWARD);
+        assert!((back.direction[0] + 1.0).abs() < 1e-9 && back.direction[2].abs() < 1e-9);
+        assert_eq!(planter.leash(Vec3::new(400.0, 0.0, 0.0), fight), fight);
     }
 
     #[test]

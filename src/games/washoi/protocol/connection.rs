@@ -30,7 +30,7 @@ pub struct Connection<C: EventCodec> {
 }
 
 /// One Washoi input in world coordinates, produced by the game integration.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct PlayerInput {
     pub direction: [f64; 3],
     pub pitch: f64,
