@@ -21,6 +21,24 @@ const LEDGE_SPEED: f64 = 100.0;
 const LEDGE_BRAKE_RADIUS: f64 = 96.0;
 const MIN_STEP_SPEED: f64 = 30.0;
 
+pub(super) struct ObjectiveWalk {
+    route: Route,
+    next: usize,
+    arrival: f64,
+}
+
+impl ObjectiveWalk {
+    pub(super) fn steer(&mut self, position: Vec3, velocity: Option<Velocity>) -> PlayerInput {
+        WashoiNavigation::steer_with_arrival(
+            &self.route,
+            &mut self.next,
+            position,
+            velocity,
+            self.arrival,
+        )
+    }
+}
+
 /// Authored walking routes. Coordinates are Washoi world-space XYZ.
 #[derive(Deserialize)]
 #[serde(try_from = "RouteFile")]
@@ -85,6 +103,24 @@ impl TryFrom<RouteFile> for WashoiNavigation {
 impl WashoiNavigation {
     pub fn map(&self) -> &str {
         &self.map
+    }
+
+    pub(super) fn objective_walk(
+        &self,
+        position: Vec3,
+        target: Vec3,
+        radius: f64,
+    ) -> Option<ObjectiveWalk> {
+        let arrival = ARRIVAL_RADIUS.min(radius / 2.0);
+        let route = self
+            .planner
+            .as_ref()?
+            .plan_to(position, target, radius - arrival)?;
+        Some(ObjectiveWalk {
+            route,
+            next: 0,
+            arrival,
+        })
     }
 
     pub(super) fn has_learned_links(&self) -> bool {
@@ -171,6 +207,16 @@ impl WashoiNavigation {
         position: Vec3,
         velocity: Option<Velocity>,
     ) -> PlayerInput {
+        Self::steer_with_arrival(route, next, position, velocity, ARRIVAL_RADIUS)
+    }
+
+    fn steer_with_arrival(
+        route: &Route,
+        next: &mut usize,
+        position: Vec3,
+        velocity: Option<Velocity>,
+        arrival: f64,
+    ) -> PlayerInput {
         let waypoints = &route.waypoints;
         while let Some(&waypoint) = waypoints.get(*next) {
             // Steer toward a waypoint at another height, as on a ramp or
@@ -178,7 +224,12 @@ impl WashoiNavigation {
             // A bot that passes over or under a waypoint hasn't reached it.
             let distance = horizontal_distance(position, waypoint);
             let drop = position.y - waypoint[1];
-            let (x, z) = if distance > ARRIVAL_RADIUS {
+            let threshold = if *next + 1 == waypoints.len() {
+                arrival
+            } else {
+                ARRIVAL_RADIUS
+            };
+            let (x, z) = if distance > threshold {
                 (
                     (waypoint[0] - position.x) / distance,
                     (waypoint[2] - position.z) / distance,

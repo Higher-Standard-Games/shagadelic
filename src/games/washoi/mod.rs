@@ -3,6 +3,7 @@ mod difficulty;
 mod goals;
 mod learned;
 mod navigation;
+mod orders;
 pub mod protocol;
 mod session;
 mod sight;

@@ -45,6 +45,7 @@ pub(super) struct WalkGraph {
 /// only from the entries with precomputed routes.
 pub(super) struct Planner {
     nodes: Vec<[f64; 3]>,
+    neighbors: Vec<Vec<usize>>,
     corners: Corners,
     goals: Vec<PlannedGoal>,
     areas: Areas,
@@ -59,6 +60,60 @@ struct PlannedGoal {
 }
 
 impl Planner {
+    pub(super) fn plan_to(&self, position: Vec3, target: Vec3, radius: f64) -> Option<Route> {
+        let start = (0..self.nodes.len())
+            .filter(|&node| {
+                (self.nodes[node][1] - position.y).abs() <= MAX_HEIGHT_DELTA
+                    && horizontal_distance(position, self.nodes[node]) <= ENTRY_RADIUS
+            })
+            .min_by(|&a, &b| {
+                horizontal_distance(position, self.nodes[a])
+                    .total_cmp(&horizontal_distance(position, self.nodes[b]))
+            })?;
+        let mut distances = vec![f64::INFINITY; self.nodes.len()];
+        let mut predecessor: Vec<Option<usize>> = vec![None; self.nodes.len()];
+        let mut settled = vec![false; self.nodes.len()];
+        distances[start] = 0.0;
+
+        while let Some(node) = (0..self.nodes.len())
+            .filter(|&node| !settled[node] && distances[node].is_finite())
+            .min_by(|&a, &b| distances[a].total_cmp(&distances[b]))
+        {
+            let [x, y, z] = self.nodes[node];
+            if (y - target.y).abs() <= MAX_HEIGHT_DELTA
+                && (x - target.x).hypot(z - target.z) <= radius
+            {
+                let mut path = vec![node];
+                let mut current = node;
+                while let Some(previous) = predecessor[current] {
+                    path.push(previous);
+                    current = previous;
+                }
+                path.reverse();
+                let mut waypoints = vec![self.nodes[start]];
+                for pair in path.windows(2) {
+                    walk_edge(&mut waypoints, &self.nodes, &self.corners, pair[0], pair[1]);
+                }
+                return Some(Route {
+                    entry: self.nodes[start],
+                    waypoints,
+                    learned_route: None,
+                    resumed_from: None,
+                    pickup: None,
+                });
+            }
+            settled[node] = true;
+            for &next in &self.neighbors[node] {
+                let cost = distances[node] + edge_cost(&self.nodes, &self.corners, node, next);
+                if cost < distances[next] {
+                    distances[next] = cost;
+                    predecessor[next] = Some(node);
+                }
+            }
+        }
+        None
+    }
+
     /// The best accepted walk from the node nearest `position` to a goal
     /// the bot isn't already standing on. Ties go to the shorter walk.
     ///
@@ -240,6 +295,7 @@ impl WalkGraph {
             routes,
             Planner {
                 nodes: self.nodes,
+                neighbors,
                 corners,
                 goals,
                 areas,

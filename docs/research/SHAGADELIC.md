@@ -22,7 +22,7 @@ The current milestone is an **opt-in, playable Washoi bot service**. The bundled
 | Gameplay | Team and difficulty settings | Partial | The join path accepts a team preference, a seat ticket, and a named difficulty preset. Presets adjust how much health and armor need weighs in pickup scoring. Reaction, aim, and custom difficulty objects are not ported yet, and neither is team decision behavior. |
 | Gameplay | Map loading, navigation, and traversal | Partial | Includes baked pathfinding, stall recovery, and automatic links to recorded maneuvers. On `washoi_dm2`, the bot walked to a takeoff, landed the recorded jump, and reached a separate walking goal. Bots can replan from any graph node and move on from a reached goal. Runtime collision checks and routes that chain several maneuvers remain open. |
 | Gameplay | Perception, combat, and skills | Partial | Pickup goals use the bot's own health and armor, route distance, and locally observed availability. Visibility, target memory, aiming, weapon decisions, team tactics, and replayable decision traces remain open. |
-| Gameplay | Game-mode parity | Planned | Duel covers basic live admission. Full Duel, Amphi, FFA, and S&D behavior needs scenario coverage. |
+| Gameplay | Game-mode parity | Partial | Positional server directives now guide walking and holding. S&D objective rounds, player-target directives, and full Duel, Amphi, FFA, and S&D behavior remain open. |
 | Rollout | Ratings and match reports | Planned | Rust bot matches run unrated on the integration branches. Rating identity and match report parity are required before enabling rated play. |
 | Extensibility | Additional games and protocol adapters | Planned | The embeddable session boundary has tests. Washoi is the only real integration, and the generic protocol adapter interface remains a design sketch. |
 
@@ -138,6 +138,8 @@ The first playable behavior can choose a simple movement plan and exercise the i
 ## Behavior and skills
 
 **Virtual movement keys.** Ordinary bot steering selects forward, back, strafe, or a diagonal in the sent view's coordinate frame. Each client holds a chord for at least three logical input ticks through small turns. Stops and reversals take effect immediately. The encoder produces the world-space direction and movement button bits from the same keys and preserves the other action bits. Precise takeoff approaches and recorded traversal keep their existing command directions and timing.
+
+**Positional gametype orders.** A bot accepts its own `move_to`, `hold_area`, and `defend` orders, checks their server-tick expiry, and follows any lane waypoints through the shared walking graph. It stops in the target radius and can look at the server's watch point. Unreachable positions fall back to ordinary movement with a bounded retry rate. Player-target orders and full S&D round behavior remain open.
 
 Keep these three inputs to decision-making distinct.
 

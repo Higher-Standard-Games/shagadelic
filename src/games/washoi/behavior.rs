@@ -5,6 +5,7 @@ use tokio::time::Instant;
 
 use super::goals::OwnVitals;
 use super::navigation::{RouteFollower, RouteObservation};
+use super::orders::Orders;
 use super::protocol::{PlayerInput, SnapshotEvent};
 use super::{Difficulty, LearnedRoutes, Sight, WashoiNavigation, learned::Traversal};
 
@@ -24,6 +25,7 @@ pub struct BotPlayer {
     sent: u64,
     navigation: Option<Arc<WashoiNavigation>>,
     route: RouteFollower,
+    orders: Orders,
     planned_input: PlayerInput,
     learned: Option<Arc<LearnedRoutes>>,
     traversal: Traversal,
@@ -44,6 +46,7 @@ impl BotPlayer {
             sent: 0,
             navigation: None,
             route: RouteFollower::default(),
+            orders: Orders::default(),
             learned: None,
             traversal: Traversal::default(),
             linked_takeoffs: false,
@@ -118,9 +121,11 @@ impl BotPlayer {
         self.last_snapshot = Some(now);
         let own = world.entities.get(&self.entity_id);
         self.own_entity_present = own.is_some();
+        self.orders.observe(world, &self.entity_id);
         if self.respawn_at.is_some() || !self.own_entity_present {
             self.started = None;
             self.route.detach();
+            self.orders = Orders::default();
             self.traversal = Traversal::default();
         } else if let Some(library) = &self.learned
             && let Some(entity) = own
@@ -136,6 +141,17 @@ impl BotPlayer {
                 self.route.detach();
                 return;
             }
+        }
+        if self.respawn_at.is_none()
+            && let Some(entity) = own
+            && let Some(position) = entity.position
+            && let Some(input) =
+                self.orders
+                    .input(self.navigation.as_deref(), position, entity.velocity, now)
+        {
+            self.route.detach();
+            self.planned_input = input;
+            return;
         }
         if let Some(navigation) = &self.navigation {
             self.planned_input = PlayerInput::default();
