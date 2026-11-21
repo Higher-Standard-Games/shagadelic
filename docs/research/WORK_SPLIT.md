@@ -66,11 +66,11 @@ Next:
 The goal is every TypeScript bot skill in `src/games/fps/bot/`, not a sample. `tools/bench-washoi-ab.mjs` orders the work: take next what costs the Rust bot most against the TypeScript bot. Line counts are the TypeScript sources.
 
 Session A, decisions and combat:
-- [ ] Mood and mistakes: `BotMood.ts` (160). Wild shots, wrong weapon, item glances, forgetting an enemy.
-- [ ] Fire safety: `BotFireSafety.ts` (97).
+- [x] Mood and mistakes: `BotMood.ts` (160). Wild shots, wrong weapon, item glances, forgetting an enemy.
+- [x] Fire safety: `BotFireSafety.ts` (97).
 - [ ] Goal arbiter and considerations: `goals/` (about 1,500). Covers `GoalArbiter`, `ItemGoalPlanner`, `ItemGoalSource`, and `DirectiveGoalSource`, plus the Danger, ItemDenial, ContestedItem, ItemValue, RouteCost, TeamPlay, and ObjectivePush considerations.
 - [ ] Strategy layer: `strategy/Strategist.ts` (448), `strategy/OpponentModel.ts` (59), the rest of `strategy/MatchRead.ts`, `intel/` (393), `BotTerritory.ts` (62), and `states/BotRoam.ts` roam choice (`goals/RoamChoice.ts`).
-- [ ] Look behavior: `view/BotLook.ts` (226).
+- [x] Look behavior: `view/BotLook.ts` (226).
 - [ ] Blade lunge: `sequences/SlideBladeSequence.ts` (173).
 - [ ] Decision traces: `DecisionTrace.ts` (53) and replayable decision records.
 - [ ] Enemy major pickups credited in the estimate: `BotPerception` pickup hearing by item.
