@@ -17,6 +17,7 @@ use tokio_tungstenite::{
 };
 
 use super::{Admission, AdmissionEvent, SnapshotEvent, SnapshotReceiver, WashoiEvents};
+use crate::games::washoi::Controls;
 
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
@@ -171,25 +172,18 @@ impl Connection<WashoiEvents> {
                 .send(Message::binary(encode_request_spawn()))
                 .await?;
         }
-        if batch.exact {
-            *keys = super::keys::MovementKeys::default();
-        }
-        for input in batch.inputs {
-            self.send_input(if batch.exact {
-                input
-            } else {
-                keys.apply(input)
-            })
-            .await?;
+        for controls in batch.controls {
+            self.send_input(keys.encode(controls)).await?;
         }
         Ok(())
     }
 }
 
+/// One input opportunity: an optional respawn request, then the paced
+/// commands in order.
 pub(crate) struct InputBatch {
-    inputs: Vec<PlayerInput>,
+    controls: Vec<Controls>,
     respawn: bool,
-    exact: bool,
 }
 
 impl InputBatch {
@@ -197,11 +191,20 @@ impl InputBatch {
         bot: &mut super::super::BotPlayer,
         now: tokio::time::Instant,
     ) -> Self {
-        Self {
-            respawn: bot.request_respawn(now),
-            exact: bot.uses_exact_movement(),
-            inputs: bot.inputs(now).collect(),
-        }
+        let respawn = bot.request_respawn(now);
+        let exact = bot.uses_exact_movement();
+        let controls = bot
+            .inputs(now)
+            .map(|input| Controls {
+                direction: input.direction,
+                yaw: input.yaw,
+                pitch: input.pitch,
+                buttons: input.buttons,
+                weapon_slot: input.weapon_slot,
+                exact,
+            })
+            .collect();
+        Self { controls, respawn }
     }
 }
 

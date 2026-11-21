@@ -3,6 +3,7 @@
 use std::f64::consts::FRAC_1_SQRT_2;
 
 use super::PlayerInput;
+use crate::games::washoi::Controls;
 
 const FORWARD: u16 = 1 << 0;
 const BACK: u16 = 1 << 1;
@@ -69,6 +70,23 @@ pub(super) struct MovementKeys {
 }
 
 impl MovementKeys {
+    /// Encode one brain command. Exact controls go out unchanged and release
+    /// any held keys, so they don't leak into the next ordinary command.
+    pub(super) fn encode(&mut self, controls: Controls) -> PlayerInput {
+        let input = PlayerInput {
+            direction: controls.direction,
+            pitch: controls.pitch,
+            yaw: controls.yaw,
+            buttons: controls.buttons,
+            weapon_slot: controls.weapon_slot,
+        };
+        if controls.exact {
+            self.held = None;
+            return input;
+        }
+        self.apply(input)
+    }
+
     pub(super) fn apply(&mut self, mut input: PlayerInput) -> PlayerInput {
         let [x, _, z] = input.direction;
         let length = x.hypot(z);
@@ -151,6 +169,38 @@ mod tests {
             keys.apply(input([0.0, 0.0, -1.0], 0.0)).buttons & MOVEMENT,
             BACK
         );
+    }
+
+    #[test]
+    fn exact_controls_pass_through_and_release_held_keys() {
+        let mut keys = MovementKeys::default();
+        let ordinary = |direction| Controls {
+            direction,
+            buttons: 1 << 8,
+            weapon_slot: 2,
+            ..Controls::default()
+        };
+        let forward = ordinary([0.0, 0.0, 1.0]);
+        let diagonal = ordinary([1.0, 0.0, 1.0]);
+        assert_eq!(keys.encode(forward).buttons & MOVEMENT, FORWARD);
+        let exact = Controls {
+            direction: [0.3, 0.0, 0.4],
+            yaw: 1.0,
+            pitch: -0.2,
+            buttons: BACK | (1 << 8),
+            exact: true,
+            ..Controls::default()
+        };
+        let sent = keys.encode(exact);
+        assert_eq!(sent.direction, exact.direction);
+        assert_eq!(
+            (sent.yaw, sent.pitch, sent.buttons),
+            (1.0, -0.2, BACK | (1 << 8))
+        );
+        // The forward key no longer holds through a short turn.
+        let after = keys.encode(diagonal);
+        assert_eq!(after.buttons, FORWARD | RIGHT | (1 << 8));
+        assert_eq!(after.weapon_slot, 2);
     }
 
     #[tokio::test]
