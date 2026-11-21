@@ -3,6 +3,7 @@
 
 use std::hash::{BuildHasher, RandomState};
 
+#[derive(Default)]
 pub(super) struct Random(u64);
 
 impl Random {

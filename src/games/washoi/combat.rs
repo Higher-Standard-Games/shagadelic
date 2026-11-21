@@ -14,9 +14,11 @@ use shagger_shared::{json::Value, net::game_state::Vec3};
 use super::{
     Observation, Sight,
     aim::View,
+    combos::{Combos, Situation},
     difficulty::AimSkill,
     perception::{Enemy, Perception, Senses, Source},
     protocol::SnapshotEvent,
+    random::Random,
     weapons::{self, Profile},
 };
 
@@ -55,6 +57,9 @@ pub(super) struct Combat {
     /// The enemy last fought or heard, where and when it was last noticed.
     track: Option<Track>,
     perception: Perception,
+    combos: Combos,
+    /// Combo rolls, seeded per bot.
+    random: Random,
     /// The weapon and server tick since which aim has been held with it out.
     /// TypeScript resets this during a switch, when the weapon out differs
     /// from the one chosen; keying it by weapon also covers a switch between
@@ -96,9 +101,29 @@ pub(super) struct Engagement {
 }
 
 impl Combat {
-    pub(super) fn observe(&mut self, events: &[SnapshotEvent], own: &str) {
+    pub(super) fn seeded(random: Random) -> Self {
+        Self {
+            random,
+            ..Self::default()
+        }
+    }
+
+    pub(super) fn observe(&mut self, events: &[SnapshotEvent], own: &str, tick: u32) {
         for event in events {
             match event {
+                SnapshotEvent::Damage {
+                    entity_id,
+                    attacker_id,
+                    weapon_id,
+                    ..
+                } if attacker_id == own && entity_id != own => {
+                    self.combos.hit(weapon_id, entity_id, tick);
+                }
+                SnapshotEvent::WeaponFire {
+                    entity_id,
+                    weapon_id,
+                    ..
+                } if entity_id == own => self.combos.shot(weapon_id, tick),
                 SnapshotEvent::CombatState {
                     entity_id, dead, ..
                 } => {
@@ -207,11 +232,39 @@ impl Combat {
                 .find(|(weapon, _)| weapon == id)
                 .map(|(_, ammo)| *ammo)
         };
-        let (weapon_slot, profile) = weapons::select(&self.weapons, ammo, &self.weapon, distance);
-        let selected = match weapon_slot {
-            0 => self.weapon.as_str(),
-            slot => self.weapons[usize::from(slot) - 1].as_str(),
+        let (mut weapon_slot, mut profile) =
+            weapons::select(&self.weapons, ammo, &self.weapon, distance);
+        let picked = match weapon_slot {
+            0 => self.weapon.clone(),
+            slot => self.weapons[usize::from(slot) - 1].clone(),
         };
+        let has =
+            |id: &str| self.weapons.iter().any(|w| w == id) && ammo(id).is_none_or(|a| a > 0.0);
+        let combo = self.combos.choose(
+            &Situation {
+                tick: world.tick,
+                target: enemy.entity,
+                distance,
+                target_rising: enemy.velocity.y,
+                current: &self.weapon,
+                picked: &picked,
+                has: &has,
+                weapons: &self.weapons,
+            },
+            skill.prediction,
+            &mut self.random,
+        );
+        // `slotFor`: 0 when the combo's weapon is already out.
+        if let Some(combo) = &combo {
+            profile = weapons::profile_of(combo);
+            weapon_slot = self
+                .weapons
+                .iter()
+                .position(|weapon| weapon == combo && *weapon != self.weapon)
+                .and_then(|index| u8::try_from(index + 1).ok())
+                .unwrap_or(0);
+        }
+        let selected = combo.as_deref().unwrap_or(&picked);
         let has_ammo = ammo(selected).is_none_or(|ammo| ammo > 0.0);
         let selected_out = selected == self.weapon;
         // `aimWithLead` for projectiles. `aimAt` leads every other target by
@@ -354,6 +407,7 @@ impl Combat {
         self.ammo.clear();
         self.ads_since = None;
         self.track = None;
+        self.combos.reset();
     }
 }
 
@@ -382,11 +436,11 @@ fn distance(a: Vec3, b: Vec3) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::games::washoi::PlayerView;
     use crate::games::washoi::{
         Difficulty,
         sight::tests::{cube, encode},
     };
+    use crate::games::washoi::{PlayerView, random::Random};
     use shagger_shared::{json::Value, net::game_state::Velocity};
 
     fn world(players: &[(&str, &str, [f64; 3])]) -> Observation {
@@ -448,7 +502,7 @@ mod tests {
             armor: 0,
             dead: true,
         });
-        combat.observe(&world.events, "me");
+        combat.observe(&world.events, "me", 0);
         let fight = engaged(&mut combat, &world, me, skill).unwrap();
         // Straight down -z, level with the fire origin.
         assert!((fight.view.yaw.abs() - std::f64::consts::PI).abs() < 1e-9);
@@ -512,10 +566,59 @@ mod tests {
         // 0.9 · 1400 / 1400 s ahead: 270 units to +x, so the yaw leans that way.
         assert!((fight.view.yaw - 270f64.atan2(-1400.0)).abs() < 1e-9);
         // A plasma bolt takes 1400 / 1750 s and splashes at the feet.
-        combat.observe(&[armed("plasmagun", &["plasmagun"], &[])], "me");
+        combat.observe(&[armed("plasmagun", &["plasmagun"], &[])], "me", 0);
         let fight = engaged(&mut combat, &world, me, skill).unwrap();
         assert!((fight.view.yaw - 240f64.atan2(-1400.0)).abs() < 1e-9);
         assert!(fight.view.pitch > 0.0);
+    }
+
+    #[test]
+    fn follows_its_own_launching_rocket_with_the_electrobolt() {
+        let me = Vec3::new(0.0, 0.0, -100.0);
+        let mut world = world(&[
+            ("me", "", [0.0, 0.0, -100.0]),
+            ("foe", "", [0.0, 0.0, -900.0]),
+        ]);
+        world.body_mut("foe").unwrap().velocity = Some(Velocity {
+            linear: Vec3::new(0.0, 400.0, 0.0),
+            ..Velocity::default()
+        });
+        world.tick = 200;
+        // Insane rolls its combos at 0.9, and this seed passes.
+        let mut combat = Combat::seeded(Random::new(4));
+        let loadout = ["rlauncher", "electrobolt"];
+        let hit = SnapshotEvent::Damage {
+            entity_id: "foe".into(),
+            attacker_id: "me".into(),
+            damage: 80,
+            weapon_id: "rlauncher".into(),
+            at: crate::games::washoi::protocol::Point {
+                x: 0.0,
+                y: 0.0,
+                z: -900.0,
+            },
+            hit_location: None,
+            pain_tier: None,
+        };
+        combat.observe(
+            &[
+                armed(
+                    "rlauncher",
+                    &loadout,
+                    &[
+                        ("rlauncher", rounds(5.0, 0.0)),
+                        ("electrobolt", rounds(5.0, 0.0)),
+                    ],
+                ),
+                hit,
+            ],
+            "me",
+            200,
+        );
+        let fight = engaged(&mut combat, &world, me, Difficulty::Insane.aim()).unwrap();
+        // At 800 units the distance keeps the rocket launcher out. The combo
+        // takes the bolt in slot 2 while the foe hangs in the air.
+        assert_eq!(fight.weapon_slot, 2);
     }
 
     #[test]
@@ -540,6 +643,7 @@ mod tests {
                 ],
             )],
             "me",
+            0,
         );
         let fight = engaged(&mut combat, &world, me, skill).unwrap();
         assert_eq!((fight.weapon_slot, fight.buttons), (2, FIRE));
@@ -554,6 +658,7 @@ mod tests {
                 ],
             )],
             "me",
+            0,
         );
         let fight = engaged(&mut combat, &world, me, skill).unwrap();
         assert_eq!((fight.weapon_slot, fight.buttons), (0, FIRE | ALT_FIRE));
@@ -565,6 +670,7 @@ mod tests {
                 &[("electrobolt", rounds(5.0, 0.0))],
             )],
             "me",
+            0,
         );
         world.tick = 100;
         assert_eq!(
@@ -584,10 +690,11 @@ mod tests {
                 &[("electrobolt", rounds(0.0, 0.0))],
             )],
             "me",
+            0,
         );
         assert_eq!(engaged(&mut combat, &world, me, skill).unwrap().buttons, 0);
         // The blade swings only within reach.
-        combat.observe(&[armed("blade", &["blade"], &[])], "me");
+        combat.observe(&[armed("blade", &["blade"], &[])], "me", 0);
         let far = engaged(&mut combat, &world, me, skill).unwrap();
         assert!(far.melee && far.buttons == 0);
         world.body_mut("foe").unwrap().position = Some(Vec3::new(0.0, 0.0, -200.0));
@@ -635,6 +742,7 @@ mod tests {
                 dead: true,
             }],
             "me",
+            0,
         );
         assert!(combat.lost(1125).is_none());
     }

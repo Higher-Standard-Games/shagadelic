@@ -17,6 +17,26 @@ pub(super) struct Profile {
     pub(super) aims_down_sights: bool,
     /// Server ticks aim must be held before a shot counts as aimed.
     pub(super) ads_ready_ticks: u32,
+    /// `fireIntervalTicks`: server ticks between shots.
+    pub(super) fire_interval_ticks: u32,
+}
+
+impl Profile {
+    const fn every(self, fire_interval_ticks: u32) -> Self {
+        Self {
+            fire_interval_ticks,
+            ..self
+        }
+    }
+
+    pub(super) fn dps(&self) -> f64 {
+        self.dps
+    }
+
+    /// Within the ideal range, widened by `slack` of it on each side.
+    pub(super) fn fits(&self, distance: f64, slack: f64) -> bool {
+        distance >= self.min_range * (1.0 - slack) && distance <= self.max_range * (1.0 + slack)
+    }
 }
 
 const fn profile(
@@ -40,23 +60,24 @@ const fn profile(
             Some(ticks) => ticks,
             None => 0,
         },
+        fire_interval_ticks: 100,
     }
 }
 
 const BLADE: Profile = Profile {
     melee: true,
-    ..profile("blade", 0.0, false, 160.0, (0.0, 100.0), None)
+    ..profile("blade", 0.0, false, 160.0, (0.0, 100.0), None).every(63)
 };
 
 const PROFILES: [Profile; 8] = [
     BLADE,
-    profile("machinegun", 0.0, false, 100.0, (100.0, 3000.0), Some(0)),
-    profile("riotgun", 0.0, false, 112.5, (50.0, 500.0), Some(0)),
-    profile("plasmagun", 1750.0, true, 150.0, (200.0, 1200.0), Some(0)),
-    profile("electrobolt", 0.0, false, 60.0, (400.0, 5000.0), Some(47)),
-    profile("voltaic", 0.0, false, 140.0, (50.0, 850.0), Some(0)),
-    profile("rlauncher", 1814.0, true, 100.0, (200.0, 1200.0), Some(20)),
-    profile("glauncher", 1080.0, true, 100.0, (200.0, 1200.0), Some(20)),
+    profile("machinegun", 0.0, false, 100.0, (100.0, 3000.0), Some(0)).every(13),
+    profile("riotgun", 0.0, false, 112.5, (50.0, 500.0), Some(0)).every(100),
+    profile("plasmagun", 1750.0, true, 150.0, (200.0, 1200.0), Some(0)).every(13),
+    profile("electrobolt", 0.0, false, 60.0, (400.0, 5000.0), Some(47)).every(156),
+    profile("voltaic", 0.0, false, 140.0, (50.0, 850.0), Some(0)).every(6),
+    profile("rlauncher", 1814.0, true, 100.0, (200.0, 1200.0), Some(20)).every(100),
+    profile("glauncher", 1080.0, true, 100.0, (200.0, 1200.0), Some(20)).every(100),
 ];
 
 /// `DEFAULT_PROFILE`, for weapons the table doesn't know.

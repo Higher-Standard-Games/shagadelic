@@ -66,6 +66,7 @@ pub struct BotPlayer {
 
 impl BotPlayer {
     pub fn new(entity_id: String) -> Self {
+        let combat = Combat::seeded(Random::for_bot(&format!("{entity_id}/combos")));
         Self {
             random: Random::for_bot(&entity_id),
             entity_id,
@@ -86,7 +87,7 @@ impl BotPlayer {
             vitals: OwnVitals::default(),
             difficulty: Difficulty::default(),
             sight: None,
-            combat: Combat::default(),
+            combat,
             engagement: None,
             moves: CombatMovement::default(),
             chase: Chase::default(),
@@ -179,7 +180,8 @@ impl BotPlayer {
     }
 
     fn decide_on(&mut self, world: &Observation, now: SimTime) {
-        self.combat.observe(&world.events, &self.entity_id);
+        self.combat
+            .observe(&world.events, &self.entity_id, world.tick);
         self.exact_view = self.plan(world, now);
         let position = world
             .body(&self.entity_id)

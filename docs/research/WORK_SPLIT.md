@@ -55,12 +55,12 @@ Suggested path:
 
 ## Session A plan (combat)
 
-Done: strafing and hit dodges (`b83927c`), rocket and grenade sidesteps (`37eef1d`), chasing an enemy out of sight (`efe5de9`), and perception: a view cone, noticing delay, and hearing (`17db763`). On session A's own server (port 7791), two Insane bots reach a kill in nine of ten runs within 120 seconds.
+Done: strafing and hit dodges (`b83927c`), rocket and grenade sidesteps (`37eef1d`), chasing an enemy out of sight (`efe5de9`), perception (`17db763`), the brain's side of the separation (`7ead674` to `cefd2cf`), and weapon combos (this commit). Hunting turned out to be mostly covered by chase and roaming, and the design records why. The rest needs the strategy layer's weight profiles.
 
 Next:
-1. Hunting: where to look for an enemy when none is known, after `states/BotRoam.ts` `hunt`.
-2. Charged shots and weapon combos, after `updateChargedFire` and `BotWeaponCombos.ts`.
-3. Cover peeking and high ground, after `BotCoverPeek.ts` and `findHighGround`.
+1. Charged blade shots, after `BotFight.updateChargedFire`.
+2. Cover peeking and high ground, after `BotCoverPeek.ts` and `findHighGround`.
+3. The finishing switch, once an enemy health estimate (`strategy/MatchRead.ts`) exists.
 
 ## Notes between sessions
 
