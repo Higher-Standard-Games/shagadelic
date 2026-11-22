@@ -127,6 +127,8 @@ pub struct BotPlayer {
     position: Option<super::super::Vec3>,
     allies: Vec<super::super::Vec3>,
     shooting: bool,
+    /// Fire or alt-fire went out in a command since the last trace.
+    fired: bool,
     /// Whether the last decision had a fight, to see fights start and end.
     fighting: bool,
     unstick: Unstick,
@@ -244,6 +246,7 @@ impl BotPlayer {
             position: None,
             allies: Vec::new(),
             shooting: false,
+            fired: false,
             fighting: false,
             unstick: Unstick::default(),
             liquid: LiquidEscape::default(),
@@ -620,6 +623,7 @@ impl BotPlayer {
         }
         if self.tracing {
             let record = self.record(world, position);
+            self.fired = false;
             if let Some(sink) = &mut self.trace_sink {
                 use std::io::Write as _;
                 let _ = serde_json::to_writer(&mut *sink, &record);
@@ -683,7 +687,7 @@ impl BotPlayer {
             strategy: self.strategist.explain(),
             mover: self.mover,
             engaged: self.engagement.is_some_and(|fight| fight.in_sight),
-            firing: self.planned_input.buttons & (FIRE | ALT_FIRE) != 0,
+            firing: self.fired,
             hunch: if self.arbitrated {
                 self.planner.hunch_pick().map(str::to_owned)
             } else {
@@ -2137,6 +2141,7 @@ impl BotPlayer {
         if let Some(position) = self.position {
             input.buttons = safety::spare_allies(input.buttons, position, sent, &self.allies);
         }
+        self.fired |= input.buttons & (FIRE | ALT_FIRE) != 0;
         input
     }
 
@@ -2605,6 +2610,24 @@ mod tests {
             }
             assert_eq!(changed, turned, "phase {phase}");
         }
+    }
+
+    /// The trace's `firing` is what went out: the aim gate adds fire when
+    /// commands are paced, after the decision is traced.
+    #[test]
+    fn the_trace_reports_fire_sent_since_the_last_decision() {
+        let mut bot = BotPlayer::new("bot".into());
+        let world = Observation::default();
+        assert!(!bot.record(&world, None).firing);
+        bot.planned_input.buttons = FIRE;
+        let _ = bot.next_command();
+        assert!(bot.record(&world, None).firing);
+        bot.planned_input.buttons = 0;
+        let _ = bot.next_command();
+        assert!(
+            bot.record(&world, None).firing,
+            "still since the last trace"
+        );
     }
 
     #[test]

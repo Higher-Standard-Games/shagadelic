@@ -54,6 +54,8 @@ pub struct DecisionTrace {
     pub mover: &'static str,
     /// An enemy in sight this decision.
     pub engaged: bool,
-    /// Fire or alt-fire held in the planned input.
+    /// Fire or alt-fire went out in a command since the previous decision.
+    /// The aim gate adds and holds fire as commands are paced out, after
+    /// the decision plans them, so the planned input alone never shows it.
     pub firing: bool,
 }
