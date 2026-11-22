@@ -12,6 +12,12 @@
 //! Only on a genuine switch does a difficulty's mistake rate sometimes take
 //! the runner-up, held for its window, so the bot looks like it misjudged
 //! rather than malfunctioned.
+//!
+//! Two departures from TypeScript, from S&D, where switching orders restarts
+//! the order's walk: a mistake only swaps one item for another, as a person
+//! misjudges an item but does not wander off a plant for one; and a
+//! committed order keeps its bonus for as long as it is offered, so two near
+//! orders (arm and guard) do not flip every window.
 
 use std::fmt::Write as _;
 
@@ -152,9 +158,11 @@ impl Arbiter {
             mistaken = true;
         } else if let Some(winner) = best
             && Some(candidates[winner].id.as_str()) != self.committed.as_deref()
+            && candidates[winner].order.is_none()
             && self.mistake_chance > 0.0
             && random.next() < self.mistake_chance
             && let Some(runner_up) = runner_up(&traces, winner)
+            && candidates[runner_up].order.is_none()
         {
             best = Some(runner_up);
             best_desire = traces[runner_up].desire;
@@ -234,7 +242,11 @@ impl Arbiter {
         trace.attraction = top + SECONDARY_WEIGHT * secondary_mean;
         trace.discount = discount;
         trace.desire = trace.attraction * discount;
-        if Some(goal.id.as_str()) == self.committed.as_deref() && tick < self.commitment_until {
+        // An order stays committed while the server keeps offering it: a
+        // gametype re-issues its orders to keep an objective alive.
+        if Some(goal.id.as_str()) == self.committed.as_deref()
+            && (tick < self.commitment_until || goal.order.is_some())
+        {
             trace.desire += HYSTERESIS_BONUS;
         }
         trace.via = top_id;
@@ -422,5 +434,47 @@ mod tests {
         assert_eq!(choose(&mut arbiter, &mut random, 100).goal, Some(1));
         assert_eq!(mistake_probability(8.0), 0.5);
         assert_eq!(mistake_probability(0.0), 0.0);
+    }
+
+    #[test]
+    fn orders_take_no_mistakes_and_stay_committed_while_offered() {
+        use crate::games::washoi::{Vec3, agents::player::strategy::considerations::Order};
+        let order = |id: &str, priority: f64| Goal {
+            id: id.into(),
+            position: Vec3::new(300.0, 0.0, 0.0),
+            pickup: None,
+            order: Some(Order {
+                priority,
+                urgency: 0.0,
+                escort: None,
+            }),
+            respawn_tick: None,
+        };
+        let goals = [
+            order("arm", 0.9),
+            order("guard", 0.88),
+            pickup(0, PickupKind::Armor, "ra"),
+        ];
+        fn context(goal: &Goal) -> Context<'_> {
+            let mut weights = weights::DEFAULT;
+            weights.objective_push = 1.0;
+            Context {
+                goal,
+                me: me(100, 0),
+                situation: Situation::default(),
+                route_cost: Some(300.0),
+                weights,
+            }
+        }
+        // Every switch would err; an order's never does.
+        let mut arbiter = Arbiter::new(&considerations::ALL, 1.0);
+        let mut random = Random::new(5);
+        let first = arbiter.select(&goals, context, 0, &[], &mut random);
+        assert_eq!(first.goal, Some(0), "{}", first.explain);
+        assert!(!first.explain.contains("mistake"), "{}", first.explain);
+        // Long past the window, a slightly better guard does not take over.
+        let goals = [order("arm", 0.9), order("guard", 0.92)];
+        let later = arbiter.select(&goals, context, 1000, &[], &mut random);
+        assert_eq!(later.goal, Some(0), "{}", later.explain);
     }
 }
