@@ -117,6 +117,8 @@ pub(in crate::games::washoi) struct SlideView<'a> {
     pub(in crate::games::washoi) allies: &'a [Vec3],
     /// `strafeJumpSkill`, which decides the jump cancel.
     pub(in crate::games::washoi) strafe_jump_skill: f64,
+    /// A fight or chase at the last decision. No slide starts in one.
+    pub(in crate::games::washoi) fighting: bool,
 }
 
 impl RouteSlide {
@@ -205,6 +207,7 @@ impl RouteSlide {
         let speed = velocity.linear.x.hypot(velocity.linear.z);
         if self.item.is_none()
             && self.running.is_none()
+            && !view.fighting
             && view.tick >= self.cooldown_until
             && velocity.grounded
             && input.buttons & (FIRE | ALT_FIRE | BACK | JUMP | CROUCH) == 0
@@ -229,7 +232,8 @@ impl RouteSlide {
         if self.running.is_none() {
             let [x, _, z] = input.direction;
             let asking = x != 0.0 || z != 0.0;
-            if view.tick < self.cooldown_until
+            if view.fighting
+                || view.tick < self.cooldown_until
                 || !asking
                 || !velocity.grounded
                 || input.buttons & (FIRE | ALT_FIRE | BACK) != 0
@@ -351,6 +355,7 @@ mod tests {
             pickup_active: &[],
             allies: &[],
             strafe_jump_skill: skill,
+            fighting: false,
         }
     }
 

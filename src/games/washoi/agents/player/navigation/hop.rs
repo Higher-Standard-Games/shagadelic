@@ -6,10 +6,12 @@
 //! the next hop goes without losing a tick to ground friction, as long as the
 //! route ahead has room for it.
 //!
-//! The keys stay ones a human can hold: the view sent is the hop's move yaw,
-//! and the keys are relative to it. TypeScript turns the view toward the route
-//! separately from the keys' frame. Washoi's 400 u/s ground cap doesn't apply
-//! in the air, so strafe keys gain speed there.
+//! The keys stay ones a human can hold. Each decision works out the view and
+//! keys TypeScript's air control wants, turns the sent view toward that view at
+//! TypeScript's hop turn rate, 2.5 + 4.5 × skill radians a second, and presses
+//! the key chord nearest the wanted wish in the view actually sent. TypeScript
+//! sends its keys in a frame of their own, apart from the view. Washoi's
+//! 400 u/s ground cap doesn't apply in the air, so strafe keys gain speed there.
 //!
 //! Deviations: only straight lanes, not chains bent along a held route line,
 //! and the walk to each landing's next lane comes from the route follower.
@@ -90,6 +92,10 @@ pub(in crate::games::washoi) struct HopView<'a> {
     pub(in crate::games::washoi) lane: Option<HopLane>,
     pub(in crate::games::washoi) sight: Option<&'a Sight>,
     pub(in crate::games::washoi) skill: f64,
+    /// The view the bot sends now, where a chain's first turn starts.
+    pub(in crate::games::washoi) view_yaw: f64,
+    /// A fight or chase at the last decision. No chain starts in one.
+    pub(in crate::games::washoi) fighting: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -110,6 +116,9 @@ struct Hop {
     max_cross_track: f64,
     side: f64,
     landed: Option<u32>,
+    /// The view sent at the last decision, and when.
+    view_yaw: f64,
+    view_tick: u32,
 }
 
 #[derive(Default)]
@@ -149,7 +158,8 @@ impl HopChain {
             self.running?;
         }
         let mut hop = self.running?;
-        let (controls, done) = tick(&mut hop, view, velocity);
+        let (wanted, done) = tick(&mut hop, view, velocity);
+        let controls = turn_view(&mut hop, view, wanted);
         self.running = (!done).then_some(hop);
         Some(PlayerInput {
             weapon_slot: input.weapon_slot,
@@ -162,6 +172,7 @@ impl HopChain {
         let [x, _, z] = input.direction;
         if view.tick < self.cooldown_until
             || view.skill < MIN_SKILL
+            || view.fighting
             || !velocity.grounded
             || velocity.is_sliding
             || (x == 0.0 && z == 0.0)
@@ -191,6 +202,8 @@ impl HopChain {
             max_cross_track: 96.0 + view.skill * 64.0,
             side: fallback,
             landed: None,
+            view_yaw: view.view_yaw,
+            view_tick: view.tick,
         };
         let velocity_yaw = heading(velocity, lane.yaw);
         let side = choose_side(
@@ -324,6 +337,56 @@ fn strafe(hop: &Hop, view: &HopView<'_>, velocity: Velocity, steer_only: bool) -
         FRAC_1_SQRT_2,
         JUMP | FORWARD | if hop.side < 0.0 { LEFT } else { RIGHT },
     )
+}
+
+/// The controls air control wants, sent with the view turned toward the wanted
+/// view at the skill's rate and the key chord nearest the wanted wish in the
+/// view actually sent.
+fn turn_view(hop: &mut Hop, view: &HopView<'_>, wanted: PlayerInput) -> PlayerInput {
+    let elapsed = f64::from(view.tick.saturating_sub(hop.view_tick).max(1));
+    let rate = 2.5 + 4.5 * view.skill;
+    let turn = normalize(wanted.yaw - hop.view_yaw);
+    let max = rate * elapsed / TICK_RATE;
+    let yaw = normalize(hop.view_yaw + turn.clamp(-max, max));
+    hop.view_yaw = yaw;
+    hop.view_tick = view.tick;
+    let [x, _, z] = wanted.direction;
+    let mut buttons = wanted.buttons & !MOVE_KEYS;
+    if x == 0.0 && z == 0.0 {
+        return keys(yaw, 0.0, 0.0, buttons);
+    }
+    // The wish in the sent view's frame, snapped to the nearest of the eight
+    // chords a player can hold.
+    let wish = x.atan2(z);
+    let eighth = (normalize(wish - yaw) / FRAC_PI_4).round();
+    let (right, forward) = (eighth * FRAC_PI_4).sin_cos();
+    let (right, forward) = (snap(right), snap(forward));
+    if forward > 0.0 {
+        buttons |= FORWARD;
+    } else if forward < 0.0 {
+        buttons |= BACK;
+    }
+    if right > 0.0 {
+        buttons |= RIGHT;
+    } else if right < 0.0 {
+        buttons |= LEFT;
+    }
+    // Sprint counts only for forward alone.
+    if buttons & (LEFT | RIGHT | BACK) != 0 {
+        buttons &= !SPRINT;
+    }
+    keys(yaw, right, forward, buttons)
+}
+
+/// A chord's component: 0, or ±1 alone, or ±1/√2 in a diagonal.
+fn snap(value: f64) -> f64 {
+    if value.abs() < 0.3 {
+        0.0
+    } else if value.abs() > 0.9 {
+        value.signum()
+    } else {
+        value.signum() * FRAC_1_SQRT_2
+    }
 }
 
 /// The view `yaw` with movement keys `right` and `forward` in its frame: the
@@ -523,6 +586,8 @@ mod tests {
             lane,
             sight: None,
             skill: 0.7,
+            view_yaw: 0.0,
+            fighting: false,
         }
     }
 
@@ -552,6 +617,9 @@ mod tests {
         let mut clumsy = view(0, 0.0, moving(400.0, true), Some(LANE));
         clumsy.skill = 0.2;
         assert!(chain.steer(&clumsy, walk()).is_none());
+        let mut fighting = view(0, 0.0, moving(400.0, true), Some(LANE));
+        fighting.fighting = true;
+        assert!(chain.steer(&fighting, walk()).is_none());
 
         let takeoff = chain
             .steer(&view(10, 0.0, moving(400.0, true), Some(LANE)), walk())

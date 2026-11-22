@@ -1120,6 +1120,11 @@ impl BotPlayer {
                         .hop_lane(navigation, position, self.sight.as_deref()),
                     sight: self.sight.as_deref(),
                     skill: self.difficulty.strafe_jump_skill(),
+                    view_yaw: self
+                        .aim
+                        .current()
+                        .map_or(self.planned_input.yaw, |view| view.yaw),
+                    fighting: self.engagement.is_some() || self.chasing.is_some(),
                 };
                 if self.hop.active()
                     && let Some(controls) = self.hop.steer(&hop_view, self.planned_input)
@@ -1144,6 +1149,7 @@ impl BotPlayer {
                         pickup_active: &world.pickup_active,
                         allies: &self.allies,
                         strafe_jump_skill: self.difficulty.strafe_jump_skill(),
+                        fighting: self.engagement.is_some() || self.chasing.is_some(),
                     },
                     self.planned_input,
                 );
