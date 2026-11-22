@@ -26,6 +26,9 @@ const FAR_RADIUS: f64 = 1024.0;
 /// Intermediate points of a walk edge, from the TypeScript nav cache `via`.
 type Corners = BTreeMap<(usize, usize), Vec<[f64; 3]>>;
 type Maneuvers = BTreeMap<(usize, usize), Maneuver>;
+/// A walk edge a bot stands on: how far off it, the edge, and the rest of
+/// its walk from there.
+type EdgeMatch = (f64, (usize, usize), Vec<[f64; 3]>);
 
 /// `[from, to]`, or `[from, to, corners]` for a walk that turns corners.
 #[derive(Deserialize)]
@@ -99,6 +102,14 @@ impl Search {
             }
         }
         None
+    }
+
+    /// Another place the search may start, `cost` away.
+    fn seed(&mut self, node: usize, cost: f64) {
+        if cost < self.distances[node] {
+            self.distances[node] = cost;
+            self.queue.push(Visit { node, cost });
+        }
     }
 
     fn extend(&mut self, from: usize, to: usize, travel: f64) {
@@ -280,7 +291,10 @@ impl Planner {
         local_walk: impl Fn(Vec3, Vec3) -> bool,
         open_line: impl Fn(Vec3, Vec3) -> bool,
     ) -> Option<(Route, Vec<ObjectiveEdge>)> {
-        let mut lead = None;
+        // Partway along a walk, every edge the bot stands on is a start: a
+        // two-way link is two edges at the same spot, and only the search
+        // knows which end the target is past.
+        let mut leads: Vec<(usize, Vec<[f64; 3]>, f64)> = Vec::new();
         let start = self
             .nearest_entry(position)
             .or_else(|| {
@@ -291,9 +305,18 @@ impl Planner {
                     .then_some(node)
             })
             .or_else(|| {
-                let (node, rest) = self.on_edge(position)?;
-                lead = Some(rest);
-                Some(node)
+                let from = [position.x, position.y, position.z];
+                for (node, rest) in self.on_edges(position) {
+                    let (_, cost) = rest.iter().fold((from, 0.0), |(from, total), &to| {
+                        (to, total + edge_length(from, to))
+                    });
+                    match leads.iter_mut().find(|(seen, _, _)| *seen == node) {
+                        Some(lead) if cost < lead.2 => *lead = (node, rest, cost),
+                        Some(_) => {}
+                        None => leads.push((node, rest, cost)),
+                    }
+                }
+                leads.first().map(|&(node, _, _)| node)
             })
             .or_else(|| {
                 self.nodes
@@ -308,6 +331,13 @@ impl Planner {
             })
             .or_else(|| self.in_view(position, &open_line).next())?;
         let mut search = Search::new(self.nodes.len(), start);
+        if let Some(&(_, _, cost)) = leads.first() {
+            search.distances[start] = cost;
+            search.queue = BinaryHeap::from([Visit { node: start, cost }]);
+        }
+        for &(node, _, cost) in leads.iter().skip(1) {
+            search.seed(node, cost);
+        }
         let mut finish: Option<(usize, f64, Option<[f64; 3]>)> = None;
         while let Some(node) = search.next() {
             let travelled = search.distances[node];
@@ -356,7 +386,10 @@ impl Planner {
             current = previous;
         }
         path.reverse();
-        let mut waypoints = lead.unwrap_or_else(|| vec![self.nodes[start]]);
+        let mut waypoints = leads
+            .into_iter()
+            .find(|(node, _, _)| *node == path[0])
+            .map_or_else(|| vec![self.nodes[path[0]]], |(_, lead, _)| lead);
         let mut edges = Vec::with_capacity(path.len() - 1);
         for pair in path.windows(2) {
             walk_edge(&mut waypoints, &self.nodes, &self.corners, pair[0], pair[1]);
@@ -386,7 +419,18 @@ impl Planner {
     /// edge's end node, and the returned lead is the rest of the walk,
     /// ending at that node. Maneuver edges are not walks and never match.
     fn on_edge(&self, position: Vec3) -> Option<(usize, Vec<[f64; 3]>)> {
-        let mut best: Option<(f64, usize, Vec<[f64; 3]>)> = None;
+        self.on_edges(position).into_iter().next()
+    }
+
+    /// Every walk edge the bot stands on as `on_edge` finds one, nearest
+    /// first: those within `ARRIVAL_RADIUS` of the nearest, and the reverse
+    /// of each. Both directions of a two-way link match the same spot, the
+    /// reverse up to the entry radius off where its corners were baked
+    /// apart. Nearer is no guide to which way the walk goes: choosing one
+    /// sent a bot partway down a drop back up the ledge to its top, and one
+    /// beside a corner 600 units away and back.
+    fn on_edges(&self, position: Vec3) -> Vec<(usize, Vec<[f64; 3]>)> {
+        let mut found: Vec<EdgeMatch> = Vec::new();
         for (from, adjacent) in self.neighbors.iter().enumerate() {
             for &to in adjacent {
                 if self.maneuvers.contains_key(&(from, to)) {
@@ -395,6 +439,7 @@ impl Planner {
                 let mut points = vec![self.nodes[from]];
                 points.extend(self.corners.get(&(from, to)).into_iter().flatten().copied());
                 points.push(self.nodes[to]);
+                let mut best: Option<EdgeMatch> = None;
                 for (index, pair) in points.windows(2).enumerate() {
                     let ([ax, ay, az], [bx, by, bz]) = (pair[0], pair[1]);
                     let (dx, dz) = (bx - ax, bz - az);
@@ -410,12 +455,26 @@ impl Planner {
                         && (height - position.y).abs() <= MAX_HEIGHT_DELTA
                         && best.as_ref().is_none_or(|(top, _, _)| distance < *top)
                     {
-                        best = Some((distance, to, points[index + 1..].to_vec()));
+                        best = Some((distance, (from, to), points[index + 1..].to_vec()));
                     }
                 }
+                found.extend(best);
             }
         }
-        best.map(|(_, node, lead)| (node, lead))
+        found.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let nearest = found.first().map_or(0.0, |&(distance, _, _)| distance);
+        let close: Vec<_> = found
+            .iter()
+            .filter(|&&(distance, _, _)| distance <= nearest + ARRIVAL_RADIUS)
+            .map(|&(_, edge, _)| edge)
+            .collect();
+        found
+            .into_iter()
+            .filter(|&(_, (from, to), _)| {
+                close.contains(&(from, to)) || close.contains(&(to, from))
+            })
+            .map(|(_, (_, to), lead)| (to, lead))
+            .collect()
     }
 
     /// The best accepted walk from the node nearest `position` to a goal

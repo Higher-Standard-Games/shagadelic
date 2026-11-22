@@ -397,13 +397,21 @@ impl WashoiNavigation {
                 )
             } else if drop > MAX_HEIGHT_DELTA {
                 // Over the landing but still on the ledge: keep stepping off
-                // along the leg.
+                // along the leg. A route that starts at the landing, as one
+                // planned from a ledge over its first node does, has no leg
+                // in: step off toward the waypoint after it. Without that,
+                // an S&D carrier stood above a node for 36 seconds.
                 let from = if *next == 0 {
                     route.entry
                 } else {
                     waypoints[*next - 1]
                 };
-                let (x, z) = (waypoint[0] - from[0], waypoint[2] - from[2]);
+                let (mut x, mut z) = (waypoint[0] - from[0], waypoint[2] - from[2]);
+                if x.hypot(z) == 0.0
+                    && let Some(after) = waypoints.get(*next + 1)
+                {
+                    (x, z) = (after[0] - waypoint[0], after[2] - waypoint[2]);
+                }
                 let length = x.hypot(z);
                 if length == 0.0 {
                     break;
@@ -588,6 +596,35 @@ mod tests {
                 )
                 .is_none()
         );
+    }
+
+    #[test]
+    fn an_objective_walk_partway_along_a_two_way_link_heads_for_the_target_end() {
+        // A ramp from A at the top to B at the bottom, its way back up baked
+        // 40 units to one side, with D past A and C past B. Partway down,
+        // the bot stands on both edges. It walks back up toward D and down
+        // toward C instead of finishing whichever edge is nearer first.
+        let navigation: WashoiNavigation = serde_json::from_str(
+            r#"{"map":"ramp","graph":{
+                "bsp_sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                "nodes":[[0,100,0],[400,0,0],[800,0,0],[-400,100,0]],
+                "edges":[[0,1,[[100,90,0]]],[1,0,[[400,0,40],[200,50,40]]],
+                         [1,2],[2,1],[0,3],[3,0]],
+                "entries":[2],"goals":[2,3]
+            }}"#,
+        )
+        .unwrap();
+        let partway = Vec3::new(200.0, 70.0, 0.0);
+        let up = navigation
+            .objective_walk(partway, Vec3::new(-400.0, 100.0, 0.0), 48.0, None, None)
+            .unwrap();
+        assert_eq!(up.route.waypoints[0], [0.0, 100.0, 0.0]);
+        assert!(up.route.waypoints.iter().all(|point| point[0] < 400.0));
+        let down = navigation
+            .objective_walk(partway, Vec3::new(800.0, 0.0, 0.0), 48.0, None, None)
+            .unwrap();
+        assert_eq!(down.route.waypoints[0], [400.0, 0.0, 0.0]);
+        assert!(down.route.waypoints.iter().all(|point| point[0] > 0.0));
     }
 
     #[test]
@@ -795,6 +832,23 @@ mod tests {
             [1.0, 0.0, 0.0]
         );
         assert_eq!(next, 1);
+
+        // Planned from a ledge right over its first node, the route has no
+        // leg in to step off along: it steps off toward the next waypoint.
+        let from_above: WashoiNavigation = serde_json::from_str(
+            r#"{"map":"test","routes":[
+                {"entry":[0,0,0],"waypoints":[[0,0,0],[0,0,-400]]}
+            ]}"#,
+        )
+        .unwrap();
+        let mut next = 0;
+        let input = WashoiNavigation::steer(
+            &from_above.routes[0],
+            &mut next,
+            Vec3::new(4.0, 86.0, 0.0),
+            Some(moving(0.0, true)),
+        );
+        assert_eq!((input.direction, next), ([0.0, 0.0, -1.0], 0));
     }
 
     #[test]
