@@ -18,13 +18,13 @@ washoi = [
 futures-util = { version = "0.3", default-features = false, features = ["sink"], optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-shagger_shared = { git = "https://github.com/Higher-Standard-Games/shagger", rev = "4dc818d834fa53669c1e4d55ac18a32a2796db63", optional = true }
+shagger_shared = { git = "https://github.com/Higher-Standard-Games/shagger", rev = "32ae616a2c2c32420f7a7cd03964d7ad80ec8ae8", optional = true }
 tokio = { version = "1", features = ["macros", "rt", "sync", "time"], optional = true }
 tokio-tungstenite = { version = "0.30", optional = true }
 # Washoi's headless movement simulation, for bots that predict movement. It
 # pins the same shagger_shared revision as above, so the two share one crate.
 # Only src/games/washoi uses it; other games build without the feature.
-washoi_movement = { git = "https://github.com/Higher-Standard-Games/wash-fps-rust", rev = "6218bb7db2019d822c73783739622c203be65dce", optional = true }
+washoi_movement = { git = "https://github.com/Higher-Standard-Games/wash-fps-rust", rev = "3b2ec5464a290566c87531e5a5e7da3ec2111589", optional = true }
 
 [[bin]]
 name = "hunch"
