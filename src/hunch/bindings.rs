@@ -3,9 +3,30 @@
 //! ownership"). An archetype's own binding wins, then the decision's
 //! default, then the game's rule. An explicit off binding selects the rule.
 
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    io,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
-use super::{Digest, Loaded, Mode, Model};
+use serde::Deserialize;
+
+use super::{Digest, Loaded, Mode, Model, Spec};
+
+/// One entry of a manifest file: a JSON list of these.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Entry {
+    #[serde(default)]
+    archetype: Option<String>,
+    decision: String,
+    #[serde(default)]
+    mode: Mode,
+    /// Relative to the manifest. Required unless the mode is off.
+    #[serde(default)]
+    artifact: Option<PathBuf>,
+}
 
 /// One entry of a session's configuration.
 #[derive(Clone, Debug)]
@@ -122,6 +143,41 @@ impl Bindings {
         Ok(pinned)
     }
 
+    /// Read a manifest file, a JSON list of
+    /// `{ "archetype"?, "decision", "mode"?, "artifact"? }`, for the
+    /// decisions `specs` declares. Artifact paths are relative to the
+    /// manifest. Each artifact is validated against its decision's spec.
+    pub fn from_manifest(path: impl AsRef<Path>, specs: &[Spec]) -> io::Result<Self> {
+        let path = path.as_ref();
+        let invalid = |message: String| io::Error::new(io::ErrorKind::InvalidData, message);
+        let entries: Vec<Entry> = serde_json::from_slice(&std::fs::read(path)?)
+            .map_err(|error| invalid(format!("HUNCH manifest unreadable: {error}")))?;
+        let base = path.parent().unwrap_or(Path::new(""));
+        let mut bindings = Vec::with_capacity(entries.len());
+        for entry in entries {
+            let spec = specs
+                .iter()
+                .find(|spec| spec.decision == entry.decision)
+                .ok_or_else(|| {
+                    invalid(format!(
+                        "HUNCH manifest names unknown decision {}",
+                        entry.decision
+                    ))
+                })?;
+            let model = match (&entry.artifact, entry.mode) {
+                (_, Mode::Off) | (None, _) => None,
+                (Some(artifact), _) => Some(Model::load(base.join(artifact), spec)?),
+            };
+            bindings.push(Binding {
+                archetype: entry.archetype,
+                decision: entry.decision,
+                mode: entry.mode,
+                model,
+            });
+        }
+        Self::new(bindings).map_err(|error| invalid(error.to_string()))
+    }
+
     /// The mode and model `archetype` uses for `decision`, or `None` when
     /// the game's rule decides alone.
     pub fn resolve(&self, archetype: &str, decision: &str) -> Option<(Mode, &Loaded)> {
@@ -192,6 +248,44 @@ mod tests {
         let (_, a) = bindings.resolve("grunt", SPEC.decision).unwrap();
         let (_, b) = bindings.resolve("sniper", SPEC.decision).unwrap();
         assert!(Arc::ptr_eq(&a.model, &b.model));
+    }
+
+    #[test]
+    fn reads_a_manifest_relative_to_its_directory() {
+        let dir = std::env::temp_dir().join(format!("shagadelic-manifest-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("models")).unwrap();
+        std::fs::write(
+            dir.join("models/pick.json"),
+            fit(&SPEC, &decisions(), Training::default()).to_bytes(),
+        )
+        .unwrap();
+        let manifest = dir.join("hunch.json");
+        let write = |text: &str| std::fs::write(&manifest, text).unwrap();
+        write(
+            r#"[{"decision":"test.pick","artifact":"models/pick.json"},
+                {"archetype":"turret","decision":"test.pick","mode":"off"}]"#,
+        );
+        let bindings = Bindings::from_manifest(&manifest, &[SPEC]).unwrap();
+        assert_eq!(
+            bindings
+                .resolve("grunt", SPEC.decision)
+                .map(|(mode, _)| mode),
+            Some(Mode::Shadow),
+            "shadow is the default mode"
+        );
+        assert!(bindings.resolve("turret", SPEC.decision).is_none());
+        let refused = |text: &str| {
+            write(text);
+            Bindings::from_manifest(&manifest, &[SPEC])
+                .unwrap_err()
+                .to_string()
+        };
+        assert!(
+            refused(r#"[{"decision":"test.other","mode":"off"}]"#).contains("unknown decision")
+        );
+        assert!(refused(r#"[{"decision":"test.pick","mode":"on"}]"#).contains("has no model"));
+        assert!(refused(r#"[{"decision":"test.pick","model":"x"}]"#).contains("unreadable"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

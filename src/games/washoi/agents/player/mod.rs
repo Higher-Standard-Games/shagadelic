@@ -145,7 +145,7 @@ pub struct BotPlayer {
     planner: Planner,
     /// A HUNCH model, and whether to record features, kept so a new
     /// planner gets them too.
-    hunch: Option<(Arc<crate::hunch::Model>, HunchMode)>,
+    hunch: Option<(crate::hunch::Loaded, HunchMode)>,
     recording: bool,
     /// Chat and team callouts, the map's location names they use, the
     /// lines waiting to be sent, the directive calls already made, and the
@@ -333,13 +333,23 @@ impl BotPlayer {
     /// Let a HUNCH model of the goal decision (`washoi.goal`, schema
     /// `washoi.goal.v0`) score goal candidates, in shadow or deciding. The
     /// artifact is checked against the spec; off leaves the rule alone.
-    pub fn with_hunch(mut self, model: Arc<crate::hunch::Model>, mode: HunchMode) -> Self {
-        if mode != HunchMode::Off && model.validate(&strategy::hunch_features::SPEC).is_ok() {
-            self.hunch = Some((model.clone(), mode));
-            self.planner.set_hunch(model, mode);
+    /// Traces name the model by its digest.
+    pub fn with_hunch(mut self, loaded: crate::hunch::Loaded, mode: HunchMode) -> Self {
+        if mode != HunchMode::Off
+            && loaded
+                .model
+                .validate(&strategy::hunch_features::SPEC)
+                .is_ok()
+        {
+            self.planner.set_hunch(loaded.model.clone(), mode);
+            self.hunch = Some((loaded, mode));
         }
         self
     }
+
+    /// The entity type HUNCH bindings name for a Washoi bot. Washoi has
+    /// one.
+    pub const HUNCH_ARCHETYPE: &'static str = "player";
 
     /// Keep each decision's goal candidates with their HUNCH features
     /// (`washoi.goal.v0`), for `hunch extract`.
@@ -392,8 +402,8 @@ impl BotPlayer {
     pub fn with_difficulty(mut self, difficulty: Difficulty) -> Self {
         self.difficulty = difficulty;
         self.planner = Planner::new(difficulty.mistake_rate());
-        if let Some((model, mode)) = self.hunch.clone() {
-            self.planner.set_hunch(model, mode);
+        if let Some((loaded, mode)) = &self.hunch {
+            self.planner.set_hunch(loaded.model.clone(), *mode);
         }
         if self.recording {
             self.planner.record();
@@ -688,6 +698,10 @@ impl BotPlayer {
             mover: self.mover,
             engaged: self.engagement.is_some_and(|fight| fight.in_sight),
             firing: self.fired,
+            hunch_model: self
+                .hunch
+                .as_ref()
+                .map(|(loaded, _)| loaded.digest.to_string()),
             hunch: if self.arbitrated {
                 self.planner.hunch_pick().map(str::to_owned)
             } else {
@@ -2771,7 +2785,7 @@ mod tests {
                 "armor_gain" => -health,
                 _ => 0.0,
             };
-            Arc::new(crate::hunch::Model {
+            let model = crate::hunch::Model {
                 format: crate::hunch::FORMAT,
                 decision: spec.decision.into(),
                 schema: schema.into(),
@@ -2779,9 +2793,10 @@ mod tests {
                 mean: vec![0.0; names.len()],
                 scale: vec![1.0; names.len()],
                 weights: names.iter().map(|name| weight(name)).collect(),
-            })
+            };
+            crate::hunch::Model::parse(&model.to_bytes(), &spec).unwrap()
         };
-        let controls_with = |hunch: Option<(Arc<crate::hunch::Model>, HunchMode)>| {
+        let controls_with = |hunch: Option<(crate::hunch::Loaded, HunchMode)>| {
             let mut bot = BotPlayer::new("bot".into())
                 .with_difficulty(Difficulty::Hard)
                 .with_navigation(navigation.clone());

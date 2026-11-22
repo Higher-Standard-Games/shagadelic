@@ -205,6 +205,9 @@ hunch evaluate goal.json test/*.jsonl
 ```
 
 Pass the model as `hunch_file`, or `SHAGADELIC_HUNCH_FILE` to the supervisor.
+For several decisions or entity types, a manifest (`hunch_manifest`, or
+`SHAGADELIC_HUNCH_MANIFEST`) binds each `(archetype, decision)` to a mode and
+an artifact. Traces name the bound model by its SHA-256 digest.
 Keep each match's records in one split, chosen before fitting. In `shadow`
 mode, the default, the rule still decides and each trace records HUNCH's
 choice. In `on` mode HUNCH picks among the candidates that pass the rule's

@@ -23,9 +23,11 @@ export class WashoiSupervisor {
     // A HUNCH goal model and its mode, shadow (the default) or on.
     hunchFile = process.env.SHAGADELIC_HUNCH_FILE,
     hunchMode = process.env.SHAGADELIC_HUNCH_MODE,
+    // HUNCH bindings by archetype and decision, a JSON list, instead of the file.
+    hunchManifest = process.env.SHAGADELIC_HUNCH_MANIFEST,
   } = {}) {
     this.#executable = executable;
-    this.#assets = { navigationDir, learnedRoutesDir, intelDir, hunchFile, hunchMode };
+    this.#assets = { navigationDir, learnedRoutesDir, intelDir, hunchFile, hunchMode, hunchManifest };
   }
 
   start(matchId, endpoint, map) {
@@ -161,6 +163,7 @@ class MatchChild {
         ...options,
         // Not per map: one HUNCH model serves every match it is given to.
         ...(assets.hunchFile ? { hunch_file: assets.hunchFile, hunch_mode: assets.hunchMode } : {}),
+        ...(assets.hunchManifest ? { hunch_manifest: assets.hunchManifest } : {}),
       });
       if (!this.#initialized) this.#fail("bot child initialization could not be sent");
     } catch (error) {

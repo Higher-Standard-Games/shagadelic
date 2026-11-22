@@ -48,6 +48,8 @@ pub struct DecisionTrace {
     pub strategy: String,
     /// The candidate a HUNCH model preferred, when one scores goals.
     pub hunch: Option<String>,
+    /// The digest of the HUNCH goal model bound to this bot, if any.
+    pub hunch_model: Option<String>,
     /// Which part of the bot set the movement: `route`, `order`,
     /// `traversal`, `strafe`, `order_strafe`, `peek`, `climb`, `dodge`,
     /// `fade`, `escape`, `chase`, `hunt`, `hold`, `lunge`, or `unstick`.

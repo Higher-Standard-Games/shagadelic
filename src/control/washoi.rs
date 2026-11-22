@@ -67,10 +67,7 @@ pub(super) struct MapAssets {
     pub(super) locations: Option<Locations>,
     pub(super) people: Option<PeopleProfile>,
     pub(super) baseline: Option<Baseline>,
-    pub(super) hunch: Option<(
-        std::sync::Arc<shagadelic::hunch::Model>,
-        shagadelic::games::washoi::HunchMode,
-    )>,
+    pub(super) hunch: shagadelic::hunch::Bindings,
 }
 
 pub(super) fn run(
@@ -118,9 +115,7 @@ pub(super) fn run(
     if let Some(baseline) = assets.baseline {
         session = session.with_baseline(baseline);
     }
-    if let Some((model, mode)) = assets.hunch {
-        session = session.with_hunch(model, mode);
-    }
+    session = session.with_hunch(assets.hunch);
     executor.block_on(drive(receive, writer, session))
 }
 

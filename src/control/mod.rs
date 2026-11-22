@@ -29,6 +29,9 @@ struct Initialization {
     /// the arbiter (`shadow`, the default) or decides (`on`).
     hunch_file: Option<std::path::PathBuf>,
     hunch_mode: Option<String>,
+    /// HUNCH bindings, a JSON list of `{ archetype?, decision, mode?,
+    /// artifact? }` with artifacts relative to it. Instead of `hunch_file`.
+    hunch_manifest: Option<std::path::PathBuf>,
     baseline_file: Option<std::path::PathBuf>,
 }
 
@@ -108,6 +111,7 @@ pub fn run(mut reader: impl BufRead + Send + 'static, writer: &mut impl Write) -
         || init.people_file.is_some()
         || init.hunch_file.is_some()
         || init.hunch_mode.is_some()
+        || init.hunch_manifest.is_some()
         || init.baseline_file.is_some()
     {
         return Err(invalid("Washoi support is disabled"));
@@ -123,7 +127,8 @@ pub fn run(mut reader: impl BufRead + Send + 'static, writer: &mut impl Write) -
         || init.people_file.is_some()
         || init.baseline_file.is_some()
         || init.hunch_file.is_some()
-        || init.hunch_mode.is_some())
+        || init.hunch_mode.is_some()
+        || init.hunch_manifest.is_some())
         && init.washoi_endpoint.is_none()
     {
         return Err(invalid("navigation requires a Washoi session"));
@@ -178,26 +183,39 @@ pub fn run(mut reader: impl BufRead + Send + 'static, writer: &mut impl Write) -
     // decision, schema, feature names in order, and dimensions.
     #[cfg(feature = "washoi")]
     let hunch = {
+        use shagadelic::hunch::{Binding, Bindings, Mode, Model, ModelError};
+        let spec = shagadelic::games::washoi::BotPlayer::hunch_spec();
         let mode = match init.hunch_mode.as_deref() {
-            None | Some("shadow") => shagadelic::games::washoi::HunchMode::Shadow,
-            Some("on") => shagadelic::games::washoi::HunchMode::On,
+            None | Some("shadow") => Mode::Shadow,
+            Some("on") => Mode::On,
             Some(_) => return Err(invalid("HUNCH mode must be shadow or on")),
         };
-        match &init.hunch_file {
-            None if init.hunch_mode.is_some() => {
+        match (&init.hunch_manifest, &init.hunch_file) {
+            (Some(_), Some(_)) => {
+                return Err(invalid("HUNCH manifest and hunch_file are both set"));
+            }
+            (Some(_), None) if init.hunch_mode.is_some() => {
+                return Err(invalid("HUNCH mode belongs in the manifest"));
+            }
+            (Some(manifest), None) => Bindings::from_manifest(manifest, &[spec])?,
+            (None, None) if init.hunch_mode.is_some() => {
                 return Err(invalid("HUNCH mode requires a HUNCH model"));
             }
-            None => None,
-            Some(path) => {
-                let spec = shagadelic::games::washoi::BotPlayer::hunch_spec();
-                let loaded = shagadelic::hunch::Model::parse(&std::fs::read(path)?, &spec)
-                    .map_err(|error| match error {
-                        shagadelic::hunch::ModelError::Features => {
-                            invalid("HUNCH model features differ")
-                        }
+            (None, None) => Bindings::default(),
+            // The shorthand: one model for every bot's goal decision.
+            (None, Some(path)) => {
+                let loaded =
+                    Model::parse(&std::fs::read(path)?, &spec).map_err(|error| match error {
+                        ModelError::Features => invalid("HUNCH model features differ"),
                         error => error.into(),
                     })?;
-                Some((loaded.model, mode))
+                Bindings::new(vec![Binding {
+                    archetype: None,
+                    decision: spec.decision.to_owned(),
+                    mode,
+                    model: Some(loaded),
+                }])
+                .map_err(io::Error::other)?
             }
         }
     };
@@ -453,12 +471,14 @@ mod tests {
         let mut swapped: Vec<String> = names.iter().map(|n| (*n).to_owned()).collect();
         swapped.swap(0, 1);
         let other = write("other.json", swapped);
-        let answer = |file: Option<&std::path::Path>, mode: Option<&str>| {
-            let init = serde_json::json!({
+        let ask = |hunch: serde_json::Value| {
+            let mut init = serde_json::json!({
                 "type": "initialize", "version": VERSION, "lobby_id": "lobby",
                 "washoi_endpoint": "ws://127.0.0.1:9",
-                "hunch_file": file, "hunch_mode": mode,
             });
+            init.as_object_mut()
+                .unwrap()
+                .extend(hunch.as_object().unwrap().clone());
             let mut output = Vec::new();
             run(
                 io::Cursor::new(format!(
@@ -469,6 +489,9 @@ mod tests {
             )
             .map(|()| String::from_utf8(output).unwrap())
             .map_err(|error| error.to_string())
+        };
+        let answer = |file: Option<&std::path::Path>, mode: Option<&str>| {
+            ask(serde_json::json!({ "hunch_file": file, "hunch_mode": mode }))
         };
         for mode in [None, Some("shadow"), Some("on")] {
             let ready = answer(Some(&goal), mode).unwrap();
@@ -486,6 +509,29 @@ mod tests {
             answer(None, Some("on")).unwrap_err(),
             "HUNCH mode requires a HUNCH model"
         );
+        // A manifest binds the same model, with its path relative to it.
+        let manifest = dir.join("hunch.json");
+        std::fs::write(
+            &manifest,
+            r#"[{"decision":"washoi.goal","mode":"on","artifact":"goal.json"}]"#,
+        )
+        .unwrap();
+        let ready = ask(serde_json::json!({ "hunch_manifest": manifest })).unwrap();
+        assert!(ready.contains(r#""type":"ready""#), "{ready}");
+        assert_eq!(
+            ask(serde_json::json!({ "hunch_manifest": manifest, "hunch_file": goal })).unwrap_err(),
+            "HUNCH manifest and hunch_file are both set"
+        );
+        assert_eq!(
+            ask(serde_json::json!({ "hunch_manifest": manifest, "hunch_mode": "on" })).unwrap_err(),
+            "HUNCH mode belongs in the manifest"
+        );
+        std::fs::write(
+            &manifest,
+            r#"[{"decision":"washoi.goal","artifact":"other.json"}]"#,
+        )
+        .unwrap();
+        assert!(ask(serde_json::json!({ "hunch_manifest": manifest })).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

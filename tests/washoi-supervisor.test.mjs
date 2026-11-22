@@ -101,6 +101,19 @@ test("a HUNCH model reaches the child, which refuses one for other features", { 
   await ready(goal, "on");
   await assert.rejects(ready(goal, "loud"));
   await assert.rejects(ready(other));
+  // A manifest binds the goal decision instead, its artifact relative to it.
+  const manifest = join(directory, "hunch.json");
+  const bound = async (artifact) => {
+    await writeFile(manifest, JSON.stringify([{ decision: "washoi.goal", mode: "on", artifact }]));
+    const supervisor = new WashoiSupervisor(executable, { hunchManifest: manifest });
+    try {
+      await supervisor.start("hunch", endpoint);
+    } finally {
+      await supervisor.stopAll();
+    }
+  };
+  await bound("goal.json");
+  await assert.rejects(bound("other.json"));
 });
 
 /** A sight file with no geometry, in the format of tools/bake-washoi-sight.mjs. */

@@ -10,8 +10,8 @@ use tokio::{sync::mpsc, task::JoinHandle};
 use crate::runtime::{Deadlines, EntityKey, GameSession, SessionEvent, Update};
 
 use crate::games::washoi::{
-    Baseline, BotPlayer, Difficulty, HunchMode, LearnedRoutes, Locations, MapCollision,
-    PeopleProfile, Sight, SimTime, WashoiNavigation,
+    Baseline, BotPlayer, Difficulty, LearnedRoutes, Locations, MapCollision, PeopleProfile, Sight,
+    SimTime, WashoiNavigation,
     agents::NetworkedPlayer,
     hosting::net::protocol::{
         self, AdmissionError, InputBatch, SnapshotEvent, WashoiEvents, connect,
@@ -48,8 +48,9 @@ struct MapAssets {
     collision: Option<Arc<MapCollision>>,
     locations: Option<Arc<Locations>>,
     people: Option<Arc<PeopleProfile>>,
-    /// A HUNCH model shared by every bot, and its mode.
-    hunch: Option<(Arc<crate::hunch::Model>, HunchMode)>,
+    /// The session's HUNCH bindings, pinned at initialization and shared
+    /// by every bot.
+    hunch: crate::hunch::Bindings,
     baseline: Option<Arc<Baseline>>,
 }
 
@@ -140,9 +141,10 @@ impl WashoiSession {
         self
     }
 
-    /// Let one HUNCH model, validated once, score every bot's goals.
-    pub fn with_hunch(mut self, model: Arc<crate::hunch::Model>, mode: HunchMode) -> Self {
-        self.assets.hunch = Some((model, mode));
+    /// Pin the session's HUNCH bindings: each admitted bot takes the model
+    /// and mode bound to its archetype for the goal decision.
+    pub fn with_hunch(mut self, bindings: crate::hunch::Bindings) -> Self {
+        self.assets.hunch = bindings;
         self
     }
 
@@ -241,8 +243,12 @@ impl GameSession for WashoiSession {
                     if let Some(baseline) = &self.assets.baseline {
                         player = player.with_baseline(baseline.clone());
                     }
-                    if let Some((model, mode)) = &self.assets.hunch {
-                        player = player.with_hunch(model.clone(), *mode);
+                    if let Some((mode, loaded)) = self
+                        .assets
+                        .hunch
+                        .resolve(BotPlayer::HUNCH_ARCHETYPE, BotPlayer::hunch_spec().decision)
+                    {
+                        player = player.with_hunch(loaded.clone(), mode);
                     }
                     bot.player = Some(Box::new(player));
                     self.reports.push_back(BotReport::Admitted {

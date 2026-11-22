@@ -103,7 +103,11 @@ Session C (Codex) took over HUNCH on 2026-11-22: the label fixes (items 1 and 2,
   - `Bindings`, which resolve an archetype's binding, then the decision's default, then the rule. They refuse duplicates, a mode with no model, and another decision's model, and share identical artifacts by digest.
   - `tests/hunch_api.rs` covers the healer preference and the hockey choice, trained, loaded from bytes, and replayed back to typed actions by ID. With equal widths, a swapped artifact fails on its decision. Carrier and winger give the same result in either order, and on another thread. Bindings with an override, an explicit off, shadow executing the rule, and a second decision.
 - [ ] Session C: move `src/bin/hunch.rs` to the v1 training interface. `extract` writes `Episode` lines (`decision`, `schema`, `group` as the match or session, `source`, `ids`, `rows`, `label`), and `train` calls `hunch::train` instead of `fit`. Freeze v1 once extraction writes episodes.
-- [ ] Session A: Washoi bindings, which add `hunch_bindings` to the lobby init and `SHAGADELIC_HUNCH_MANIFEST` to the supervisor, beside the `hunch_file` shorthand. The decision trace gains the model's digest.
+- [x] Washoi bindings (session A):
+  - The lobby init takes `hunch_manifest`, a JSON list of `{ archetype?, decision, mode?, artifact? }` read by `Bindings::from_manifest`, with artifacts relative to the manifest. The supervisor passes it from `SHAGADELIC_HUNCH_MANIFEST`.
+  - `hunch_file` and `hunch_mode` remain shorthand for one default binding of `washoi.goal`. Both forms together, or a mode beside a manifest, are refused.
+  - Each admitted bot resolves archetype `player` (`BotPlayer::HUNCH_ARCHETYPE`) for `washoi.goal`.
+  - `DecisionTrace.hunch_model` names the bound model's digest.
 
 Handoff from B to C: B drafted items 1 and 2 before the move. Neither is built or tested, and C may use them or not. Both are in `C:/tmp/hunch-handoff-b/`:
 - `hunch-labels.patch`, against `src/bin/hunch.rs` at `6e439f4`, adds a `Labels` struct:
