@@ -316,6 +316,9 @@ impl Planner {
                     goal = Some(pick);
                     self.last_goal = self.hunch_pick.clone();
                 }
+            } else if !eligible.is_empty() {
+                // A non-finite score: the arbiter's goal stands.
+                self.explain.push_str(" hunch=rejected");
             }
         }
         let Some(index) = goal else {

@@ -24,8 +24,16 @@ pub struct Model {
     pub weights: Vec<f32>,
 }
 
+/// The artifact format this scorer reads: a linear model over normalized
+/// features. A different scorer or layout takes another number.
+pub const FORMAT: u32 = 1;
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum ModelError {
+    /// The artifact is in a format this scorer does not read.
+    Format {
+        found: u32,
+    },
     Schema {
         expected: String,
         found: String,
@@ -39,6 +47,7 @@ pub enum ModelError {
 impl std::fmt::Display for ModelError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Format { found } => write!(f, "model format {found}, expected {FORMAT}"),
             Self::Schema { expected, found } => {
                 write!(f, "model schema {found}, expected {expected}")
             }
@@ -64,6 +73,11 @@ impl Model {
     }
 
     pub fn validate(&self, schema: &str) -> Result<(), ModelError> {
+        if self.version != FORMAT {
+            return Err(ModelError::Format {
+                found: self.version,
+            });
+        }
         if self.schema != schema {
             return Err(ModelError::Schema {
                 expected: schema.to_owned(),
@@ -124,9 +138,13 @@ impl Model {
         }
     }
 
-    /// The best candidate, ties to the lowest index.
+    /// The best candidate, ties to the lowest index. None when any score is
+    /// not finite, as from a non-finite feature: the caller keeps its rule.
     pub fn choose(&self, features: &[f32], scores: &mut [f32]) -> Option<usize> {
         self.score_into(features, scores);
+        if !scores.iter().all(|score| score.is_finite()) {
+            return None;
+        }
         scores
             .iter()
             .enumerate()
@@ -189,7 +207,7 @@ pub fn train(
     let (mean, scale) = normalization(width, decisions);
     let mut model = Model {
         schema: schema.to_owned(),
-        version: 1,
+        version: FORMAT,
         features,
         mean,
         scale,
@@ -337,6 +355,18 @@ mod tests {
     }
 
     #[test]
+    fn a_non_finite_score_chooses_nothing() {
+        let model = train("test.v0", names(), &decisions(), Training::default());
+        let mut scores = [0.0; 2];
+        assert!(model.choose(&[1.0, 0.0, 0.0, 1.0], &mut scores).is_some());
+        assert_eq!(model.choose(&[1.0, 0.0, f32::NAN, 1.0], &mut scores), None);
+        assert_eq!(
+            model.choose(&[f32::INFINITY, 0.0, 0.0, 1.0], &mut scores),
+            None
+        );
+    }
+
+    #[test]
     fn rejects_models_for_another_schema_or_with_bad_parameters() {
         let model = train("test.v0", names(), &decisions(), Training::default());
         assert!(matches!(
@@ -353,6 +383,12 @@ mod tests {
             Err(ModelError::Features)
         );
         assert_eq!(model.validate_features(&["value", "distance"]), Ok(()));
+        let mut later = model.clone();
+        later.version = FORMAT + 1;
+        assert_eq!(
+            later.validate("test.v0"),
+            Err(ModelError::Format { found: FORMAT + 1 })
+        );
         let mut nan = model;
         nan.weights[0] = f32::NAN;
         assert_eq!(nan.validate("test.v0"), Err(ModelError::NotFinite));
