@@ -16,7 +16,13 @@ use crate::games::washoi::{
 };
 
 const DEFAULT_RADIUS: f64 = 160.0;
-const WAYPOINT_RADIUS: f64 = 48.0;
+/// An order's `via` waypoint counts as passed within this horizontally and
+/// `VIA_HEIGHT` vertically: TypeScript `VIA_RADIUS` and `VIA_HEIGHT`
+/// (navigation/BotNavigator.ts). Lanes cut corners and drop off ledges past
+/// their points; held to 48, a bot that passed one 125 away walked back up
+/// a ledge to touch it.
+const VIA_RADIUS: f64 = 128.0;
+const VIA_HEIGHT: f64 = 72.0;
 const HEIGHT_TOLERANCE: f64 = 40.0;
 const ESCORT_REPLAN_DISTANCE: f64 = 48.0;
 const RETRY: Duration = Duration::from_millis(350);
@@ -84,6 +90,8 @@ pub(in crate::games::washoi) struct Orders {
     directive: Option<Directive>,
     destination: Option<Vec3>,
     via: usize,
+    /// Whether the followed order's lane was joined: see `join_lane`.
+    joined: bool,
     walk: Option<(Vec3, ObjectiveWalk)>,
     blocked: Option<(ObjectiveRecovery, SimTime)>,
     retry_at: Option<SimTime>,
@@ -244,8 +252,14 @@ impl Orders {
             self.retry_at = None;
             return None;
         };
+        if !self.joined {
+            self.joined = true;
+            self.via = join_lane(&directive.via, destination, position);
+        }
         while let Some(&waypoint) = directive.via.get(self.via) {
-            if !near(position, waypoint, WAYPOINT_RADIUS) {
+            if (position.x - waypoint.x).hypot(position.z - waypoint.z) > VIA_RADIUS
+                || (position.y - waypoint.y).abs() > VIA_HEIGHT
+            {
                 break;
             }
             self.via += 1;
@@ -257,9 +271,7 @@ impl Orders {
             .via
             .get(self.via)
             .copied()
-            .map_or((destination, directive.radius), |point| {
-                (point, WAYPOINT_RADIUS)
-            });
+            .map_or((destination, directive.radius), |point| (point, VIA_RADIUS));
         if self
             .walk
             .as_ref()
@@ -632,6 +644,28 @@ fn heading(from: Vec3, to: Vec3) -> f64 {
     (to.x - from.x).atan2(to.z - from.z)
 }
 
+/// Where a bot taking up an order joins its lane: at the lane point nearest
+/// it, or the one after (the destination after the last) when the bot is
+/// nearer that than the nearest point is, so already past it. TypeScript
+/// `nextWaypoint` starts every new order at the lane's first point. S&D sends
+/// the carrier and its escorts the same lane from the attack spawn, so a bot
+/// that turned aside for the dropped bomb and took the lane again mid-map
+/// walked 1,500 units back to the spawn before going on.
+fn join_lane(via: &[Vec3], destination: Vec3, position: Vec3) -> usize {
+    let distance = |a: Vec3, b: Vec3| (a.x - b.x).hypot(a.z - b.z).hypot(a.y - b.y);
+    let Some(nearest) = (0..via.len())
+        .min_by(|&a, &b| distance(position, via[a]).total_cmp(&distance(position, via[b])))
+    else {
+        return 0;
+    };
+    let next = via.get(nearest + 1).copied().unwrap_or(destination);
+    if distance(position, next) < distance(via[nearest], next) {
+        nearest + 1
+    } else {
+        nearest
+    }
+}
+
 fn near(position: Vec3, target: Vec3, radius: f64) -> bool {
     (position.x - target.x).hypot(position.z - target.z) <= radius
         && (position.y - target.y).abs() <= HEIGHT_TOLERANCE
@@ -720,6 +754,78 @@ mod tests {
                 .input(Some(&navigation), None, destination, None, start)
                 .is_none()
         );
+    }
+
+    #[test]
+    fn a_lane_point_passed_within_the_typescript_radius_is_not_walked_back_to() {
+        let navigation: WashoiNavigation = serde_json::from_str(
+            r#"{"map":"snd","graph":{
+                "bsp_sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                "nodes":[[0,0,0],[200,0,0],[400,0,0],[600,0,0]],"edges":[[0,1],[1,2],[2,3],[1,0],[2,1],[3,2]],
+                "entries":[0],"goals":[3]
+            }}"#,
+        )
+        .unwrap();
+        let directives = |via: &str| {
+            json::parse(&format!(
+                r#"[{{"id":"push","kind":"move_to",
+                     "target":{{"type":"position","position":{{"x":600,"y":0,"z":0}},"radius":64}},
+                     "priority":1,"expiresAtTick":500,"interrupt":"never","via":[{via}]}}]"#
+            ))
+            .unwrap()
+        };
+        // The lane point is 100 behind, and 60 below after a drop: passed.
+        // A lane from far behind is joined where the bot is.
+        for (via, ahead) in [
+            (r#"{"x":300,"y":0,"z":0}"#, true),
+            (r#"{"x":300,"y":60,"z":0}"#, true),
+            (r#"{"x":0,"y":0,"z":0},{"x":200,"y":0,"z":0}"#, true),
+        ] {
+            let state = Observation {
+                tick: 1,
+                events: vec![SnapshotEvent::AgentDirectives {
+                    entity_id: "bot".into(),
+                    directives: directives(via),
+                }],
+                ..Observation::default()
+            };
+            let mut orders = Orders::default();
+            orders.observe(&state, "bot");
+            let input = orders
+                .input(
+                    Some(&navigation),
+                    None,
+                    Vec3::new(400.0, 0.0, 0.0),
+                    None,
+                    SimTime::ZERO,
+                )
+                .unwrap();
+            assert_eq!(input.direction[0] > 0.0, ahead, "{via}");
+        }
+    }
+
+    #[test]
+    fn a_lane_is_joined_at_its_nearest_point_or_the_next_one_once_past_it() {
+        let lane = [
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(400.0, 0.0, 0.0),
+            Vec3::new(400.0, 0.0, 400.0),
+        ];
+        let destination = Vec3::new(0.0, 0.0, 400.0);
+        // At the start; short of the corner; past it; beyond the last point.
+        for (position, index) in [
+            (Vec3::new(-50.0, 0.0, 0.0), 0),
+            (Vec3::new(300.0, 0.0, 0.0), 1),
+            (Vec3::new(400.0, 0.0, 100.0), 2),
+            (Vec3::new(300.0, 0.0, 400.0), 3),
+        ] {
+            assert_eq!(
+                join_lane(&lane, destination, position),
+                index,
+                "{position:?}"
+            );
+        }
+        assert_eq!(join_lane(&[], destination, Vec3::default()), 0);
     }
 
     #[test]
