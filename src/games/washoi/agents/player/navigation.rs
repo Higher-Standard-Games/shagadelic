@@ -456,10 +456,12 @@ impl Route {
     }
 }
 
-/// Sprint while walking a long, level leg, as TypeScript bots sprint
-/// whenever they move (`StateMachineBrain._moveToward`). Near the end of a
-/// leg, or on one that climbs or drops, the bot runs instead, so it doesn't
-/// overshoot a turn or a ledge.
+/// Sprint while walking, as TypeScript bots sprint whenever they move
+/// (`StateMachineBrain._moveToward`). Washoi gives 400 u/s only to sprint with
+/// forward alone, and 320 otherwise. Within 128 units of a drop, at the next
+/// waypoint or the leg after it, the bot runs instead, so it doesn't overshoot
+/// the ledge. Live, sprint was missing from 20% of the Rust bot's moving
+/// commands while its keys were forward alone, on short or sloping legs.
 fn sprint_on_long_legs(
     input: &mut PlayerInput,
     route: &Route,
@@ -467,12 +469,20 @@ fn sprint_on_long_legs(
     position: Vec3,
     velocity: Option<Velocity>,
 ) {
+    let Some(&waypoint) = route.waypoints.get(next) else {
+        return;
+    };
+    let drops = |from: f64, to: [f64; 3]| from - to[1] > SPRINT_HEIGHT_DELTA;
+    let near_ledge = horizontal_distance(position, waypoint) < SPRINT_LEG_DISTANCE
+        && (drops(position.y, waypoint)
+            || route
+                .waypoints
+                .get(next + 1)
+                .is_some_and(|&after| drops(waypoint[1], after)));
     if input.direction != [0.0; 3]
         && velocity.is_some_and(|velocity| velocity.grounded)
         && route.maneuver_at(next).is_none()
-        && let Some(&waypoint) = route.waypoints.get(next)
-        && (position.y - waypoint[1]).abs() <= SPRINT_HEIGHT_DELTA
-        && horizontal_distance(position, waypoint) >= SPRINT_LEG_DISTANCE
+        && !near_ledge
     {
         input.buttons |= SPRINT;
     }
@@ -577,6 +587,50 @@ mod tests {
                 )
                 .is_none()
         );
+    }
+
+    #[test]
+    fn sprints_everywhere_but_the_approach_to_a_drop() {
+        let route = Route {
+            entry: [0.0; 3],
+            // Level, a short level leg, a climb, then a drop of 100.
+            waypoints: vec![
+                [300.0, 0.0, 0.0],
+                [360.0, 0.0, 0.0],
+                [360.0, 80.0, 300.0],
+                [360.0, -20.0, 600.0],
+            ],
+            maneuvers: Vec::new(),
+            learned_route: None,
+            resumed_from: None,
+            pickup: None,
+        };
+        let grounded = Some(Velocity {
+            grounded: true,
+            ..Velocity::default()
+        });
+        let sprints = |next: usize, at: [f64; 3], velocity: Option<Velocity>| {
+            let mut input = PlayerInput {
+                direction: [1.0, 0.0, 0.0],
+                ..PlayerInput::default()
+            };
+            sprint_on_long_legs(
+                &mut input,
+                &route,
+                next,
+                Vec3::new(at[0], at[1], at[2]),
+                velocity,
+            );
+            input.buttons & SPRINT != 0
+        };
+        assert!(sprints(0, [0.0, 0.0, 0.0], grounded));
+        assert!(sprints(1, [320.0, 0.0, 0.0], grounded));
+        assert!(sprints(2, [360.0, 0.0, 100.0], grounded));
+        // Within 128 of the climb's top, whose next leg drops: run.
+        assert!(!sprints(2, [360.0, 60.0, 250.0], grounded));
+        assert!(sprints(2, [360.0, 30.0, 150.0], grounded));
+        // In the air, no sprint.
+        assert!(!sprints(0, [0.0, 0.0, 0.0], None));
     }
 
     #[test]
