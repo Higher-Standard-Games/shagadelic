@@ -269,7 +269,18 @@ impl Orders {
             self.progress = None;
             self.retry_at = None;
         }
-        if near(position, target, radius) {
+        // The order's own destination counts as reached within its radius in
+        // 3D, as TypeScript measures `vec3Length(goal - self)`. The server
+        // picks up, plants, and defuses by 3D distance too: a bot 63 units off
+        // a bomb on the floor, but 24 above it, stood there and never took it.
+        let at_destination = self.via >= directive.via.len();
+        let arrived = near(position, target, radius)
+            && (!at_destination
+                || (position.x - target.x)
+                    .hypot(position.z - target.z)
+                    .hypot(position.y - target.y)
+                    <= radius);
+        if arrived {
             self.walk = None;
             self.progress = None;
             self.retry_at = None;
@@ -811,6 +822,41 @@ mod tests {
         world.tick = 50;
         orders.observe(&world, "bot");
         assert_eq!(orders.candidates(Vec3::default()).count(), 0);
+    }
+
+    #[test]
+    fn a_move_to_order_counts_as_reached_within_its_radius_in_3d() {
+        // A bomb on the floor, and a standing bot 24 units above floor level.
+        let mut orders = Orders::default();
+        orders.observe(
+            &Observation {
+                tick: 1,
+                events: vec![SnapshotEvent::AgentDirectives {
+                    entity_id: "bot".into(),
+                    directives: json::parse(
+                        r#"[{"id":"fetch","kind":"move_to",
+                             "target":{"type":"position","position":{"x":0,"y":0,"z":0},"radius":64},
+                             "priority":1,"expiresAtTick":50,"interrupt":"never"}]"#,
+                    )
+                    .unwrap(),
+                }],
+                ..Observation::default()
+            },
+            "bot",
+        );
+        let now = SimTime::ZERO;
+        // 63 across and 24 up is 67 away: not there yet, so it walks on (here,
+        // without a graph, it has no walk and hands back).
+        assert!(
+            orders
+                .input(None, None, Vec3::new(63.0, 24.0, 0.0), None, now)
+                .is_none()
+        );
+        // 40 across and 24 up is 47 away: there, and it stands.
+        let stand = orders
+            .input(None, None, Vec3::new(40.0, 24.0, 0.0), None, now)
+            .unwrap();
+        assert_eq!(stand.direction, [0.0; 3]);
     }
 
     #[test]
