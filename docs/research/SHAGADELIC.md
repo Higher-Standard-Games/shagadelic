@@ -505,7 +505,7 @@ Results on `washoi_dm2`, Duel, hard, release builds, against SHAG `f37c56ec` wit
 | `854edcf`, main before the goal arbiter | 16 | 3–12–1 | −1.44 ± 0.96 | 19–42 | 48–25 |
 | `7916d3d`, the goal arbiter and strategy layer | 16 | 7–8–1 | −0.56 ± 1.15 | 32–41 | 48–39 |
 
-The arbiter's frag gap improves on main's by 0.88 per match. A session B trace of the arbiter build found no bot standing still for 5 s or more. Deaths still exceed the opponent's frags by about seven per 16 matches: falls, hazards, or the bot's own splash.
+The arbiter's frag gap improves on main's by 0.88 per match. A session B trace of the arbiter build found no bot standing still for 5 s or more. In that run the Rust deaths exceeded the opponent's frags by about seven per 16 matches. Session B's traced Duels after the item-picker fix (`ebe4614`), which classify each death, found one self-kill in 16 matches, so the excess is unconfirmed.
 
 **Hunting is mostly covered.** TypeScript `BotRoam.hunt` goes after the freshest enemy sighting within 300 server ticks (2.4 seconds). Otherwise it takes an item goal or patrols a random graph node. With `scoredGoals`, it weighs those by desires from the bot's weight profile. The Rust chase already follows seen and heard enemies for up to 2.8 seconds, and roaming walks between pickup and plain goals. The weighted choice between hunting a teammate's call, items, and territory is now `BotPlayer::hold_ground`, scored with the strategy layer's weight profiles.
 
