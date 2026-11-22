@@ -7,6 +7,7 @@ use shagger_shared::net::game_state::{Vec3, Velocity};
 use crate::games::washoi::agents::player::navigation::traversal::{Outcome, Traversal};
 use crate::games::washoi::agents::player::navigation::{
     MAX_HEIGHT_DELTA, PlayerInput, Route, WashoiNavigation, horizontal_distance,
+    sprint_on_long_legs,
 };
 use crate::games::washoi::{Difficulty, Sight, agents::player::strategy::goals::OwnVitals};
 
@@ -335,7 +336,10 @@ impl RouteFollower {
             *next += 1;
             *traversal = None;
         }
-        let input = WashoiNavigation::steer(route, next, position, velocity);
+        let mut input = WashoiNavigation::steer(route, next, position, velocity);
+        // Roaming walks sprint as objective walks do. Live, the Rust bot
+        // topped out near 330 u/s while the TypeScript bot ran at 380 to 430.
+        sprint_on_long_legs(&mut input, route, *next, position, velocity);
         if *next > reached {
             self.anchor = Some(route.waypoints[*next - 1]);
         }
@@ -647,6 +651,30 @@ mod tests {
         ));
         assert!(follower.blocked_toward([40.0, 0.0, 0.0], now));
         assert!(!follower.blocked_toward([40.0, 0.0, 0.0], now + RETRY_DELAY));
+    }
+
+    #[test]
+    fn roaming_sprints_on_long_level_legs_and_runs_near_their_end() {
+        let nav: WashoiNavigation = serde_json::from_str(
+            r#"{"map":"test","routes":[{"entry":[0,0,0],"waypoints":[[400,0,0],[400,100,400]]}]}"#,
+        )
+        .unwrap();
+        let grounded = RouteObservation {
+            velocity: Some(Velocity {
+                grounded: true,
+                ..Velocity::default()
+            }),
+            ..observe(SimTime::ZERO, false, None)
+        };
+        const SPRINT: u16 = 1 << 6;
+        let mut follower = RouteFollower::default();
+        let far = follower.steer(&nav, Vec3::default(), grounded);
+        assert_ne!(far.buttons & SPRINT, 0);
+        let near = follower.steer(&nav, Vec3::new(300.0, 0.0, 0.0), grounded);
+        assert_eq!(near.buttons & SPRINT, 0);
+        // The next leg climbs 100 units: run it.
+        let climb = follower.steer(&nav, Vec3::new(400.0, 0.0, 0.0), grounded);
+        assert_eq!(climb.buttons & SPRINT, 0);
     }
 
     #[test]

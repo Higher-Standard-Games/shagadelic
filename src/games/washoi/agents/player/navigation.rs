@@ -71,14 +71,7 @@ impl ObjectiveWalk {
             velocity,
             self.arrival,
         );
-        if input.direction != [0.0; 3]
-            && velocity.is_some_and(|velocity| velocity.grounded)
-            && let Some(&waypoint) = self.route.waypoints.get(self.next)
-            && (position.y - waypoint[1]).abs() <= SPRINT_HEIGHT_DELTA
-            && horizontal_distance(position, waypoint) >= SPRINT_LEG_DISTANCE
-        {
-            input.buttons |= SPRINT;
-        }
+        sprint_on_long_legs(&mut input, &self.route, self.next, position, velocity);
         input
     }
 
@@ -458,6 +451,28 @@ impl Route {
             .binary_search_by_key(&next, |&(at, _)| at)
             .ok()?;
         Some(self.maneuvers[index].1)
+    }
+}
+
+/// Sprint while walking a long, level leg, as TypeScript bots sprint
+/// whenever they move (`StateMachineBrain._moveToward`). Near the end of a
+/// leg, or on one that climbs or drops, the bot runs instead, so it doesn't
+/// overshoot a turn or a ledge.
+fn sprint_on_long_legs(
+    input: &mut PlayerInput,
+    route: &Route,
+    next: usize,
+    position: Vec3,
+    velocity: Option<Velocity>,
+) {
+    if input.direction != [0.0; 3]
+        && velocity.is_some_and(|velocity| velocity.grounded)
+        && route.maneuver_at(next).is_none()
+        && let Some(&waypoint) = route.waypoints.get(next)
+        && (position.y - waypoint[1]).abs() <= SPRINT_HEIGHT_DELTA
+        && horizontal_distance(position, waypoint) >= SPRINT_LEG_DISTANCE
+    {
+        input.buttons |= SPRINT;
     }
 }
 
