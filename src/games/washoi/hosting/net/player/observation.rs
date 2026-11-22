@@ -4,7 +4,8 @@
 //! reconstructed `GameState` as is. The fields here are the ones the
 //! pre-separation brain at `a272bda` read from it: each entity's legacy
 //! `position` component and its `velocity`, the scoreboard teams, the pickup
-//! mask, and the snapshot's one-tick events in wire order.
+//! mask, and the snapshot's one-tick events in wire order, with an item
+//! picker named by its entity key.
 
 use shagger_shared::net::game_state::GameState;
 
@@ -44,7 +45,34 @@ pub fn observe(state: &GameState<SnapshotEvent>) -> Observation {
             })
             .collect(),
         pickup_active: state.pickup_active_mask.clone(),
-        events: state.events.clone(),
+        events: state.events.iter().map(entity_keys).collect(),
+    }
+}
+
+/// `CLIENT_KEY_PREFIX` in `ClientEntityKey.ts`.
+const CLIENT_KEY_PREFIX: &str = "player_";
+
+/// The server names an `item_pickup` picker by its numeric entity ID, and
+/// every other event by the client entity key the snapshot's entities use.
+/// Give the picker as its key too, as `BotPerception`'s `pickerKey` does.
+pub fn entity_keys(event: &SnapshotEvent) -> SnapshotEvent {
+    match event {
+        SnapshotEvent::ItemPickup {
+            pickup_id,
+            weapon_id,
+            entity_id,
+            dropped_weapon_id,
+            at,
+        } if !entity_id.is_empty() && !entity_id.starts_with(CLIENT_KEY_PREFIX) => {
+            SnapshotEvent::ItemPickup {
+                pickup_id: *pickup_id,
+                weapon_id: weapon_id.clone(),
+                entity_id: format!("{CLIENT_KEY_PREFIX}{entity_id}"),
+                dropped_weapon_id: dropped_weapon_id.clone(),
+                at: *at,
+            }
+        }
+        _ => event.clone(),
     }
 }
 
@@ -141,5 +169,24 @@ mod tests {
     fn an_empty_snapshot_observes_nothing() {
         let observation = observe(&GameState::default());
         assert_eq!(observation, Observation::default());
+    }
+
+    #[test]
+    fn names_an_item_picker_by_its_entity_key() {
+        use crate::games::washoi::hosting::net::Point;
+        let at = Point {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        let pickup = |entity: &str| SnapshotEvent::ItemPickup {
+            pickup_id: 3,
+            weapon_id: String::new(),
+            entity_id: entity.into(),
+            dropped_weapon_id: String::new(),
+            at,
+        };
+        assert_eq!(entity_keys(&pickup("7")), pickup("player_7"));
+        assert_eq!(entity_keys(&pickup("player_7")), pickup("player_7"));
     }
 }

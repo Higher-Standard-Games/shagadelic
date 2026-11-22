@@ -19,7 +19,7 @@ use shagger_shared::net::{
 use tokio_tungstenite::tungstenite::Message;
 
 pub use admission::{Admission, AdmissionEvent};
-pub use observation::observe;
+pub use observation::{entity_keys, observe};
 
 use super::{
     SnapshotEvent, WashoiEvents,

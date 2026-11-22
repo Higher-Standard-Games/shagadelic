@@ -4,5 +4,7 @@
 
 pub use super::connection::AdmissionError;
 pub(crate) use super::player::InputBatch;
-pub use super::player::{Admission, AdmissionEvent, Connection, PlayerInput, connect, observe};
+pub use super::player::{
+    Admission, AdmissionEvent, Connection, PlayerInput, connect, entity_keys, observe,
+};
 pub use super::{Point, ReceivedSnapshot, SnapshotEvent, SnapshotReceiver, WashoiEvents};
