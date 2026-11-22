@@ -174,8 +174,8 @@ pub fn run(mut reader: impl BufRead + Send + 'static, writer: &mut impl Write) -
         .as_ref()
         .map(shagadelic::games::washoi::PeopleProfile::load)
         .transpose()?;
-    // Validated once for the lobby: the schema, the dimensions, and the
-    // feature names in order.
+    // Validated once for the lobby against the goal decision's spec: format,
+    // decision, schema, feature names in order, and dimensions.
     #[cfg(feature = "washoi")]
     let hunch = {
         let mode = match init.hunch_mode.as_deref() {
@@ -189,12 +189,15 @@ pub fn run(mut reader: impl BufRead + Send + 'static, writer: &mut impl Write) -
             }
             None => None,
             Some(path) => {
-                let (schema, names) = shagadelic::games::washoi::BotPlayer::hunch_schema();
-                let model = shagadelic::hunch::Model::load(path, schema)?;
-                model
-                    .validate_features(names)
-                    .map_err(|_| invalid("HUNCH model features differ"))?;
-                Some((std::sync::Arc::new(model), mode))
+                let spec = shagadelic::games::washoi::BotPlayer::hunch_spec();
+                let loaded = shagadelic::hunch::Model::parse(&std::fs::read(path)?, &spec)
+                    .map_err(|error| match error {
+                        shagadelic::hunch::ModelError::Features => {
+                            invalid("HUNCH model features differ")
+                        }
+                        error => error.into(),
+                    })?;
+                Some((loaded.model, mode))
             }
         }
     };
@@ -432,9 +435,11 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let write = |file: &str, names: Vec<String>| {
             let width = names.len();
+            // Format 1, as `hunch train` wrote it before decisions were named.
             let model = shagadelic::hunch::Model {
+                format: 1,
+                decision: String::new(),
                 schema: schema.into(),
-                version: 1,
                 features: names,
                 mean: vec![0.0; width],
                 scale: vec![1.0; width],

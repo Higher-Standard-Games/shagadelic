@@ -299,10 +299,8 @@ fn evaluate(args: &[String]) -> io::Result<()> {
     let (model_path, records) = paths
         .split_first()
         .ok_or_else(|| io::Error::other("a model and records are required"))?;
-    let (schema, _) = BotPlayer::hunch_schema();
-    let model = hunch::Model::load(model_path, schema)?;
+    let model = hunch::Model::load(model_path, &BotPlayer::hunch_spec())?.model;
     let (_, names) = BotPlayer::hunch_schema();
-    model.validate_features(names).map_err(io::Error::other)?;
     let records = labelled(records)?;
     let width = model.width();
     let mut scores = Vec::new();
@@ -367,9 +365,8 @@ fn train(args: &[String]) -> io::Result<()> {
     if decisions.is_empty() {
         return Err(io::Error::other("no labelled decisions"));
     }
-    let model = hunch::train(
-        schema,
-        names.iter().map(|name| (*name).to_owned()).collect(),
+    let model = hunch::fit(
+        &BotPlayer::hunch_spec(),
         &decisions,
         Training {
             seed,

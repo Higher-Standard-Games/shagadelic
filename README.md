@@ -209,8 +209,8 @@ Keep each match's records in one split, chosen before fitting. In `shadow`
 mode, the default, the rule still decides and each trace records HUNCH's
 choice. In `on` mode HUNCH picks among the candidates that pass the rule's
 gates. The loader
-checks the artifact's format version, the schema, the ordered feature names,
-the dimensions, and that every weight is finite. A decision whose scores are
+checks the artifact's format, its decision (`washoi.goal`), the schema, the
+ordered feature names, the dimensions, and that every weight is finite. A decision whose scores are
 not all finite keeps the rule's choice and notes `hunch=rejected`. The first pipeline result, 48.3% agreement with a seat's next
 pickup on held-out matches against the arbiter's 20.5%, is not yet evidence
 about people: those seats may be test clients. Human recordings and a reviewed label audit come

@@ -18,6 +18,7 @@ washoi = [
 futures-util = { version = "0.3", default-features = false, features = ["sink"], optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
 shagger_shared = { git = "https://github.com/Higher-Standard-Games/shagger", rev = "0c1a1fa8b72728b9323f61affa588cd5ef5aa7b0", optional = true }
 tokio = { version = "1", features = ["macros", "rt", "sync", "time"], optional = true }
 tokio-tungstenite = { version = "0.30", optional = true }

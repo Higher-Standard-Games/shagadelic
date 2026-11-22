@@ -8,6 +8,8 @@ use crate::games::washoi::agents::player::strategy::{
 };
 
 pub(in crate::games::washoi) const SCHEMA: &str = "washoi.goal.v0";
+/// The decision: which goal to go for when not fighting.
+pub(in crate::games::washoi) const DECISION: &str = "washoi.goal";
 
 /// Feature names, in vector order.
 pub(in crate::games::washoi) const NAMES: [&str; 22] = [
@@ -36,6 +38,13 @@ pub(in crate::games::washoi) const NAMES: [&str; 22] = [
 ];
 
 pub(in crate::games::washoi) const WIDTH: usize = NAMES.len();
+
+/// The goal decision as HUNCH validates its artifacts.
+pub(in crate::games::washoi) const SPEC: crate::hunch::Spec<'static> = crate::hunch::Spec {
+    decision: DECISION,
+    schema: SCHEMA,
+    features: &NAMES,
+};
 
 const TICK_RATE: f64 = 125.0;
 const RUN_SPEED: f64 = 320.0;
@@ -111,12 +120,6 @@ pub(in crate::games::washoi) fn push_row(context: &Context, trace: &Trace, out: 
         },
     ];
     out.extend(row.iter().map(|value| *value as f32));
-}
-
-/// The names as a model artifact stores them.
-#[cfg(test)]
-pub(in crate::games::washoi) fn names() -> Vec<String> {
-    NAMES.iter().map(|name| (*name).to_owned()).collect()
 }
 
 #[cfg(test)]

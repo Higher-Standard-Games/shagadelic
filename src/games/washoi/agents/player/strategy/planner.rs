@@ -66,14 +66,9 @@ pub(in crate::games::washoi) struct KnownPickup {
     pub(in crate::games::washoi) blocked: bool,
 }
 
-/// How a HUNCH model takes part in goal choice (`docs/research/HUNCH.md`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum HunchMode {
-    /// The arbiter decides. The model's pick is only recorded.
-    Shadow,
-    /// The model's best eligible candidate decides.
-    On,
-}
+/// How a HUNCH model takes part in goal choice (`docs/research/HUNCH.md`):
+/// HUNCH's own `Mode`.
+pub use crate::hunch::Mode as HunchMode;
 
 pub(in crate::games::washoi) struct Planner {
     arbiter: Arbiter,
@@ -158,7 +153,7 @@ impl Planner {
 
     /// Score candidates with a HUNCH model of schema `washoi.goal.v0`.
     pub(in crate::games::washoi) fn set_hunch(&mut self, model: Arc<Model>, mode: HunchMode) {
-        self.hunch = Some((model, mode));
+        self.hunch = (mode != HunchMode::Off).then_some((model, mode));
     }
 
     /// Keep each decision's candidates and `washoi.goal.v0` rows.
@@ -688,7 +683,7 @@ mod tests {
 
     #[test]
     fn a_hunch_model_records_its_pick_in_shadow_and_decides_when_on() {
-        use crate::hunch::{Decision, Model, Training, train};
+        use crate::hunch::{Decision, Model, Training, fit};
         // A model trained to want armor and nothing else.
         let width = hunch_features::WIDTH;
         let armor = hunch_features::NAMES
@@ -711,12 +706,8 @@ mod tests {
                 }
             })
             .collect();
-        let model: Arc<Model> = Arc::new(train(
-            hunch_features::SCHEMA,
-            hunch_features::names(),
-            &decisions,
-            Training::default(),
-        ));
+        let model: Arc<Model> =
+            Arc::new(fit(&hunch_features::SPEC, &decisions, Training::default()));
         let pickups = || {
             vec![
                 known(

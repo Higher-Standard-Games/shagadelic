@@ -94,6 +94,17 @@ The HUNCH session reports here. `docs/research/HUNCH.md`, "Next experiment and h
 
 Session C (Codex) took over HUNCH on 2026-11-22: the label fixes (items 1 and 2, H0 and H2), the 16-bot shadow measurement (item 5), and training and evaluation on the human recordings. Session B's movement work stays under Movement sequences above.
 
+- [x] HUNCH API v1 library (session A), after HUNCH.md "Model architecture contract" and "RPG and hockey fixtures for the public API". `src/hunch/` holds the following:
+  - `Spec`: decision ID, schema, and feature names.
+  - Artifact format 2, which names its decision. Format 1 still loads as its schema's decision, `washoi.goal.v0` as `washoi.goal`.
+  - `Model::parse` from memory, and `Model::load` from a file, return `Loaded` with the artifact's SHA-256 `Digest`.
+  - `Mode` (`off`, `shadow`, `on`), which Washoi's `HunchMode` re-exports.
+  - ID-labelled `Episode`s, with `Label::Chose` and `Label::Preferred` (a preference trains on its two candidates alone), and `Source` (`human`, `designer`, or `rule`), trained by `train(spec, episodes, training)`. The index-labelled `fit` stays underneath.
+  - `Bindings`, which resolve an archetype's binding, then the decision's default, then the rule. They refuse duplicates, a mode with no model, and another decision's model, and share identical artifacts by digest.
+  - `tests/hunch_api.rs` covers the healer preference and the hockey choice, trained, loaded from bytes, and replayed back to typed actions by ID. With equal widths, a swapped artifact fails on its decision. Carrier and winger give the same result in either order, and on another thread. Bindings with an override, an explicit off, shadow executing the rule, and a second decision.
+- [ ] Session C: move `src/bin/hunch.rs` to the v1 training interface. `extract` writes `Episode` lines (`decision`, `schema`, `group` as the match or session, `source`, `ids`, `rows`, `label`), and `train` calls `hunch::train` instead of `fit`. Freeze v1 once extraction writes episodes.
+- [ ] Session A: Washoi bindings, which add `hunch_bindings` to the lobby init and `SHAGADELIC_HUNCH_MANIFEST` to the supervisor, beside the `hunch_file` shorthand. The decision trace gains the model's digest.
+
 Handoff from B to C: B drafted items 1 and 2 before the move. Neither is built or tested, and C may use them or not. Both are in `C:/tmp/hunch-handoff-b/`:
 - `hunch-labels.patch`, against `src/bin/hunch.rs` at `6e439f4`, adds a `Labels` struct:
   - An `ItemPickup` naming the seat labels the record first.

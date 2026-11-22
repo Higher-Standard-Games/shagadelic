@@ -327,14 +327,11 @@ impl BotPlayer {
         std::mem::take(&mut self.outgoing)
     }
 
-    /// Let a HUNCH model of schema `washoi.goal.v0` score goal candidates,
-    /// in shadow or deciding. The artifact is checked against the schema.
+    /// Let a HUNCH model of the goal decision (`washoi.goal`, schema
+    /// `washoi.goal.v0`) score goal candidates, in shadow or deciding. The
+    /// artifact is checked against the spec; off leaves the rule alone.
     pub fn with_hunch(mut self, model: Arc<crate::hunch::Model>, mode: HunchMode) -> Self {
-        if model.validate(strategy::hunch_features::SCHEMA).is_ok()
-            && model
-                .validate_features(&strategy::hunch_features::NAMES)
-                .is_ok()
-        {
+        if mode != HunchMode::Off && model.validate(&strategy::hunch_features::SPEC).is_ok() {
             self.hunch = Some((model.clone(), mode));
             self.planner.set_hunch(model, mode);
         }
@@ -355,12 +352,16 @@ impl BotPlayer {
         self.arbitrated.then(|| self.planner.recorded())
     }
 
+    /// The goal decision HUNCH scores: `washoi.goal`, schema
+    /// `washoi.goal.v0`, and its feature names in row order.
+    pub fn hunch_spec() -> crate::hunch::Spec<'static> {
+        strategy::hunch_features::SPEC
+    }
+
     /// `washoi.goal.v0`: the schema name and feature names, in row order.
     pub fn hunch_schema() -> (&'static str, &'static [&'static str]) {
-        (
-            strategy::hunch_features::SCHEMA,
-            &strategy::hunch_features::NAMES,
-        )
+        let spec = Self::hunch_spec();
+        (spec.schema, spec.features)
     }
 
     /// Keep a `DecisionTrace` of each decision, for tools.
@@ -2740,15 +2741,17 @@ mod tests {
             .unwrap(),
         );
         let model_preferring = |health: f32| {
-            let (schema, names) = BotPlayer::hunch_schema();
+            let spec = BotPlayer::hunch_spec();
+            let (schema, names) = (spec.schema, spec.features);
             let weight = |name: &str| match name {
                 "health_gain" => health,
                 "armor_gain" => -health,
                 _ => 0.0,
             };
             Arc::new(crate::hunch::Model {
+                format: crate::hunch::FORMAT,
+                decision: spec.decision.into(),
                 schema: schema.into(),
-                version: 1,
                 features: names.iter().map(|name| (*name).to_owned()).collect(),
                 mean: vec![0.0; names.len()],
                 scale: vec![1.0; names.len()],
