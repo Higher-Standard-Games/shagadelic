@@ -209,9 +209,58 @@ impl RouteFollower {
         position: Vec3,
         sight: Option<&Sight>,
     ) -> Option<f64> {
-        const RUN: f64 = 320.0;
-        const REACH: f64 = 520.0;
-        const LANE: f64 = 64.0;
+        self.lane(navigation, position, sight, 320.0, 520.0, 64.0)
+    }
+
+    /// An open stretch to strafe-jump down, after TypeScript
+    /// `BotTraversal.routeStrafeLane` on a straight lane: 480 units of run,
+    /// 640 of reach, 96 wide, held to 260 past the run. The last walk to a
+    /// pickup needs 800 units left, so the bot can stop at the item.
+    pub(in crate::games::washoi) fn hop_lane(
+        &self,
+        navigation: &WashoiNavigation,
+        position: Vec3,
+        sight: Option<&Sight>,
+    ) -> Option<crate::games::washoi::agents::player::navigation::hop::HopLane> {
+        const RUN: f64 = 480.0;
+        const EXIT_MARGIN: f64 = 260.0;
+        const ITEM_MIN_REMAINING: f64 = 800.0;
+        let active = self.active.as_ref()?;
+        let route = active.route.get(navigation);
+        let last = route.waypoints.len().checked_sub(1)?;
+        if route.pickup.is_some()
+            && active.next == last
+            && horizontal_distance(position, route.waypoints[last]) < ITEM_MIN_REMAINING
+        {
+            return None;
+        }
+        let yaw = self.lane(navigation, position, sight, RUN, 640.0, 96.0)?;
+        let reach = RUN + EXIT_MARGIN;
+        Some(
+            crate::games::washoi::agents::player::navigation::hop::HopLane {
+                yaw,
+                end: [
+                    position.x + yaw.sin() * reach,
+                    position.y,
+                    position.z + yaw.cos() * reach,
+                ],
+            },
+        )
+    }
+
+    /// `BotTraversal.laneOpen`: the heading to the next waypoint when the
+    /// walk for `reach` stays within `width` of that line, widening past
+    /// `run`, with no maneuver or change of floor, and `run` of it is
+    /// walkable straight.
+    fn lane(
+        &self,
+        navigation: &WashoiNavigation,
+        position: Vec3,
+        sight: Option<&Sight>,
+        run: f64,
+        reach: f64,
+        width: f64,
+    ) -> Option<f64> {
         let sight = sight?;
         let active = self.active.as_ref()?;
         if self.exact || active.traversal.is_some() {
@@ -228,11 +277,11 @@ impl RouteFollower {
         for next in active.next..route.waypoints.len() {
             let [x, y, z] = route.waypoints[next];
             let along = (x - position.x) * dx + (z - position.z) * dz;
-            if along >= REACH {
+            if along >= reach {
                 break;
             }
             let lateral = ((x - position.x) * dz - (z - position.z) * dx).abs();
-            if lateral > LANE + (along - RUN).max(0.0)
+            if lateral > width + (along - run).max(0.0)
                 || route.maneuver_at(next).is_some()
                 || (y - position.y).abs() > MAX_HEIGHT_DELTA
             {
@@ -246,8 +295,13 @@ impl RouteFollower {
                 position.z + dz * distance,
             )
         };
-        let middle = ahead(RUN / 2.0);
-        (local_walk(sight, position, middle) && local_walk(sight, middle, ahead(RUN)))
+        // A straight local walk reaches 256 units: check the run in pieces.
+        let pieces = (run / 160.0).ceil().max(1.0);
+        (0..pieces as u32)
+            .all(|piece| {
+                let from = ahead(run * f64::from(piece) / pieces);
+                local_walk(sight, from, ahead(run * f64::from(piece + 1) / pieces))
+            })
             .then(|| dx.atan2(dz))
     }
 

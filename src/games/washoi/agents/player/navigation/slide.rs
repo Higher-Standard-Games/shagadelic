@@ -120,8 +120,7 @@ pub(in crate::games::washoi) struct SlideView<'a> {
 }
 
 impl RouteSlide {
-    #[cfg(test)]
-    fn active(&self) -> bool {
+    pub(in crate::games::washoi) fn active(&self) -> bool {
         self.running.is_some() || self.item.is_some()
     }
 

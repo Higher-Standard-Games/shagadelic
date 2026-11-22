@@ -33,6 +33,7 @@ use crate::games::washoi::agents::player::movement::strafe::{self, Body, CombatM
 use crate::games::washoi::agents::player::movement::territory::Territory;
 use crate::games::washoi::agents::player::navigation::{
     RouteFollower, RouteObservation,
+    hop::{HopChain, HopView},
     slide::{RouteSlide, SlideView},
     unstick::{Unstick, UnstickView},
 };
@@ -116,6 +117,7 @@ pub struct BotPlayer {
     fighting: bool,
     unstick: Unstick,
     slide: RouteSlide,
+    hop: HopChain,
     /// A ledge to fight from with a splash weapon, and the walk there.
     high_ground: HighGround,
     climb: Chase,
@@ -254,6 +256,7 @@ impl BotPlayer {
             last_goal: None,
             pair_costs: std::collections::HashMap::new(),
             slide: RouteSlide::default(),
+            hop: HopChain::default(),
             high_ground: HighGround::default(),
             climb: Chase::default(),
             ordered: false,
@@ -378,6 +381,7 @@ impl BotPlayer {
 
     fn uses_exact_movement(&self) -> bool {
         self.route.exact()
+            || self.hop.active()
             || self.traversal.active()
             || matches!(self.traversal, Traversal::Approaching { .. })
     }
@@ -457,9 +461,14 @@ impl BotPlayer {
             .body(&self.entity_id)
             .and_then(|entity| entity.position);
         self.face_teleport_exit(position);
+        // A strafe-jump chain gives way to a fight outside its takeoff
+        // commitment, as TypeScript interrupts it on a change of state.
+        let hop_yields = self.hop.active() && self.hop.interruptible(world.tick);
         self.engagement = match (&self.sight, position) {
             (Some(sight), Some(position))
-                if !self.exact_view && self.respawn_at.is_none() && !self.traversal.active() =>
+                if (!self.exact_view || hop_yields)
+                    && self.respawn_at.is_none()
+                    && !self.traversal.active() =>
             {
                 self.combat.engage(
                     world,
@@ -475,6 +484,10 @@ impl BotPlayer {
             }
             _ => None,
         };
+        if hop_yields && self.engagement.is_some() {
+            self.hop.reset();
+            self.exact_view = false;
+        }
         self.apply_mood(world, position);
         self.position = position;
         self.allies = self.combat.allies(world, &self.entity_id);
@@ -987,6 +1000,8 @@ impl BotPlayer {
             self.route.detach();
             self.orders = Orders::default();
             self.traversal = Traversal::default();
+            self.hop.reset();
+            self.slide.reset();
             self.aim.clear();
             self.combat.respawned();
             self.planner.reset();
@@ -1091,6 +1106,26 @@ impl BotPlayer {
                 );
                 if self.route.exact() {
                     self.slide.reset();
+                    self.hop.reset();
+                    return true;
+                }
+                // A strafe-jump chain under way owns the controls
+                // (`navigation::hop`).
+                let hop_view = HopView {
+                    tick: world.tick,
+                    position,
+                    velocity: own.and_then(|entity| entity.velocity),
+                    lane: self
+                        .route
+                        .hop_lane(navigation, position, self.sight.as_deref()),
+                    sight: self.sight.as_deref(),
+                    skill: self.difficulty.strafe_jump_skill(),
+                };
+                if self.hop.active()
+                    && let Some(controls) = self.hop.steer(&hop_view, self.planned_input)
+                {
+                    self.slide.reset();
+                    self.planned_input = controls;
                     return true;
                 }
                 // Fast down a straight, plain walk, crouch-slide
@@ -1112,6 +1147,13 @@ impl BotPlayer {
                     },
                     self.planned_input,
                 );
+                // Then, as TypeScript tries them, a strafe-jump chain.
+                if !self.slide.active()
+                    && let Some(controls) = self.hop.steer(&hop_view, self.planned_input)
+                {
+                    self.planned_input = controls;
+                    return true;
+                }
                 if let Some(library) = &self.learned
                     && let Some(id) = self.route.takeoff(navigation)
                     && self.traversal.begin_approach(library, id, position, now)

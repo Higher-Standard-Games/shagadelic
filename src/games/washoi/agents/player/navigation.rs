@@ -1,5 +1,6 @@
 mod follower;
 mod graph;
+pub(in crate::games::washoi) mod hop;
 pub(in crate::games::washoi) mod learned;
 pub(in crate::games::washoi) mod slide;
 mod traversal;
