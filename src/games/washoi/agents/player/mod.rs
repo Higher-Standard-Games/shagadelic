@@ -1940,14 +1940,23 @@ impl BotPlayer {
             && let Some((wanted, prefire)) = self.chasing
         {
             self.pressed_melee = false;
+            let [x, _, z] = input.direction;
+            let moving = x != 0.0 || z != 0.0;
             let wanted = if prefire {
                 wanted
             } else {
+                // Running after it unseen, look ahead along the run and
+                // keep the forward key; turn to the spot when firing into it.
                 View {
+                    yaw: if moving {
+                        looking::keep_sprint(wanted.yaw, x.atan2(z))
+                    } else {
+                        wanted.yaw
+                    },
                     pitch: (wanted.pitch + looking::CALM_PITCH).min(looking::CALM_MAX_PITCH),
-                    ..wanted
                 }
             };
+            self.aim.set_brisk(moving && !prefire);
             let view = self.aim.step(
                 INPUT_PERIOD.as_secs_f64(),
                 wanted,
@@ -1968,6 +1977,8 @@ impl BotPlayer {
                 pitch: (planned.pitch + looking::CALM_PITCH).min(looking::CALM_MAX_PITCH),
                 ..planned
             };
+            // Running a route with nobody about, turn to the next leg briskly.
+            self.aim.set_brisk(input.direction != [0.0; 3]);
             let view = self.aim.step(
                 INPUT_PERIOD.as_secs_f64(),
                 calm,

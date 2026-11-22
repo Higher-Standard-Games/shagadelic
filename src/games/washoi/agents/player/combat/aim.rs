@@ -33,6 +33,12 @@ const CALM_MAX_GOAL_SPEED: f64 = 120.0 * DEG;
 const CALM_MAX_EASED_TURN: f64 = 90.0 * DEG;
 const CALM_DEADZONES: f64 = 5.0;
 const CALM_FINISH: f64 = 0.25;
+/// Brisk calm, for a bot running a route with nobody about: a person turns
+/// to the next leg quickly. The movement keys follow the view sent, so a
+/// view trailing the run sends a diagonal, and a diagonal caps the run at
+/// 320. TypeScript's feet don't follow its view, so it eases at 0.6 s.
+const BRISK_EASE_SECONDS: f64 = 0.12;
+const BRISK_MAX_GOAL_SPEED: f64 = 360.0 * DEG;
 const DEADZONE_POINTS: [(f64, f64); 4] = [
     (1.5, 4.0 * DEG),
     (3.0, 3.0 * DEG),
@@ -177,6 +183,8 @@ pub(in crate::games::washoi) struct AimController {
     view: Option<(Axis, Axis)>,
     pending: Option<Pending>,
     overshoot: Option<f64>,
+    /// Calm turns at the brisk pace.
+    brisk: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -193,7 +201,13 @@ impl AimController {
             view: None,
             pending: None,
             overshoot: None,
+            brisk: false,
         }
+    }
+
+    /// Calm turns at the brisk pace of a person running a route alone.
+    pub(in crate::games::washoi) fn set_brisk(&mut self, brisk: bool) {
+        self.brisk = brisk;
     }
 
     /// `setDifficulty`: new rates from here on, keeping the view.
@@ -271,8 +285,13 @@ impl AimController {
         self.pending = None;
         self.overshoot = None;
         let deadzone = self.tuning.deadzone;
-        let ease = 1.0 - (-dt / CALM_EASE_SECONDS).exp();
-        let cap = CALM_MAX_GOAL_SPEED * dt;
+        let (seconds, speed) = if self.brisk {
+            (BRISK_EASE_SECONDS, BRISK_MAX_GOAL_SPEED)
+        } else {
+            (CALM_EASE_SECONDS, CALM_MAX_GOAL_SPEED)
+        };
+        let ease = 1.0 - (-dt / seconds).exp();
+        let cap = speed * dt;
         let yaw_off = wrap(wanted.yaw - yaw.goal);
         if yaw_off.abs() > deadzone * CALM_DEADZONES || yaw.easing {
             yaw.goal = wrap(yaw.goal + (yaw_off * ease).clamp(-cap, cap));
@@ -486,5 +505,33 @@ mod tests {
         }
         let (yaw, _) = aim.view.unwrap();
         assert!(yaw.goal > 0.0 && yaw.goal <= 25.0 * DT * CALM_MAX_GOAL_SPEED + 1e-9);
+    }
+
+    #[test]
+    fn a_brisk_calm_turn_reaches_the_next_leg_much_sooner() {
+        // Ticks until a calm view is within the forward key's 22.5 degrees
+        // of a 90 degree turn.
+        let settle = |brisk: bool| {
+            let mut aim = AimController::new(Difficulty::Hard.aim());
+            aim.set_brisk(brisk);
+            let mut random = Random::new(3);
+            aim.reset(View {
+                yaw: 0.0,
+                pitch: 0.0,
+            });
+            let wanted = View {
+                yaw: 90.0 * DEG,
+                pitch: 0.0,
+            };
+            (1..=500)
+                .find(|_| {
+                    let view = aim.step(0.008, wanted, false, true, &mut random);
+                    wrap(wanted.yaw - view.yaw).abs() < 22.5 * DEG
+                })
+                .unwrap_or(500)
+        };
+        let (calm, brisk) = (settle(false), settle(true));
+        assert!(brisk * 2 < calm, "brisk {brisk} ticks, calm {calm}");
+        assert!(brisk <= 50, "brisk {brisk} ticks");
     }
 }
