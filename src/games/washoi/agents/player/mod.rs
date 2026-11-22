@@ -702,6 +702,16 @@ impl BotPlayer {
                 .hunch
                 .as_ref()
                 .map(|(loaded, _)| loaded.digest.to_string()),
+            rule: if self.arbitrated && self.hunch.is_some() {
+                self.planner.rule_goal().map(str::to_owned)
+            } else {
+                None
+            },
+            hunch_scores: if self.arbitrated {
+                self.planner.hunch_scores()
+            } else {
+                Vec::new()
+            },
             hunch: if self.arbitrated {
                 self.planner.hunch_pick().map(str::to_owned)
             } else {

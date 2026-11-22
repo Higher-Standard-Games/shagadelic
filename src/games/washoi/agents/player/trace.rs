@@ -8,6 +8,14 @@ use serde::Serialize;
 /// `TRACED_CANDIDATES`: candidates kept per record.
 pub const TRACED_CANDIDATES: usize = 3;
 
+/// A goal candidate as a HUNCH model scored it.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct HunchScore {
+    pub id: String,
+    /// Not finite when a row was, and then the rule's goal stands.
+    pub score: f32,
+}
+
 /// A candidate goal as the arbiter scored it.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct TracedCandidate {
@@ -27,8 +35,14 @@ pub struct DecisionTrace {
     pub state: &'static str,
     /// IDs of the gametype orders offered.
     pub orders: Vec<String>,
-    /// The goal the arbiter chose, or None when it chose nothing.
+    /// The goal pursued, or None when nothing was chosen: the arbiter's, or
+    /// HUNCH's when a model decides.
     pub goal: Option<String>,
+    /// The arbiter's own goal, when a HUNCH model scores goals.
+    pub rule: Option<String>,
+    /// HUNCH's score for each eligible candidate, in row order, when a
+    /// model scores goals.
+    pub hunch_scores: Vec<HunchScore>,
     /// The best candidates past the gates, best first.
     pub candidates: Vec<TracedCandidate>,
     /// Candidates a gate ruled out.

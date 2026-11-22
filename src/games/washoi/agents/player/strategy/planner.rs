@@ -11,7 +11,7 @@ use std::{fmt::Write as _, sync::Arc};
 
 use crate::{games::washoi::agents::player::strategy::hunch_features, hunch::Model};
 
-use crate::games::washoi::agents::player::trace::{TRACED_CANDIDATES, TracedCandidate};
+use crate::games::washoi::agents::player::trace::{HunchScore, TRACED_CANDIDATES, TracedCandidate};
 
 use crate::games::washoi::{
     Vec3,
@@ -89,6 +89,9 @@ pub(in crate::games::washoi) struct Planner {
     /// The last decision for its trace: the goal chosen, the best
     /// candidates past the gates, and how many a gate ruled out.
     last_goal: Option<String>,
+    /// The arbiter's own goal, which differs from `last_goal` when HUNCH
+    /// decides.
+    rule_goal: Option<String>,
     last_candidates: Vec<TracedCandidate>,
     last_gated: usize,
     /// The pickup pursued, and how it is going.
@@ -122,6 +125,7 @@ impl Planner {
             desire: 0.0,
             timed: false,
             last_goal: None,
+            rule_goal: None,
             last_candidates: Vec::new(),
             last_gated: 0,
             pursuit: None,
@@ -170,6 +174,27 @@ impl Planner {
         )
     }
 
+    /// The arbiter's own goal at the last decision.
+    pub(in crate::games::washoi) fn rule_goal(&self) -> Option<&str> {
+        self.rule_goal.as_deref()
+    }
+
+    /// HUNCH's score for each eligible candidate at the last decision, in
+    /// row order, when a model scores goals.
+    pub(in crate::games::washoi) fn hunch_scores(&self) -> Vec<HunchScore> {
+        if self.hunch.is_none() {
+            return Vec::new();
+        }
+        self.hunch_ids
+            .iter()
+            .zip(&self.hunch_scores)
+            .map(|((_, id), score)| HunchScore {
+                id: id.clone(),
+                score: *score,
+            })
+            .collect()
+    }
+
     /// The candidate HUNCH preferred at the last decision.
     pub(in crate::games::washoi) fn hunch_pick(&self) -> Option<&str> {
         self.hunch_pick.as_deref()
@@ -206,6 +231,7 @@ impl Planner {
             self.hunch_ids.clear();
             self.hunch_rows.clear();
             self.last_goal = Some(order.id.clone());
+            self.rule_goal.clone_from(&self.last_goal);
             self.last_candidates.clear();
             self.last_gated = 0;
             return Some(order.target.clone());
@@ -291,6 +317,7 @@ impl Planner {
             .collect();
         self.last_gated = traces.iter().filter(|t| t.gated.is_some()).count();
         self.last_goal = goal.map(|index| goals[index].id.clone());
+        self.rule_goal.clone_from(&self.last_goal);
         self.hunch_ids.clear();
         self.hunch_rows.clear();
         if self.hunch.is_some() || self.recording {
@@ -763,6 +790,12 @@ mod tests {
             "the trace names the goal pursued"
         );
         assert_eq!(shadow.last().0, Some("pickup:0"));
+        // Beside it, the arbiter's own goal and the model's scores by ID.
+        assert_eq!(on.rule_goal(), Some("pickup:0"));
+        let scores = on.hunch_scores();
+        let ids: Vec<&str> = scores.iter().map(|score| score.id.as_str()).collect();
+        assert_eq!(ids, ["pickup:0", "pickup:1"]);
+        assert!(scores[1].score > scores[0].score, "{scores:?}");
     }
 
     #[test]
