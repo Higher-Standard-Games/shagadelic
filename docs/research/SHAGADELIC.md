@@ -495,7 +495,19 @@ The ignored `washoi_bots_fight_until_one_kills_the_other` test runs two Insane b
 node node_modules/vite-node/vite-node.mjs <SHAGADELIC>/tools/bench-washoi-ab.mjs -- --exe <shagadelic.exe> --nav <navigation dir> --matches 12 --seconds 120 --difficulty hard
 ```
 
-**Hunting is mostly covered.** TypeScript `BotRoam.hunt` goes after the freshest enemy sighting within 300 server ticks (2.4 seconds). Otherwise it takes an item goal or patrols a random graph node. With `scoredGoals`, it weighs those by desires from the bot's weight profile. The Rust chase already follows seen and heard enemies for up to 2.8 seconds, and roaming walks between pickup and plain goals. The remaining difference is the weighted choice between hunting, items, and territory. That belongs with the strategy layer and its weight profiles, which are not ported.
+Run it from a SHAG checkout pinned to a commit, with the `src/games/fps` submodule pinned too. Results from a working tree with uncommitted bot or protocol edits are not comparable. On 2026-11-22, a checkout with local `BotVision.ts` edits made main look ahead of the TypeScript bot.
+
+Results on `washoi_dm2`, Duel, hard, release builds, against SHAG `f37c56ec` with the game at `fc9b43d`:
+
+| Rust build | Matches | Wins, Rust–TS–draws | Frag gap per match (95%) | Frags | Deaths |
+| --- | --- | --- | --- | --- | --- |
+| `9450cae`, before mood, look, and fire safety (debug build, unpinned SHAG) | 12 | 1–7–4 | −1.00 ± 0.99 | 17–29 | 31–19 |
+| `854edcf`, main before the goal arbiter | 16 | 3–12–1 | −1.44 ± 0.96 | 19–42 | 48–25 |
+| `7916d3d`, the goal arbiter and strategy layer | 16 | 7–8–1 | −0.56 ± 1.15 | 32–41 | 48–39 |
+
+The arbiter's frag gap improves on main's by 0.88 per match. A session B trace of the arbiter build found no bot standing still for 5 s or more. Deaths still exceed the opponent's frags by about seven per 16 matches: falls, hazards, or the bot's own splash.
+
+**Hunting is mostly covered.** TypeScript `BotRoam.hunt` goes after the freshest enemy sighting within 300 server ticks (2.4 seconds). Otherwise it takes an item goal or patrols a random graph node. With `scoredGoals`, it weighs those by desires from the bot's weight profile. The Rust chase already follows seen and heard enemies for up to 2.8 seconds, and roaming walks between pickup and plain goals. The weighted choice between hunting a teammate's call, items, and territory is now `BotPlayer::hold_ground`, scored with the strategy layer's weight profiles.
 
 The demo workflow is a separate source. `training_demo` recordings processed by `bot:learn` produce `config/bot-routes/<map>.json`. Those records carry a start pose, landing, and run-length-encoded commands for deterministic maneuvers. `config/bot-lanes/<map>.json`, written by `bot:lanes`, can feed S&D tactics when that layer is implemented.
 
