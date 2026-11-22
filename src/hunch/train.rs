@@ -17,6 +17,9 @@ pub enum Source {
     Designer,
     /// The game's own rule, to bootstrap a baseline.
     Rule,
+    /// A seat a recording does not confirm a person played, such as a
+    /// default name in a demo. Never evidence about people.
+    Unverified,
 }
 
 /// What an episode's label says, by candidate ID.

@@ -103,7 +103,13 @@ Session C (Codex) took over HUNCH on 2026-11-22: the label fixes (items 1 and 2,
   - ID-labelled `Episode`s, with `Label::Chose` and `Label::Preferred` (a preference trains on its two candidates alone), and `Source` (`human`, `designer`, or `rule`), trained by `train(spec, episodes, training)`. The index-labelled `fit` stays underneath.
   - `Bindings`, which resolve an archetype's binding, then the decision's default, then the rule. They refuse duplicates, a mode with no model, and another decision's model, and share identical artifacts by digest.
   - `tests/hunch_api.rs` covers the healer preference and the hockey choice, trained, loaded from bytes, and replayed back to typed actions by ID. With equal widths, a swapped artifact fails on its decision. Carrier and winger give the same result in either order, and on another thread. Bindings with an override, an explicit off, shadow executing the rule, and a second decision.
-- [ ] Session C: move `src/bin/hunch.rs` to the v1 training interface. `extract` writes `Episode` lines (`decision`, `schema`, `group` as the match or session, `source`, `ids`, `rows`, `label`), and `train` calls `hunch::train` instead of `fit`. Freeze v1 once extraction writes episodes.
+- [x] `src/bin/hunch.rs` on the v1 training interface (session A, while C was out of credits).
+  - Records keep C's audit fields (evidence, ambiguity, life, pickup tick, closure) and gain the episode identity: `decision` (`washoi.goal`), `group` (the demo's match), and `source`.
+  - A demo can't tell who played a seat, so records are `unverified`, a new `hunch::Source`, unless `extract --source human` vouches for the recording.
+  - `train` and `evaluate` read records as `hunch::Episode`s (`Record::episode`), skipping unlabelled and ambiguous ones, and `train` calls `hunch::train`. It reports its decisions by source.
+  - Records written before this read as unverified goal decisions grouped by demo.
+  - End to end on `washoi_dm2_duel_20261018_153417.shagdemo`: 3,472 records, 21 labelled and unambiguous, trained and evaluated, writing a format 2 artifact.
+  - API v1 can freeze now.
 - [x] Washoi bindings (session A):
   - The lobby init takes `hunch_manifest`, a JSON list of `{ archetype?, decision, mode?, artifact? }` read by `Bindings::from_manifest`, with artifacts relative to the manifest. The supervisor passes it from `SHAGADELIC_HUNCH_MANIFEST`.
   - `hunch_file` and `hunch_mode` remain shorthand for one default binding of `washoi.goal`. Both forms together, or a mode beside a manifest, are refused.

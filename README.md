@@ -219,6 +219,7 @@ candidates of the same decision is trained to favor the one the human chose.
 
 ```sh
 # Replay each human seat of a demo through the bot's own perception and planner.
+# Seats are "unverified" unless --source human vouches that a person played them.
 hunch extract match.shagdemo --nav washoi_dm2.json --sight washoi_dm2.sight > records.jsonl
 # Fit a model, seeded, on the training matches' records.
 hunch train train/*.jsonl --out goal.json --seed 7

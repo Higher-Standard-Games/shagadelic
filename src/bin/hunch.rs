@@ -13,8 +13,13 @@
 //! life, the pickup tick, whether another player stood by the item, and why
 //! the record closed.
 //!
+//! Records carry HUNCH's episode identity: the decision (`washoi.goal`),
+//! the group a split keeps together (the demo's match), and the source.
+//! A demo does not say who played a seat, so records are `unverified`
+//! unless `--source human` says the recording is known to be a person's.
+//!
 //! `hunch train <records.jsonl>... --out <model.json> [--seed <n>]` fits a
-//! model on the labelled records.
+//! model on the labelled, unambiguous records through `hunch::train`.
 
 use std::{
     collections::VecDeque,
@@ -31,7 +36,7 @@ use shagadelic::{
         BotPlayer, Difficulty, Sight, SimTime, WashoiNavigation,
         protocol::{SnapshotEvent, WashoiEvents, entity_keys, observe},
     },
-    hunch::{self, Decision, Training},
+    hunch::{self, Episode, Label, Source, Training},
 };
 use shagger_shared::demo::demo_reader::DemoReader;
 
@@ -45,9 +50,26 @@ const LABEL_TICKS: u32 = 10 * TICK_RATE;
 const SELF_TAKE_RADIUS: f64 = 180.0;
 const SELF_TAKE_HEIGHT: f64 = 96.0;
 
+fn goal_decision() -> String {
+    BotPlayer::hunch_spec().decision.to_owned()
+}
+
+fn unverified() -> Source {
+    Source::Unverified
+}
+
 #[derive(Serialize, Deserialize)]
 struct Record {
+    /// The HUNCH decision, `washoi.goal`. Records from before it was named
+    /// read as that.
+    #[serde(default = "goal_decision")]
+    decision: String,
     schema: String,
+    /// What a split keeps together: the match, by default the demo.
+    #[serde(default)]
+    group: String,
+    #[serde(default = "unverified")]
+    source: Source,
     demo: String,
     seat: String,
     tick: u32,
@@ -73,6 +95,31 @@ struct Record {
     /// or "end" of the demo.
     #[serde(default)]
     closed: Option<String>,
+}
+
+impl Record {
+    /// The training episode this record gives: labelled, unambiguous, and
+    /// for the goal decision's schema. Its group falls back to the demo.
+    fn episode(&self) -> Option<Episode> {
+        let spec = BotPlayer::hunch_spec();
+        if self.ambiguous || self.decision != spec.decision || self.schema != spec.schema {
+            return None;
+        }
+        let label = self.label.as_ref()?;
+        Some(Episode {
+            decision: self.decision.clone(),
+            schema: self.schema.clone(),
+            group: if self.group.is_empty() {
+                self.demo.clone()
+            } else {
+                self.group.clone()
+            },
+            source: self.source,
+            ids: self.candidates.clone(),
+            rows: self.features.clone(),
+            label: Label::Chose { id: label.clone() },
+        })
+    }
 }
 
 /// The open decisions of one seat, and the items seen vanishing beside it
@@ -172,7 +219,7 @@ fn main() -> ExitCode {
         Some("train") => train(&args[1..]),
         Some("evaluate") => evaluate(&args[1..]),
         _ => Err(io::Error::other(
-            "usage: hunch extract <demo> --nav <map.json> [--sight <map.sight>] [--seat <name>]\n       hunch train <records.jsonl>... --out <model.json> [--seed <n>]
+            "usage: hunch extract <demo> --nav <map.json> [--sight <map.sight>] [--seat <name>] [--source human]\n       hunch train <records.jsonl>... --out <model.json> [--seed <n>]
        hunch evaluate <model.json> <records.jsonl>...",
         )),
     };
@@ -217,6 +264,15 @@ fn extract(args: &[String]) -> io::Result<()> {
         .map(|path| Sight::load(path).map(Arc::new))
         .transpose()?;
     let only = option(args, "--seat");
+    let source = match option(args, "--source").as_deref() {
+        None => Source::Unverified,
+        Some("human") => Source::Human,
+        Some(other) => {
+            return Err(io::Error::other(format!(
+                "--source {other}: a demo seat is human or unverified"
+            )));
+        }
+    };
     let mut reader = DemoReader::new(std::fs::read(&demo_path)?)
         .map_err(|error| io::Error::other(format!("{error:?}")))?;
     let header = reader
@@ -361,7 +417,10 @@ fn extract(args: &[String]) -> io::Result<()> {
             {
                 next_sample = tick + SAMPLE_TICKS;
                 labels.pending.push_back(Record {
+                    decision: goal_decision(),
                     schema: schema.to_owned(),
+                    group: demo.clone(),
+                    source,
                     demo: demo.clone(),
                     seat: seat.name.clone(),
                     tick,
@@ -391,28 +450,21 @@ fn extract(args: &[String]) -> io::Result<()> {
     Ok(())
 }
 
-/// Labelled records with their chosen index, from JSON lines files.
+/// Labelled, unambiguous records with their chosen index, from JSON lines
+/// files.
 fn labelled(paths: &[String]) -> io::Result<Vec<(Record, usize)>> {
-    let (schema, names) = BotPlayer::hunch_schema();
-    let width = names.len();
+    let spec = BotPlayer::hunch_spec();
     let mut out = Vec::new();
     for path in paths {
         for line in io::BufReader::new(std::fs::File::open(path)?).lines() {
             let record: Record = serde_json::from_str(&line?).map_err(io::Error::other)?;
-            if record.schema != schema || record.features.len() != record.candidates.len() * width {
-                continue;
-            }
-            if record.ambiguous {
-                continue;
-            }
-            let Some(chosen) = record
-                .label
-                .as_ref()
-                .and_then(|label| record.candidates.iter().position(|id| id == label))
+            let Some(decision) = record
+                .episode()
+                .and_then(|episode| episode.decision(&spec).ok())
             else {
                 continue;
             };
-            out.push((record, chosen));
+            out.push((record, decision.chosen));
         }
     }
     Ok(out)
@@ -467,56 +519,48 @@ fn train(args: &[String]) -> io::Result<()> {
         .map(|seed| seed.parse::<u64>().map_err(io::Error::other))
         .transpose()?
         .unwrap_or(1);
-    let (schema, names) = BotPlayer::hunch_schema();
-    let width = names.len();
-    let mut decisions = Vec::new();
+    let spec = BotPlayer::hunch_spec();
+    let mut episodes = Vec::new();
     let mut rule_agrees = 0usize;
+    let mut sources = [0usize; 4];
     for path in positional(args) {
         for line in io::BufReader::new(std::fs::File::open(&path)?).lines() {
             let record: Record = serde_json::from_str(&line?).map_err(io::Error::other)?;
-            if record.ambiguous {
-                continue;
-            }
-            let Some(label) = &record.label else { continue };
-            if record.schema != schema || record.features.len() != record.candidates.len() * width {
-                continue;
-            }
-            let Some(chosen) = record.candidates.iter().position(|id| id == label) else {
+            let Some(episode) = record.episode() else {
                 continue;
             };
-            rule_agrees += usize::from(record.rule.as_ref() == Some(label));
-            decisions.push(Decision {
-                features: record.features,
-                chosen,
-            });
+            rule_agrees += usize::from(record.rule.as_ref() == record.label.as_ref());
+            sources[episode.source as usize] += 1;
+            episodes.push(episode);
         }
     }
-    if decisions.is_empty() {
+    if episodes.is_empty() {
         return Err(io::Error::other("no labelled decisions"));
     }
-    let model = hunch::fit(
-        &BotPlayer::hunch_spec(),
-        &decisions,
+    let model = hunch::train(
+        &spec,
+        &episodes,
         Training {
             seed,
             ..Training::default()
         },
-    );
+    )
+    .map_err(io::Error::other)?;
     let mut scores = Vec::new();
-    let agrees = decisions
+    let agrees = episodes
         .iter()
+        .filter_map(|episode| episode.decision(&spec).ok())
         .filter(|d| {
-            scores.resize(d.features.len() / width, 0.0);
+            scores.resize(d.features.len() / spec.width(), 0.0);
             model.choose(&d.features, &mut scores) == Some(d.chosen)
         })
         .count();
-    std::fs::write(
-        &out,
-        serde_json::to_string_pretty(&model).map_err(io::Error::other)?,
-    )?;
+    std::fs::write(&out, model.to_bytes())?;
+    let [human, designer, rule, unverified] = sources;
     eprintln!(
-        "{} decisions: model agrees on {agrees}, the arbiter on {rule_agrees} (training data, not held out)",
-        decisions.len()
+        "{} decisions ({human} human, {designer} designer, {rule} rule, {unverified} unverified): \
+         model agrees on {agrees}, the arbiter on {rule_agrees} (training data, not held out)",
+        episodes.len()
     );
     Ok(())
 }
@@ -527,7 +571,10 @@ mod tests {
 
     fn decision(tick: u32) -> Record {
         Record {
+            decision: goal_decision(),
             schema: "test".into(),
+            group: "demo".into(),
+            source: Source::Unverified,
             demo: "demo".into(),
             seat: "seat".into(),
             tick,
@@ -548,6 +595,47 @@ mod tests {
             .filter(|line| !line.is_empty())
             .map(|line| serde_json::from_slice(line).unwrap())
             .collect()
+    }
+
+    /// A record gives its episode: labelled and unambiguous, by ID, for the
+    /// goal schema. Records written before episodes were named still read,
+    /// as unverified goal decisions grouped by their demo.
+    #[test]
+    fn a_labelled_record_gives_its_episode_and_old_records_still_read() {
+        let (schema, names) = BotPlayer::hunch_schema();
+        let mut record = decision(0);
+        record.schema = schema.into();
+        record.features = vec![0.0; 2 * names.len()];
+        assert!(record.episode().is_none(), "unlabelled");
+        record.label = Some("pickup:2".into());
+        let episode = record.episode().unwrap();
+        assert_eq!(
+            episode.label,
+            Label::Chose {
+                id: "pickup:2".into()
+            }
+        );
+        assert_eq!(
+            episode.decision(&BotPlayer::hunch_spec()).unwrap().chosen,
+            1
+        );
+        record.ambiguous = true;
+        assert!(record.episode().is_none(), "ambiguous");
+        let old = format!(
+            r#"{{"schema":"{schema}","demo":"m1.shagdemo","seat":"p","tick":0,
+            "candidates":["pickup:1","pickup:2"],"features":{rows:?},"rule":null,"label":"pickup:1"}}"#,
+            rows = vec![0.0; 2 * names.len()]
+        );
+        let old: Record = serde_json::from_str(&old).unwrap();
+        let episode = old.episode().unwrap();
+        assert_eq!(
+            (
+                episode.decision.as_str(),
+                episode.group.as_str(),
+                episode.source
+            ),
+            ("washoi.goal", "m1.shagdemo", Source::Unverified)
+        );
     }
 
     #[test]
