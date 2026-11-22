@@ -88,6 +88,28 @@ node tests/washoi-snd.test.mjs <shagadelic.exe> <SHAG checkout> <navigation dir>
 
 On machines short of memory, build with `-j 1`.
 
+## Benchmarks
+
+Two tools pit the Rust bots against SHAG's TypeScript bots on in-process
+Washoi servers, run under vite-node from a SHAG checkout.
+`tools/bench-washoi-ab.mjs` plays Duels. `tools/bench-washoi-milestone.mjs`
+is the parity-milestone bench. It plays Duel, FFA, and S&D for one or two
+Rust builds in interleaved blocks, keeps decision traces per arm, mode, and
+match, and summarizes each mode:
+
+- **Duel:** wins, the frag gap with a 95% interval, and deaths the TypeScript
+  bot didn't cause.
+- **FFA:** each bot's rank and frags.
+- **S&D:** rounds won by side, plants, defuses, and carrier deaths.
+- **Traces:** run speed, movers, unsticks, firing in fights, and decision
+  time.
+
+```sh
+node node_modules/vite-node/vite-node.mjs <SHAGADELIC>/tools/bench-washoi-milestone.mjs -- \
+  --exe-a base.exe --exe-b change.exe --nav <dir with both maps' files> \
+  --blocks 4 --block 4 --traces bench/traces --out bench/results.jsonl
+```
+
 ## Map assets
 
 A bot needs baked files for its map. Each baker runs under Washoi's vite-node
