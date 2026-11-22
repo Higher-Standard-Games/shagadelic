@@ -68,6 +68,41 @@ test("map assets use the match map and reject a file labeled for a different map
   await rm(collision);
 });
 
+test("a HUNCH model reaches the child, which refuses one for other features", { timeout: 5_000 }, async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "shagadelic-hunch-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  // washoi.goal.v0, `strategy/hunch_features.rs` NAMES, in row order.
+  const features = [
+    "kind_pickup", "kind_order", "item_value", "item_denial", "contested_item", "objective_push",
+    "objective_urgency", "team_cohesion", "carrier_protect", "route_cost", "danger", "log_route_units",
+    "reachable", "major", "health_gain", "armor_gain", "ammo_need", "timed", "timed_seconds_left",
+    "health_deficit_x_route", "health_deficit_x_danger", "timed_slack",
+  ];
+  const model = async (name, names) => {
+    const file = join(directory, name);
+    const zeros = names.map(() => 0);
+    await writeFile(file, JSON.stringify({
+      schema: "washoi.goal.v0", version: 1, features: names, mean: zeros, scale: names.map(() => 1), weights: zeros,
+    }));
+    return file;
+  };
+  const goal = await model("goal.json", features);
+  const other = await model("other.json", features.slice(1));
+  const endpoint = "ws://127.0.0.1:1";
+  const ready = async (hunchFile, hunchMode) => {
+    const supervisor = new WashoiSupervisor(executable, { hunchFile, hunchMode });
+    try {
+      await supervisor.start("hunch", endpoint);
+    } finally {
+      await supervisor.stopAll();
+    }
+  };
+  await ready(goal);
+  await ready(goal, "on");
+  await assert.rejects(ready(goal, "loud"));
+  await assert.rejects(ready(other));
+});
+
 /** A sight file with no geometry, in the format of tools/bake-washoi-sight.mjs. */
 function emptySight(map) {
   const header = Buffer.from(JSON.stringify({ map, bsp_sha256: "0" }));

@@ -20,9 +20,12 @@ export class WashoiSupervisor {
     learnedRoutesDir = process.env.SHAGADELIC_LEARNED_ROUTES_DIR,
     // SHAG's config/bot-intel: people.json and <map>.json.
     intelDir = process.env.SHAGADELIC_INTEL_DIR,
+    // A HUNCH goal model and its mode, shadow (the default) or on.
+    hunchFile = process.env.SHAGADELIC_HUNCH_FILE,
+    hunchMode = process.env.SHAGADELIC_HUNCH_MODE,
   } = {}) {
     this.#executable = executable;
-    this.#assets = { navigationDir, learnedRoutesDir, intelDir };
+    this.#assets = { navigationDir, learnedRoutesDir, intelDir, hunchFile, hunchMode };
   }
 
   start(matchId, endpoint, map) {
@@ -151,7 +154,13 @@ class MatchChild {
       const options = await mapAssets(map, assets);
       if (this.#closing) return;
       this.#initialized = this.#write({
-        type: "initialize", version: 1, lobby_id: matchId, washoi_endpoint: endpoint, ...options,
+        type: "initialize",
+        version: 1,
+        lobby_id: matchId,
+        washoi_endpoint: endpoint,
+        ...options,
+        // Not per map: one HUNCH model serves every match it is given to.
+        ...(assets.hunchFile ? { hunch_file: assets.hunchFile, hunch_mode: assets.hunchMode } : {}),
       });
       if (!this.#initialized) this.#fail("bot child initialization could not be sent");
     } catch (error) {

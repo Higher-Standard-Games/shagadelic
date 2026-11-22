@@ -312,7 +312,9 @@ impl Planner {
                 self.hunch_pick = Some(goals[pick].id.clone());
                 let _ = write!(self.explain, " hunch={}", goals[pick].id);
                 if mode == HunchMode::On {
+                    // The trace records the goal pursued, the model's.
                     goal = Some(pick);
+                    self.last_goal = self.hunch_pick.clone();
                 }
             }
         }
@@ -761,6 +763,12 @@ mod tests {
         );
         // On, the model's goal stands (here without stopovers on the way).
         assert_eq!(choice, Some(GoalTarget::Pickup(1)), "{}", on.explain());
+        assert_eq!(
+            on.last().0,
+            Some("pickup:1"),
+            "the trace names the goal pursued"
+        );
+        assert_eq!(shadow.last().0, Some("pickup:0"));
     }
 
     #[test]

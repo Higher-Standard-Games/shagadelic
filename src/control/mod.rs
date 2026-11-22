@@ -25,6 +25,10 @@ struct Initialization {
     locations_file: Option<std::path::PathBuf>,
     /// SHAG's `config/bot-intel/people.json` and `<map>.json`.
     people_file: Option<std::path::PathBuf>,
+    /// A HUNCH goal model (`washoi.goal.v0`), and whether it only shadows
+    /// the arbiter (`shadow`, the default) or decides (`on`).
+    hunch_file: Option<std::path::PathBuf>,
+    hunch_mode: Option<String>,
     baseline_file: Option<std::path::PathBuf>,
 }
 
@@ -102,6 +106,8 @@ pub fn run(mut reader: impl BufRead + Send + 'static, writer: &mut impl Write) -
         || init.collision_file.is_some()
         || init.locations_file.is_some()
         || init.people_file.is_some()
+        || init.hunch_file.is_some()
+        || init.hunch_mode.is_some()
         || init.baseline_file.is_some()
     {
         return Err(invalid("Washoi support is disabled"));
@@ -115,7 +121,9 @@ pub fn run(mut reader: impl BufRead + Send + 'static, writer: &mut impl Write) -
         || init.collision_file.is_some()
         || init.locations_file.is_some()
         || init.people_file.is_some()
-        || init.baseline_file.is_some())
+        || init.baseline_file.is_some()
+        || init.hunch_file.is_some()
+        || init.hunch_mode.is_some())
         && init.washoi_endpoint.is_none()
     {
         return Err(invalid("navigation requires a Washoi session"));
@@ -166,6 +174,30 @@ pub fn run(mut reader: impl BufRead + Send + 'static, writer: &mut impl Write) -
         .as_ref()
         .map(shagadelic::games::washoi::PeopleProfile::load)
         .transpose()?;
+    // Validated once for the lobby: the schema, the dimensions, and the
+    // feature names in order.
+    #[cfg(feature = "washoi")]
+    let hunch = {
+        let mode = match init.hunch_mode.as_deref() {
+            None | Some("shadow") => shagadelic::games::washoi::HunchMode::Shadow,
+            Some("on") => shagadelic::games::washoi::HunchMode::On,
+            Some(_) => return Err(invalid("HUNCH mode must be shadow or on")),
+        };
+        match &init.hunch_file {
+            None if init.hunch_mode.is_some() => {
+                return Err(invalid("HUNCH mode requires a HUNCH model"));
+            }
+            None => None,
+            Some(path) => {
+                let (schema, names) = shagadelic::games::washoi::BotPlayer::hunch_schema();
+                let model = shagadelic::hunch::Model::load(path, schema)?;
+                model
+                    .validate_features(names)
+                    .map_err(|_| invalid("HUNCH model features differ"))?;
+                Some((std::sync::Arc::new(model), mode))
+            }
+        }
+    };
     #[cfg(feature = "washoi")]
     let baseline = init
         .baseline_file
@@ -235,6 +267,7 @@ pub fn run(mut reader: impl BufRead + Send + 'static, writer: &mut impl Write) -
                 locations,
                 people,
                 baseline,
+                hunch,
             },
         );
     }
@@ -388,5 +421,66 @@ mod tests {
             refused(Some(("arena", SHA))),
             "map assets refer to different maps"
         );
+    }
+
+    /// The lobby loads a HUNCH model once and refuses one built for other
+    /// features, a mode it does not know, or a mode with no model.
+    #[test]
+    fn a_hunch_model_must_match_the_goal_schema() {
+        let (schema, names) = shagadelic::games::washoi::BotPlayer::hunch_schema();
+        let dir = std::env::temp_dir().join(format!("shagadelic-hunch-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let write = |file: &str, names: Vec<String>| {
+            let width = names.len();
+            let model = shagadelic::hunch::Model {
+                schema: schema.into(),
+                version: 1,
+                features: names,
+                mean: vec![0.0; width],
+                scale: vec![1.0; width],
+                weights: vec![0.0; width],
+            };
+            let path = dir.join(file);
+            std::fs::write(&path, serde_json::to_string(&model).unwrap()).unwrap();
+            path
+        };
+        let goal = write("goal.json", names.iter().map(|n| (*n).to_owned()).collect());
+        let mut swapped: Vec<String> = names.iter().map(|n| (*n).to_owned()).collect();
+        swapped.swap(0, 1);
+        let other = write("other.json", swapped);
+        let answer = |file: Option<&std::path::Path>, mode: Option<&str>| {
+            let init = serde_json::json!({
+                "type": "initialize", "version": VERSION, "lobby_id": "lobby",
+                "washoi_endpoint": "ws://127.0.0.1:9",
+                "hunch_file": file, "hunch_mode": mode,
+            });
+            let mut output = Vec::new();
+            run(
+                io::Cursor::new(format!(
+                    "{init}
+"
+                )),
+                &mut output,
+            )
+            .map(|()| String::from_utf8(output).unwrap())
+            .map_err(|error| error.to_string())
+        };
+        for mode in [None, Some("shadow"), Some("on")] {
+            let ready = answer(Some(&goal), mode).unwrap();
+            assert!(ready.contains(r#""type":"ready""#), "{mode:?}: {ready}");
+        }
+        assert_eq!(
+            answer(Some(&other), None).unwrap_err(),
+            "HUNCH model features differ"
+        );
+        assert_eq!(
+            answer(Some(&goal), Some("loud")).unwrap_err(),
+            "HUNCH mode must be shadow or on"
+        );
+        assert_eq!(
+            answer(None, Some("on")).unwrap_err(),
+            "HUNCH mode requires a HUNCH model"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

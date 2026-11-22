@@ -134,7 +134,7 @@ In Washoi, the planner builds the v0 vector for each candidate it scored and ask
 
 A golden test scores a recorded trace in the trainer and the runtime and requires identical scores.
 
-Status: `src/hunch.rs` holds the model, `score_into`, and the trainer. `strategy/hunch_features.rs` builds `washoi.goal.v0`, and `BotPlayer::with_hunch(model, HunchMode::Shadow | On)` wires it into the planner. The decision trace records HUNCH's pick. Still to do: passing a model through the control init and supervisor (`hunch_file`).
+Status: `src/hunch.rs` holds the model, `score_into`, and the trainer. `strategy/hunch_features.rs` builds `washoi.goal.v0`, and `BotPlayer::with_hunch(model, HunchMode::Shadow | On)` wires it into the planner. The decision trace records HUNCH's pick, and in `on` mode its goal is the model's. The control init loads `hunch_file` once per lobby, in `hunch_mode` `shadow` (the default) or `on`. The supervisor sets them from `SHAGADELIC_HUNCH_FILE` and `SHAGADELIC_HUNCH_MODE`. In shadow, the controls match a run with no model.
 
 ## Milestones
 

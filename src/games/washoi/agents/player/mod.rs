@@ -2697,4 +2697,102 @@ mod tests {
         let seen = rows_with_foe_at(Vec3::new(-400.0, 34.0, 60.0));
         assert_ne!(hidden, seen, "a perceived opponent left the rows unchanged");
     }
+
+    /// HUNCH in shadow scores every decision and changes nothing
+    /// (`docs/research/HUNCH.md`, item 5): the same observations give the
+    /// same controls and goals with no model and with one in shadow, while
+    /// the same model deciding changes the goal, so it is really consulted.
+    /// (Without a walk graph the follower picks its own run, so the goal,
+    /// not the controls, shows the deciding model.)
+    #[test]
+    fn a_hunch_model_in_shadow_leaves_the_controls_unchanged() {
+        use crate::games::washoi::{PlayerView, Vec3};
+        let navigation: Arc<WashoiNavigation> = Arc::new(
+            serde_json::from_str(
+                r#"{"map":"test","routes":[
+                {"entry":[0,0,0],"waypoints":[[150,0,0]],"pickup":{"id":0,"kind":"health","item":"mega"}},
+                {"entry":[0,0,0],"waypoints":[[-150,0,0]],"pickup":{"id":1,"kind":"armor","item":"ra"}}
+            ]}"#,
+            )
+            .unwrap(),
+        );
+        let model_preferring = |health: f32| {
+            let (schema, names) = BotPlayer::hunch_schema();
+            let weight = |name: &str| match name {
+                "health_gain" => health,
+                "armor_gain" => -health,
+                _ => 0.0,
+            };
+            Arc::new(crate::hunch::Model {
+                schema: schema.into(),
+                version: 1,
+                features: names.iter().map(|name| (*name).to_owned()).collect(),
+                mean: vec![0.0; names.len()],
+                scale: vec![1.0; names.len()],
+                weights: names.iter().map(|name| weight(name)).collect(),
+            })
+        };
+        let controls_with = |hunch: Option<(Arc<crate::hunch::Model>, HunchMode)>| {
+            let mut bot = BotPlayer::new("bot".into())
+                .with_difficulty(Difficulty::Hard)
+                .with_navigation(navigation.clone());
+            if let Some((model, mode)) = hunch {
+                bot = bot.with_hunch(model, mode);
+            }
+            let mut world = Observation {
+                pickup_active: vec![true, true],
+                ..Observation::default()
+            };
+            world.players.push(PlayerView {
+                entity_id: "bot".into(),
+                team: "red".into(),
+                ..PlayerView::default()
+            });
+            world.body_or_insert("bot").position = Some(Vec3::default());
+            let mut controls = Vec::new();
+            let mut goals = Vec::new();
+            for step in 0..120u32 {
+                let now = SimTime::ZERO + INPUT_PERIOD * step;
+                world.tick = step;
+                world.events = if step == 0 {
+                    vec![SnapshotEvent::CombatState {
+                        entity_id: "bot".into(),
+                        dead: false,
+                        health: 40,
+                        armor: 0,
+                    }]
+                } else {
+                    Vec::new()
+                };
+                // The bot walks its own route: feed its plan back as motion.
+                bot.observe_at(world.clone(), now);
+                bot.decide(now);
+                let tick = bot.inputs_at(now);
+                if let Some(last) = tick.last() {
+                    let at = world.body_or_insert("bot").position.unwrap_or_default();
+                    let direction = last.direction;
+                    world.body_or_insert("bot").position = Some(Vec3::new(
+                        at.x + direction[0] * 2.5,
+                        at.y,
+                        at.z + direction[2] * 2.5,
+                    ));
+                }
+                controls.extend(tick);
+                goals.push(bot.planner.last().0.map(str::to_owned));
+            }
+            (controls, goals)
+        };
+        let off = controls_with(None);
+        assert!(!off.0.is_empty() && off.1.iter().any(Option::is_some));
+        for health in [10.0, -10.0] {
+            let shadow = controls_with(Some((model_preferring(health), HunchMode::Shadow)));
+            assert_eq!(off, shadow, "a shadow model changed the controls or goals");
+        }
+        let decided = [10.0, -10.0]
+            .map(|health| controls_with(Some((model_preferring(health), HunchMode::On))).1);
+        assert!(
+            decided.iter().any(|goals| *goals != off.1),
+            "no deciding model changed the goal"
+        );
+    }
 }
