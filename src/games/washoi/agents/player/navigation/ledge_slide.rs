@@ -18,7 +18,9 @@ use shagger_shared::{
 };
 
 use super::rollout::Rollout;
-use crate::games::washoi::hosting::net::protocol::PlayerInput;
+use crate::games::washoi::{
+    SimTime, hosting::net::protocol::PlayerInput, observation::INPUT_PERIOD,
+};
 
 const FORWARD: u16 = 1;
 const JUMP: u16 = 1 << 4;
@@ -57,9 +59,28 @@ pub(in crate::games::washoi) struct Start {
 #[derive(Clone, Debug)]
 pub(in crate::games::washoi) struct Plan {
     pub(in crate::games::washoi) inputs: Vec<PlayerInput>,
+    /// The body's predicted position and velocity before the first input,
+    /// then after each: `inputs.len() + 1` states.
+    pub(in crate::games::washoi) states: Vec<(Vec3, Vec3)>,
     pub(in crate::games::washoi) landing: Vec3,
     pub(in crate::games::washoi) jump_tick: u32,
-    pub(in crate::games::washoi) takeoff_speed: f64,
+}
+
+/// How far ahead along `yaw` the floor ends: the first of every 8 units
+/// from 16 to 224 with no floor within 64 below.
+fn edge_ahead(position: Vec3, yaw: f64, world: &mut dyn CollisionWorld) -> Option<f64> {
+    let (first, last, step) = EDGE_PROBE;
+    (first..=last).step_by(step as usize).find_map(|distance| {
+        let distance = f64::from(distance);
+        let point = SimVec3::new(
+            position.x + yaw.sin() * distance,
+            position.y,
+            position.z + yaw.cos() * distance,
+        );
+        let below = SimVec3::new(point.x, point.y - 64.0, point.z);
+        let floor = world.trace(point, below, None, None);
+        (!floor.hit || floor.fraction >= 1.0).then_some(distance)
+    })
 }
 
 /// A proven slide off the ledge ahead onto `target`, or None when the bot
@@ -96,18 +117,7 @@ pub(in crate::games::washoi) fn plan(
     if (velocity.x * direction[0] + velocity.z * direction[2]) / speed < MIN_ALIGNMENT {
         return None;
     }
-    let (first, last, step) = EDGE_PROBE;
-    let edge = (first..=last).step_by(step as usize).find_map(|distance| {
-        let distance = f64::from(distance);
-        let point = SimVec3::new(
-            position.x + direction[0] * distance,
-            position.y,
-            position.z + direction[2] * distance,
-        );
-        let below = SimVec3::new(point.x, point.y - 64.0, point.z);
-        let floor = world.trace(point, below, None, None);
-        (!floor.hit || floor.fraction >= 1.0).then_some(distance)
-    })?;
+    let edge = edge_ahead(position, yaw, world)?;
     if edge < speed * 0.14 + 24.0 {
         return None;
     }
@@ -115,10 +125,10 @@ pub(in crate::games::washoi) fn plan(
     let mut body = Rollout::new(position, velocity, true);
     let mut sliding = false;
     let mut jump_tick = None;
-    let mut takeoff_speed = 0.0;
     let mut airborne = false;
     let mut stable = 0;
     let mut inputs = Vec::new();
+    let mut states = vec![(position, velocity)];
     for tick in 0..MAX_TICKS {
         let progress = (body.position.x - position.x) * direction[0]
             + (body.position.z - position.z) * direction[2];
@@ -149,9 +159,9 @@ pub(in crate::games::washoi) fn plan(
         }
         if jump {
             jump_tick = Some(tick);
-            takeoff_speed = body.velocity.x.hypot(body.velocity.z);
         }
         inputs.push(input);
+        states.push((body.position, body.velocity));
         if !step.grounded {
             jump_tick?;
             airborne = true;
@@ -166,14 +176,230 @@ pub(in crate::games::washoi) fn plan(
             if stable >= 2 {
                 return Some(Plan {
                     inputs,
+                    states,
                     landing: body.position,
                     jump_tick: jump_tick?,
-                    takeoff_speed,
                 });
             }
         }
     }
     None
+}
+
+/// `tryStartLedgeSlideJump`'s gates: `strafeJumpSkill`, and how often the
+/// ledge ahead is probed.
+const MIN_SKILL: f64 = 0.55;
+const PROBE_TICKS: u32 = 31;
+/// `BOT_SLIDE_COOLDOWN_TICKS`: Washoi's 1.5 s slide cooldown at 125 Hz.
+const SLIDE_COOLDOWN_TICKS: u32 = 188;
+/// A script whose body strays this far from every state the inputs sent so
+/// far could have reached is abandoned: the rollout no longer describes the
+/// game, and the rest of the script would play into a wall or a pit.
+const MAX_DRIFT: f64 = 24.0;
+const MAX_VELOCITY_DRIFT: f64 = 80.0;
+/// How many predicted states back a snapshot may show: the inputs still on
+/// their way to the server, as the backlog bounds them.
+const LAG_STATES: usize = 32;
+/// After the script, how long the landing may take: the sequence's 24 ticks.
+const LANDING_TICKS: u32 = 24;
+/// A ledge whose script failed is not tried again for five seconds, so a
+/// misprediction never chains.
+const FAILED_LEDGE_TICKS: u32 = 625;
+const MAX_BURST: usize = 4;
+const MAX_BACKLOG: u128 = 25;
+
+/// What a decision knows when it may start a ledge slide jump.
+pub(in crate::games::washoi) struct StartView<'a> {
+    pub(in crate::games::washoi) tick: u32,
+    pub(in crate::games::washoi) start: Start,
+    /// The walk's input this decision, and the landing of the drop ahead.
+    pub(in crate::games::washoi) walk: PlayerInput,
+    pub(in crate::games::washoi) landing: Option<Vec3>,
+    pub(in crate::games::washoi) skill: f64,
+    pub(in crate::games::washoi) fighting: bool,
+    pub(in crate::games::washoi) world: Option<&'a mut dyn CollisionWorld>,
+}
+
+struct Run {
+    plan: Plan,
+    target: Vec3,
+    started: SimTime,
+    sent: usize,
+    /// The server tick of the first snapshot after the last input went out.
+    finished: Option<u32>,
+}
+
+/// `LedgeSlideJumpSequence`: plays a proven script one input a tick, checks
+/// every snapshot against it, and confirms the landing.
+#[derive(Default)]
+pub(in crate::games::washoi) struct LedgeJump {
+    run: Option<Run>,
+    probe_at: u32,
+    cooldown_until: u32,
+    failed: Vec<(Vec3, u32)>,
+}
+
+/// How a snapshot left the script.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::games::washoi) enum Check {
+    Running,
+    Landed,
+    /// The body strayed from the rollout, or never landed where it should.
+    Failed,
+}
+
+fn near(a: Vec3, b: Vec3, limit: f64) -> bool {
+    (a.x - b.x).hypot(a.z - b.z).hypot(a.y - b.y) <= limit
+}
+
+impl LedgeJump {
+    pub(in crate::games::washoi) fn active(&self) -> bool {
+        self.run.is_some()
+    }
+
+    /// Past the jump: from here the script runs to the landing whatever
+    /// else happens, as a player can't take a jump back.
+    pub(in crate::games::washoi) fn committed(&self) -> bool {
+        self.run
+            .as_ref()
+            .is_some_and(|run| run.sent > run.plan.jump_tick as usize)
+    }
+
+    /// Dead, respawned, or out of the map: nothing carries over.
+    pub(in crate::games::washoi) fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    /// Give the script up and fall back to the route. A failure puts the
+    /// ledge on cooldown; yielding to a fight before the jump does not.
+    pub(in crate::games::washoi) fn abort(&mut self, tick: u32, failed: bool) {
+        if let Some(run) = self.run.take()
+            && failed
+        {
+            self.failed.push((run.target, tick + FAILED_LEDGE_TICKS));
+        }
+    }
+
+    /// Start a script toward the drop ahead when every TypeScript gate
+    /// passes and the rollout proves it. True when it started.
+    ///
+    /// TypeScript also wants sprint and forward on the walk's input, which
+    /// sprints whenever it moves. Here the walk lets sprint go within 128
+    /// units of a drop, to step off it at a landable speed, so the bot's run
+    /// is judged by `plan`'s 375 u/s and heading instead. Live, every probe
+    /// near a drop saw sprint released, at up to 403 u/s.
+    pub(in crate::games::washoi) fn try_start(
+        &mut self,
+        view: StartView<'_>,
+        now: SimTime,
+    ) -> bool {
+        const FIRE: u16 = 1 << 8;
+        const ALT_FIRE: u16 = 1 << 9;
+        let tick = view.tick;
+        self.failed.retain(|&(_, until)| tick < until);
+        let (Some(landing), Some(world)) = (view.landing, view.world) else {
+            return false;
+        };
+        if self.run.is_some()
+            || view.fighting
+            || !view.start.grounded
+            || view.skill < MIN_SKILL
+            || tick < self.probe_at
+            || tick < self.cooldown_until
+            || view.walk.buttons & (FIRE | ALT_FIRE) != 0
+            || view.walk.direction[0].hypot(view.walk.direction[2]) == 0.0
+            || self
+                .failed
+                .iter()
+                .any(|&(ledge, _)| near(ledge, landing, LANDING_RADIUS))
+        {
+            return false;
+        }
+        // TypeScript probes every 31 ticks regardless. Here the walk brakes
+        // within 96 units of a ledge, so a probe spent before the edge comes
+        // into range left the next one too slow: live, the few that reached
+        // the planner ran at 53 to 179 u/s. The wait starts once the edge is
+        // in range.
+        if edge_ahead(view.start.position, view.start.yaw, &mut *world).is_none() {
+            return false;
+        }
+        self.probe_at = tick + PROBE_TICKS;
+        let Some(plan) = plan(view.start, view.walk.direction, landing, world) else {
+            return false;
+        };
+        self.cooldown_until = tick + SLIDE_COOLDOWN_TICKS;
+        self.run = Some(Run {
+            plan,
+            target: landing,
+            started: now,
+            sent: 0,
+            finished: None,
+        });
+        true
+    }
+
+    /// The script's inputs due by `now`, one per input period from its
+    /// start, a few at a time after a late wakeup. A backlog the scheduler
+    /// can't clear abandons it.
+    pub(in crate::games::washoi) fn drive(&mut self, now: SimTime, tick: u32) -> Vec<PlayerInput> {
+        let Some(run) = &mut self.run else {
+            return Vec::new();
+        };
+        let owed = 1 + (now - run.started).as_millis() / INPUT_PERIOD.as_millis();
+        if owed.saturating_sub(run.sent as u128) > MAX_BACKLOG {
+            self.abort(tick, true);
+            return Vec::new();
+        }
+        let total = run.plan.inputs.len();
+        let due = (owed.min(total as u128) as usize).saturating_sub(run.sent);
+        let inputs = run.plan.inputs[run.sent..run.sent + due.min(MAX_BURST)].to_vec();
+        run.sent += inputs.len();
+        inputs
+    }
+
+    /// Check a snapshot of the bot's own body against the script: it must
+    /// be near a state the inputs sent so far could have reached, moving as
+    /// that state moves, and after the script it must land.
+    pub(in crate::games::washoi) fn check(
+        &mut self,
+        tick: u32,
+        position: Vec3,
+        velocity: Vec3,
+        grounded: bool,
+    ) -> Check {
+        let Some(run) = &mut self.run else {
+            return Check::Running;
+        };
+        let reachable = &run.plan.states[run.sent.saturating_sub(LAG_STATES)..=run.sent];
+        let on_track = reachable.iter().any(|&(at, moving)| {
+            near(at, position, MAX_DRIFT)
+                && (moving.x - velocity.x).hypot(moving.z - velocity.z) <= MAX_VELOCITY_DRIFT
+        });
+        let landing = run.plan.landing;
+        let result = if run.sent == run.plan.inputs.len() {
+            let finished = *run.finished.get_or_insert(tick);
+            if grounded
+                && (position.x - landing.x).hypot(position.z - landing.z) <= LANDING_RADIUS
+                && (position.y - landing.y).abs() <= LANDING_HEIGHT
+            {
+                Check::Landed
+            } else if tick > finished + LANDING_TICKS || !on_track {
+                Check::Failed
+            } else {
+                Check::Running
+            }
+        } else if on_track {
+            Check::Running
+        } else {
+            Check::Failed
+        };
+        match result {
+            Check::Landed => self.run = None,
+            Check::Failed => self.abort(tick, true),
+            Check::Running => {}
+        }
+        result
+    }
 }
 
 #[cfg(test)]
@@ -229,11 +455,10 @@ mod tests {
                 .iter()
                 .all(|input| input.direction == NORTH && input.yaw == 0.0)
         );
-        assert!(
-            plan.takeoff_speed >= SLIDE_MIN_SPEED,
-            "{}",
-            plan.takeoff_speed
-        );
+        // The state after the jump input: the slide's speed carried off.
+        let (_, takeoff) = plan.states[jump + 1];
+        let takeoff = takeoff.x.hypot(takeoff.z);
+        assert!(takeoff >= SLIDE_MIN_SPEED, "{takeoff}");
         assert!(
             plan.landing.z > 560.0 && (plan.landing.y + 40.0).abs() < 1.0,
             "{:?}",
@@ -295,5 +520,111 @@ mod tests {
             contents::LAVA,
         ));
         assert!(plan(running(200.0, 400.0), NORTH, landing, &mut world(hot)).is_none());
+    }
+
+    fn start_view<'a>(world: &'a mut dyn CollisionWorld, tick: u32) -> StartView<'a> {
+        StartView {
+            tick,
+            start: running(200.0, 400.0),
+            walk: PlayerInput {
+                direction: NORTH,
+                buttons: SPRINT,
+                ..PlayerInput::default()
+            },
+            landing: Some(Vec3::new(0.0, -40.0, 760.0)),
+            skill: 0.7,
+            fighting: false,
+            world: Some(world),
+        }
+    }
+
+    #[test]
+    fn starts_only_when_typescripts_gates_pass() {
+        let mut world = world(gap(560.0));
+        let refused = |change: &dyn Fn(&mut StartView<'_>)| {
+            let mut world = super::super::rollout::box_world::world(gap(560.0));
+            let mut view = start_view(&mut world, 0);
+            change(&mut view);
+            !LedgeJump::default().try_start(view, SimTime::ZERO)
+        };
+        assert!(refused(&|view| view.fighting = true));
+        assert!(refused(&|view| view.skill = 0.5));
+        assert!(refused(&|view| view.walk.direction = [0.0; 3]));
+        assert!(refused(&|view| view.walk.buttons = SPRINT | (1 << 8)));
+        assert!(refused(&|view| view.landing = None));
+        assert!(refused(&|view| view.world = None));
+        let mut ledge = LedgeJump::default();
+        assert!(ledge.try_start(start_view(&mut world, 0), SimTime::ZERO));
+        assert!(ledge.active() && !ledge.committed());
+    }
+
+    #[test]
+    fn plays_the_script_in_tick_order_and_confirms_the_landing() {
+        let mut world = world(gap(560.0));
+        let mut ledge = LedgeJump::default();
+        assert!(ledge.try_start(start_view(&mut world, 0), SimTime::ZERO));
+        let plan = ledge.run.as_ref().unwrap().plan.clone();
+        let period = INPUT_PERIOD;
+        let mut sent = Vec::new();
+        // A late wakeup gets at most four inputs at once.
+        let mut now = SimTime::ZERO + period * 6;
+        sent.extend(ledge.drive(now, 0));
+        assert_eq!(sent.len(), 4);
+        for tick in 1.. {
+            now = now + period;
+            sent.extend(ledge.drive(now, tick));
+            // The server shows the body where the rollout put it a few
+            // inputs back, as latency would, and landed once all are in.
+            let done = sent.len() == plan.inputs.len();
+            let shown = if done {
+                plan.states.len() - 1
+            } else {
+                sent.len().saturating_sub(3)
+            };
+            let (position, velocity) = plan.states[shown];
+            let grounded = done;
+            let result = ledge.check(tick, position, velocity, grounded);
+            if result == Check::Landed {
+                break;
+            }
+            assert_eq!(result, Check::Running, "tick {tick}");
+            assert_eq!(ledge.committed(), sent.len() > plan.jump_tick as usize);
+            assert!(tick < 400, "never landed");
+        }
+        assert_eq!(sent.len(), plan.inputs.len());
+        assert!(sent.iter().zip(&plan.inputs).all(|(a, b)| a == b));
+        assert!(!ledge.active());
+    }
+
+    #[test]
+    fn a_body_off_the_rollout_stops_the_script_and_cools_the_ledge() {
+        let mut world = world(gap(560.0));
+        let mut ledge = LedgeJump::default();
+        assert!(ledge.try_start(start_view(&mut world, 0), SimTime::ZERO));
+        ledge.drive(SimTime::ZERO + INPUT_PERIOD * 3, 1);
+        let (position, velocity) = ledge.run.as_ref().unwrap().plan.states[2];
+        let pushed = Vec3::new(position.x + 40.0, position.y, position.z);
+        assert_eq!(ledge.check(2, pushed, velocity, true), Check::Failed);
+        assert!(!ledge.active());
+        // That ledge waits; a later probe elsewhere would not.
+        assert!(!ledge.try_start(start_view(&mut world, 400), SimTime::ZERO));
+        assert!(ledge.try_start(start_view(&mut world, 700), SimTime::ZERO));
+        // A backlog the scheduler can't clear abandons the script too.
+        assert!(
+            ledge
+                .drive(SimTime::ZERO + INPUT_PERIOD * 40, 701)
+                .is_empty()
+        );
+        assert!(!ledge.active());
+    }
+
+    #[test]
+    fn yielding_to_a_fight_before_the_jump_cools_nothing() {
+        let mut world = world(gap(560.0));
+        let mut ledge = LedgeJump::default();
+        assert!(ledge.try_start(start_view(&mut world, 0), SimTime::ZERO));
+        ledge.abort(5, false);
+        assert!(!ledge.active());
+        assert!(ledge.try_start(start_view(&mut world, 200), SimTime::ZERO));
     }
 }

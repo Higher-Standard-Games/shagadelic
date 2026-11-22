@@ -315,6 +315,28 @@ impl RouteFollower {
         self.exact
     }
 
+    /// The landing of a drop the walk is about to take, after TypeScript
+    /// `tryStartLedgeSlideJump`: the leg the bot walks drops more than a
+    /// step, or the one after it does. A maneuver leg is not a walk.
+    pub(in crate::games::washoi) fn ledge_leg(
+        &self,
+        navigation: &WashoiNavigation,
+        position: Vec3,
+    ) -> Option<Vec3> {
+        let active = self.active.as_ref()?;
+        if self.exact || active.traversal.is_some() {
+            return None;
+        }
+        let route = active.route.get(navigation);
+        let drops = |from: f64, to: usize| {
+            let point = *route.waypoints.get(to)?;
+            (route.maneuver_at(to).is_none() && from - point[1] > super::MAX_HEIGHT_DELTA)
+                .then(|| Vec3::new(point[0], point[1], point[2]))
+        };
+        let here = route.waypoints.get(active.next)?;
+        drops(position.y, active.next).or_else(|| drops(here[1], active.next + 1))
+    }
+
     pub(in crate::games::washoi) fn takeoff<'a>(
         &'a self,
         navigation: &'a WashoiNavigation,

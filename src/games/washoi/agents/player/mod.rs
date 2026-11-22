@@ -18,6 +18,7 @@ use crate::games::washoi::{
     agents::{Agent, NetworkedPlayer},
     observation::INPUT_PERIOD,
 };
+use shagger_shared::collision::collision_world::CollisionWorld;
 
 use crate::games::washoi::agents::player::callouts::{Callouts, Kind as CallKind, Locations};
 use crate::games::washoi::agents::player::chat::{Chat, Frag};
@@ -35,6 +36,7 @@ use crate::games::washoi::agents::player::movement::territory::Territory;
 use crate::games::washoi::agents::player::navigation::{
     RouteFollower, RouteObservation,
     hop::{HopChain, HopView},
+    ledge_slide::{self, LedgeJump, StartView},
     liquid::LiquidEscape,
     slide::{RouteSlide, SlideView},
     unstick::{Unstick, UnstickView},
@@ -128,6 +130,8 @@ pub struct BotPlayer {
     liquid: LiquidEscape,
     slide: RouteSlide,
     hop: HopChain,
+    /// A proven slide off a ledge into a jump, playing (`navigation::ledge_slide`).
+    ledge: LedgeJump,
     /// A ledge to fight from with a splash weapon, and the walk there.
     high_ground: HighGround,
     climb: Chase,
@@ -275,6 +279,7 @@ impl BotPlayer {
             pair_costs: std::collections::HashMap::new(),
             slide: RouteSlide::default(),
             hop: HopChain::default(),
+            ledge: LedgeJump::default(),
             high_ground: HighGround::default(),
             climb: Chase::default(),
             ordered: false,
@@ -416,6 +421,7 @@ impl BotPlayer {
     fn uses_exact_movement(&self) -> bool {
         self.route.exact()
             || self.hop.active()
+            || self.ledge.active()
             || self.traversal.active()
             || matches!(self.traversal, Traversal::Approaching { .. })
     }
@@ -474,7 +480,11 @@ impl BotPlayer {
             .observe(&world.events, &self.entity_id, world.tick);
         self.exact_view = self.plan(world, now);
         if self.exact_view {
-            self.mover = "traversal";
+            self.mover = if self.ledge.active() {
+                "ledge"
+            } else {
+                "traversal"
+            };
         } else if self.ordered {
             self.mover = "order";
         }
@@ -504,9 +514,12 @@ impl BotPlayer {
         // A strafe-jump chain gives way to a fight outside its takeoff
         // commitment, as TypeScript interrupts it on a change of state.
         let hop_yields = self.hop.active() && self.hop.interruptible(world.tick);
+        // A ledge slide jump gives way too, up to its jump. Once airborne it
+        // runs to the landing.
+        let ledge_yields = self.ledge.active() && !self.ledge.committed();
         self.engagement = match (&self.sight, position) {
             (Some(sight), Some(position))
-                if (!self.exact_view || hop_yields)
+                if (!self.exact_view || hop_yields || ledge_yields)
                     && self.respawn_at.is_none()
                     && !self.traversal.active() =>
             {
@@ -526,6 +539,10 @@ impl BotPlayer {
         };
         if hop_yields && self.engagement.is_some() {
             self.hop.reset();
+            self.exact_view = false;
+        }
+        if ledge_yields && self.engagement.is_some() {
+            self.ledge.abort(world.tick, false);
             self.exact_view = false;
         }
         self.apply_mood(world, position);
@@ -1106,6 +1123,7 @@ impl BotPlayer {
             self.orders = Orders::default();
             self.traversal = Traversal::default();
             self.hop.reset();
+            self.ledge.reset();
             self.slide.reset();
             self.aim.clear();
             self.combat.respawned();
@@ -1212,7 +1230,29 @@ impl BotPlayer {
                 if self.route.exact() {
                     self.slide.reset();
                     self.hop.reset();
+                    self.ledge.reset();
                     return true;
+                }
+                // A ledge slide jump under way owns the controls; each
+                // snapshot must match its rollout (`navigation::ledge_slide`).
+                if self.ledge.active() {
+                    match own.and_then(|entity| entity.velocity) {
+                        Some(velocity) => {
+                            self.ledge.check(
+                                world.tick,
+                                position,
+                                velocity.linear,
+                                velocity.grounded,
+                            );
+                        }
+                        None => self.ledge.abort(world.tick, true),
+                    }
+                    if self.ledge.active() {
+                        self.slide.reset();
+                        self.hop.reset();
+                        self.planned_input = PlayerInput::default();
+                        return true;
+                    }
                 }
                 // A strafe-jump chain under way owns the controls
                 // (`navigation::hop`).
@@ -1237,6 +1277,42 @@ impl BotPlayer {
                     self.slide.reset();
                     self.planned_input = controls;
                     return true;
+                }
+                // Running at slide speed toward a drop, slide off the ledge
+                // into a jump, when the rollout proves the landing. TypeScript
+                // tries it first of the route's tricks.
+                if let Some(velocity) = own.and_then(|entity| entity.velocity)
+                    && let Some(landing) = self.route.ledge_leg(navigation, position)
+                {
+                    let view = self.aim.current().unwrap_or(View {
+                        yaw: self.planned_input.yaw,
+                        pitch: self.planned_input.pitch,
+                    });
+                    let start = StartView {
+                        tick: world.tick,
+                        start: ledge_slide::Start {
+                            position,
+                            velocity: velocity.linear,
+                            grounded: velocity.grounded,
+                            sliding: velocity.is_sliding,
+                            yaw: view.yaw,
+                            pitch: view.pitch,
+                        },
+                        walk: self.planned_input,
+                        landing: Some(landing),
+                        skill: self.difficulty.strafe_jump_skill(),
+                        fighting: self.engagement.is_some() || self.chasing.is_some(),
+                        world: self
+                            .collision
+                            .as_deref_mut()
+                            .map(|world| world as &mut dyn CollisionWorld),
+                    };
+                    if self.ledge.try_start(start, now) {
+                        self.slide.reset();
+                        self.hop.reset();
+                        self.planned_input = PlayerInput::default();
+                        return true;
+                    }
                 }
                 // Fast down a straight, plain walk, crouch-slide
                 // (`navigation::slide`). A fight's movement replaces it.
@@ -1982,8 +2058,11 @@ impl BotPlayer {
             self.respawn_at.is_none() && self.own_entity_present && self.has_fresh_snapshot(now);
         let mut learned = None;
         let mut count = 0;
+        let tick = self.latest.as_ref().map_or(0, |world| world.tick);
         if ready {
-            if let Some(library) = &self.learned {
+            if self.ledge.active() {
+                learned = Some(self.ledge.drive(now, tick));
+            } else if let Some(library) = &self.learned {
                 learned = self.traversal.drive(library, now);
             }
             if learned.is_some() {
@@ -1994,6 +2073,8 @@ impl BotPlayer {
         } else {
             self.started = None;
             self.traversal.abort_if_active();
+            // No scripted tick goes out on a stale view.
+            self.ledge.abort(tick, true);
         }
         let mut commands = learned.unwrap_or_default();
         if let Some(last) = commands.last() {

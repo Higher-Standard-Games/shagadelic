@@ -2,16 +2,8 @@ mod follower;
 mod graph;
 pub(in crate::games::washoi) mod hop;
 pub(in crate::games::washoi) mod learned;
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "no map collision world reaches the bot yet")
-)]
 pub(in crate::games::washoi) mod ledge_slide;
 pub(in crate::games::washoi) mod liquid;
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "no map collision world reaches the bot yet")
-)]
 pub(in crate::games::washoi) mod rollout;
 pub(in crate::games::washoi) mod slide;
 mod traversal;
