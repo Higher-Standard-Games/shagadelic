@@ -72,6 +72,9 @@ const RESPAWN_DELAY: Duration = Duration::from_millis(2500);
 /// Events kept for the next decision. A burst beyond this drops the oldest,
 /// counted in `dropped_events`.
 const MAX_PENDING_EVENTS: usize = 4096;
+/// `MatchPhase.Countdown`: before a match, and in round modes the freeze
+/// before every round.
+const COUNTDOWN_PHASE: u8 = 1;
 /// How long the route follower chooses freely after it could not plan to
 /// the arbiter's pickup.
 const FREE_ROAM: Duration = Duration::from_secs(2);
@@ -688,9 +691,15 @@ impl BotPlayer {
         position: Option<shagger_shared::net::game_state::Vec3>,
         now: SimTime,
     ) {
-        let Some(position) = position
-            .filter(|_| !self.exact_view && self.respawn_at.is_none() && !self.traversal.active())
-        else {
+        // In a round mode's freeze, `MatchPhase.Countdown`, the server holds
+        // every body: asking to move and going nowhere is no block there.
+        let frozen = self
+            .match_context
+            .as_ref()
+            .is_some_and(|context| context.phase == COUNTDOWN_PHASE);
+        let Some(position) = position.filter(|_| {
+            !frozen && !self.exact_view && self.respawn_at.is_none() && !self.traversal.active()
+        }) else {
             self.unstick.reset();
             return;
         };
@@ -2437,6 +2446,46 @@ mod tests {
             strafed |= guard.planned_input.direction != [1.0, 0.0, 0.0];
         }
         assert!(strafed);
+    }
+
+    #[test]
+    fn a_bot_held_by_the_round_freeze_is_not_blocked() {
+        use crate::games::washoi::{Vec3, Velocity};
+        const FORWARD: u16 = 1;
+        let here = Vec3::new(0.0, 24.0, 0.0);
+        let mut world = Observation::default();
+        *world.body_or_insert("bot") = crate::games::washoi::Body {
+            position: Some(here),
+            velocity: Some(Velocity {
+                grounded: true,
+                ..Velocity::default()
+            }),
+        };
+        let walk = PlayerInput {
+            direction: [0.0, 0.0, 1.0],
+            buttons: FORWARD,
+            ..PlayerInput::default()
+        };
+        // Asking to walk north and held in place for 0.8 s: frozen, the bot
+        // keeps its walk; live, unstick takes over.
+        for (phase, turned) in [(COUNTDOWN_PHASE, false), (2, true)] {
+            let mut bot = BotPlayer::new("bot".into());
+            bot.match_context = Some(MatchContext {
+                phase,
+                ..MatchContext::default()
+            });
+            let mut changed = false;
+            for ms in (0..=800).step_by(8) {
+                bot.planned_input = walk;
+                bot.turn_from_block(
+                    &world,
+                    Some(here),
+                    SimTime::ZERO + Duration::from_millis(ms),
+                );
+                changed |= bot.planned_input.direction != walk.direction;
+            }
+            assert_eq!(changed, turned, "phase {phase}");
+        }
     }
 
     #[test]
