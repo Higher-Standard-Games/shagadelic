@@ -35,7 +35,7 @@
 // blocks make the run. Ports run from --port: each match takes one for the
 // server and one 50 above for the TypeScript bot server, and 20 are cycled.
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const argv = process.argv.slice(2).filter((arg) => arg !== "--");
@@ -181,7 +181,12 @@ async function playMatch({ arm, exe, mode, index }) {
     await wait((mode === "snd" ? sndSeconds : seconds) * 1000);
     if (sampler) clearInterval(sampler);
 
-    const score = (id) => ({ frags: state.scores.get(id) ?? 0, deaths: state.deaths.get(id) ?? 0 });
+    // The server keys its scores by number; clients see `player_<n>`.
+    const key = (id) => {
+      const number = Number(String(id).replace(/^player_/, ""));
+      return state.scores.has(number) || state.deaths.has(number) ? number : id;
+    };
+    const score = (id) => ({ frags: state.scores.get(key(id)) ?? 0, deaths: state.deaths.get(key(id)) ?? 0 });
     const result = { arm, mode, map, index };
     if (mode === "duel") {
       const [r] = rust.map(score);
@@ -247,7 +252,10 @@ function traceStats(dirs) {
 const results = [];
 const print = console.log;
 console.log = () => {};
-if (out) writeFileSync(out, "");
+if (out) {
+  mkdirSync(dirname(resolve(out)), { recursive: true });
+  writeFileSync(out, "");
+}
 for (let b = 0; b < blocks; b++) {
   const order = b % 2 === 0 ? arms : [...arms].reverse();
   for (const [arm, exe] of order) {
