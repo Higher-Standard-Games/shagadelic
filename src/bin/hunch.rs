@@ -301,11 +301,12 @@ fn evaluate(args: &[String]) -> io::Result<()> {
         .ok_or_else(|| io::Error::other("a model and records are required"))?;
     let (schema, _) = BotPlayer::hunch_schema();
     let model = hunch::Model::load(model_path, schema)?;
+    let (_, names) = BotPlayer::hunch_schema();
+    model.validate_features(names).map_err(io::Error::other)?;
     let records = labelled(records)?;
     let width = model.width();
     let mut scores = Vec::new();
     let (mut model_agrees, mut rule_agrees, mut chance) = (0usize, 0usize, 0.0f64);
-    let (_, names) = BotPlayer::hunch_schema();
     let route = names.iter().position(|name| *name == "log_route_units");
     let mut nearest_agrees = 0usize;
     for (record, chosen) in &records {

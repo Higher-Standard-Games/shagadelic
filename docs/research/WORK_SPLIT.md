@@ -87,3 +87,10 @@ Mark items here as they land, with the commit.
 - The module regrouping moved files into `combat/`, `movement/`, `perception/`, `strategy/`, and `navigation/learned.rs`. Commit hashes in this file and the design refer to the old flat paths.
 
 - `a7e0093` staged the whole design doc and took session A's uncommitted fight-movement paragraph with it. No harm, since the text was right, but stage doc hunks one by one.
+
+## HUNCH
+
+The HUNCH session reports here. `docs/research/HUNCH.md`, "Next experiment and handoff", assigns the work.
+
+- [x] Item 3 (session A), what the model could see. `hunch_rows_ignore_an_opponent_the_bot_cannot_perceive` gives three bots identical worlds except one opponent. Moved between two spots behind a wall, unseen and unheard, it leaves the goal candidates and every feature row byte-identical. Put on the bot's run in view, it changes them. Models now load only when their feature names match `hunch_features::NAMES` in order (`Model::validate_features`), in `BotPlayer::with_hunch` and `hunch evaluate`.
+- [ ] Item 5 (session A), shadow wiring: load a validated artifact once per lobby, and require identical controls with shadow off and on.

@@ -327,7 +327,9 @@ impl BotPlayer {
     /// in shadow or deciding. The artifact is checked against the schema.
     pub fn with_hunch(mut self, model: Arc<crate::hunch::Model>, mode: HunchMode) -> Self {
         if model.validate(strategy::hunch_features::SCHEMA).is_ok()
-            && model.width() == strategy::hunch_features::WIDTH
+            && model
+                .validate_features(&strategy::hunch_features::NAMES)
+                .is_ok()
         {
             self.hunch = Some((model.clone(), mode));
             self.planner.set_hunch(model, mode);
@@ -2612,7 +2614,87 @@ mod tests {
         bot.decide(due);
         assert_eq!(bot.inputs_at(due).len(), 1);
     }
-}
 
-#[cfg(test)]
-mod replay;
+    /// HUNCH's features come from the bot's perception, never the raw
+    /// snapshot (`docs/research/HUNCH.md`, item 3): moving an opponent the
+    /// bot can neither see nor hear leaves the candidates and their rows
+    /// unchanged, and one in sight changes them.
+    #[test]
+    fn hunch_rows_ignore_an_opponent_the_bot_cannot_perceive() {
+        use crate::games::washoi::perception::sight::tests::{cube, encode};
+        use crate::games::washoi::{PlayerView, Vec3};
+        // A wall across the bot's front, 200 units ahead.
+        let sight = Arc::new(
+            Sight::parse(&encode(
+                "test",
+                &[cube([-2000.0, -100.0, 200.0], [2000.0, 400.0, 220.0])],
+                &[],
+            ))
+            .unwrap(),
+        );
+        let navigation: Arc<WashoiNavigation> = Arc::new(
+            serde_json::from_str(
+                r#"{"map":"test","routes":[
+                {"entry":[0,0,0],"waypoints":[[150,0,0]],"pickup":{"id":0,"kind":"health","item":"mega"}},
+                {"entry":[0,0,0],"waypoints":[[-150,0,0]],"pickup":{"id":1,"kind":"armor","item":"ra"}}
+            ]}"#,
+            )
+            .unwrap(),
+        );
+        let rows_with_foe_at = |foe: Vec3| {
+            let mut bot = BotPlayer::new("bot".into())
+                .with_difficulty(Difficulty::Hard)
+                .with_navigation(navigation.clone())
+                .with_sight(sight.clone())
+                .with_hunch_recording();
+            let mut world = Observation {
+                pickup_active: vec![true, true],
+                ..Observation::default()
+            };
+            for (id, team, at) in [("bot", "red", Vec3::default()), ("foe", "blue", foe)] {
+                world.players.push(PlayerView {
+                    entity_id: id.into(),
+                    team: team.into(),
+                    ..PlayerView::default()
+                });
+                world.body_or_insert(id).position = Some(at);
+            }
+            let mut records = Vec::new();
+            for step in 0..60u32 {
+                let now = SimTime::ZERO + INPUT_PERIOD * step;
+                world.tick = step;
+                world.events = if step == 0 {
+                    vec![SnapshotEvent::CombatState {
+                        entity_id: "bot".into(),
+                        dead: false,
+                        health: 40,
+                        armor: 0,
+                    }]
+                } else {
+                    Vec::new()
+                };
+                bot.observe_at(world.clone(), now);
+                bot.decide(now);
+                let _ = bot.inputs_at(now);
+                if let Some((ids, rows)) = bot.hunch_record() {
+                    let ids: Vec<String> = ids.iter().map(|id| (*id).to_owned()).collect();
+                    records.push((ids, rows.to_vec()));
+                }
+            }
+            records
+        };
+        // Behind the wall, standing still, so neither seen nor heard.
+        let hidden = rows_with_foe_at(Vec3::new(0.0, 34.0, 600.0));
+        let elsewhere = rows_with_foe_at(Vec3::new(500.0, 34.0, 900.0));
+        assert!(!hidden.is_empty(), "the planner recorded decisions");
+        assert_eq!(
+            hidden, elsewhere,
+            "an unperceived opponent changed the rows"
+        );
+        // On the bot's run (with routes and no graph the follower walks to
+        // the armor at -x), in front of the wall and in view: perceived, so
+        // the rows change.
+        let seen = rows_with_foe_at(Vec3::new(-400.0, 34.0, 60.0));
+        assert_ne!(hidden, seen, "a perceived opponent left the rows unchanged");
+    }
+}

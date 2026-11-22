@@ -26,7 +26,12 @@ pub struct Model {
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum ModelError {
-    Schema { expected: String, found: String },
+    Schema {
+        expected: String,
+        found: String,
+    },
+    /// The artifact's feature names, in order, are not the game's.
+    Features,
     Dimensions,
     NotFinite,
 }
@@ -37,6 +42,7 @@ impl std::fmt::Display for ModelError {
             Self::Schema { expected, found } => {
                 write!(f, "model schema {found}, expected {expected}")
             }
+            Self::Features => f.write_str("model feature names differ from the schema's"),
             Self::Dimensions => f.write_str("model dimensions disagree"),
             Self::NotFinite => f.write_str("model has a non-finite parameter"),
         }
@@ -81,6 +87,18 @@ impl Model {
             return Err(ModelError::NotFinite);
         }
         Ok(())
+    }
+
+    /// Check the artifact's feature names, in order, against the names the
+    /// game builds: a reordered or renamed column must not load silently.
+    pub fn validate_features(&self, names: &[&str]) -> Result<(), ModelError> {
+        if self.features.len() == names.len()
+            && self.features.iter().zip(names).all(|(a, b)| a == b)
+        {
+            Ok(())
+        } else {
+            Err(ModelError::Features)
+        }
     }
 
     pub fn width(&self) -> usize {
@@ -328,6 +346,13 @@ mod tests {
         let mut short = model.clone();
         short.weights.pop();
         assert_eq!(short.validate("test.v0"), Err(ModelError::Dimensions));
+        let mut renamed = model.clone();
+        renamed.features.swap(0, 1);
+        assert_eq!(
+            renamed.validate_features(&["value", "distance"]),
+            Err(ModelError::Features)
+        );
+        assert_eq!(model.validate_features(&["value", "distance"]), Ok(()));
         let mut nan = model;
         nan.weights[0] = f32::NAN;
         assert_eq!(nan.validate("test.v0"), Err(ModelError::NotFinite));
