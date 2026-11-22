@@ -57,6 +57,7 @@ use crate::games::washoi::{
 // `InputButtons` in `engine/network/components/InputComponent.ts`.
 const JUMP: u16 = 1 << 4;
 const CROUCH: u16 = 1 << 5;
+const SPRINT: u16 = 1 << 6;
 /// `WILD_SHOT_OFFSET`: a wild shot opens fire this far to one side.
 const WILD_SHOT_OFFSET: f64 = 5.0 * std::f64::consts::PI / 180.0;
 /// `ITEM_GLANCE_RANGE`.
@@ -686,7 +687,7 @@ impl BotPlayer {
             return;
         }
         let travel = x.atan2(z);
-        self.planned_input.yaw = self.look.glance(
+        let glance = self.look.glance(
             world.tick,
             position,
             travel,
@@ -695,6 +696,12 @@ impl BotPlayer {
             &sight,
             &mut self.random,
         );
+        // Sprinting, the glance keeps the forward key, and so the speed.
+        self.planned_input.yaw = if self.planned_input.buttons & SPRINT != 0 {
+            looking::keep_sprint(glance, travel)
+        } else {
+            glance
+        };
     }
 
     /// `BotMood` around a fight: a new fight may roll a mistake, and an

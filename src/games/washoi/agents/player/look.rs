@@ -28,6 +28,12 @@ const GLANCE_REST_TICKS: f64 = 375.0;
 /// turning the view a quarter turn from where it is costs this.
 const LOOK_OFF_COST: f64 = 0.3;
 const LOOK_MAX_OFF_TRAVEL: f64 = 45.0 * DEG;
+/// While sprinting, a glance stays this close to the run. The movement keys
+/// pick forward alone within 22.5 degrees of the view, and Washoi gives the
+/// 400 u/s sprint only to forward alone; a person sprinting looks where it
+/// runs too. TypeScript sends its feet's direction apart from its view,
+/// which no client can do, so it glances the full 45 degrees at full speed.
+const SPRINT_MAX_OFF_TRAVEL: f64 = 20.0 * DEG;
 const LOOK_TURN_COST: f64 = 0.3;
 /// How much more open another direction must be to take over.
 const LOOK_SWITCH_MARGIN: f64 = 0.2;
@@ -256,6 +262,11 @@ fn distance(a: Vec3, b: [f64; 3]) -> f64 {
     (a.x - b[0]).hypot(a.z - b[2]).hypot(a.y - b[1])
 }
 
+/// A glance while sprinting, kept within reach of the forward key.
+pub(in crate::games::washoi) fn keep_sprint(yaw: f64, travel: f64) -> f64 {
+    travel + wrap(yaw - travel).clamp(-SPRINT_MAX_OFF_TRAVEL, SPRINT_MAX_OFF_TRAVEL)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -308,5 +319,15 @@ mod tests {
         fresh.watch(2000, me, PI / 4.0, &red_armor, &sight);
         let yaw = fresh.glance(2001, me, 0.0, 0.0, &red_armor, &sight, &mut random);
         assert_eq!(yaw, 0.0);
+    }
+
+    #[test]
+    fn a_sprinting_glance_stays_on_the_forward_key() {
+        let travel = 1.0;
+        assert!((keep_sprint(travel + 40.0 * DEG, travel) - (travel + 20.0 * DEG)).abs() < 1e-9);
+        assert!((keep_sprint(travel - 10.0 * DEG, travel) - (travel - 10.0 * DEG)).abs() < 1e-9);
+        // Across the wrap: 350 degrees off is 10 degrees the other way.
+        let back = keep_sprint(travel + 350.0 * DEG, travel);
+        assert!((back - (travel - 10.0 * DEG)).abs() < 1e-9);
     }
 }
