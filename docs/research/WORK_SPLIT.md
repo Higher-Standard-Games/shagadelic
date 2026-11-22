@@ -92,5 +92,20 @@ Mark items here as they land, with the commit.
 
 The HUNCH session reports here. `docs/research/HUNCH.md`, "Next experiment and handoff", assigns the work.
 
+Session C (Codex) took over HUNCH on 2026-11-22: the label fixes (items 1 and 2, H0 and H2), the 16-bot shadow measurement (item 5), and training and evaluation on the human recordings. Session B's movement work stays under Movement sequences above.
+
+Handoff from B to C: B drafted items 1 and 2 before the move. Neither is built or tested, and C may use them or not. Both are in `C:/tmp/hunch-handoff-b/`:
+- `hunch-labels.patch`, against `src/bin/hunch.rs` at `6e439f4`, adds a `Labels` struct:
+  - An `ItemPickup` naming the seat labels the record first.
+  - An item that vanishes from the mask labels one frame later, unless an event names another taker that frame or the next.
+  - The 10-second horizon holds the record before it is assigned.
+  - The seat's `Death`, or `MatchState` phase 3 or 4, closes pending records.
+  - New `Record` fields, all with serde defaults: `evidence`, `ambiguous` (another player within take distance), `pickup_tick`, `life`, and `closed` (`labelled`, `horizon`, `death`, `round_end`, or `end`).
+  - Four unit tests.
+- `hunch-cohort.mjs` runs with vite-node from a SHAG checkout:
+  - It dedupes `.shagdemo`, gz, and zip files by decompressed SHA-256 and keeps every path.
+  - Each seat gets human `confirmed`, `automated`, or `unknown`. Only a sessions file confirms a seat. The chosen name, default name, and account are kept as evidence.
+  - It splits 70/15/15 by session, or by match when there is no session, with a seed. `--freeze` keeps earlier splits.
+
 - [x] Item 3 (session A), what the model could see. `hunch_rows_ignore_an_opponent_the_bot_cannot_perceive` gives three bots identical worlds except one opponent. Moved between two spots behind a wall, unseen and unheard, it leaves the goal candidates and every feature row byte-identical. Put on the bot's run in view, it changes them. Models now load only when their feature names match `hunch_features::NAMES` in order (`Model::validate_features`), in `BotPlayer::with_hunch` and `hunch evaluate`.
-- [x] Item 5 (session A), shadow wiring. The lobby init takes `hunch_file` and `hunch_mode` (`shadow`, the default, or `on`). The supervisor passes them from `SHAGADELIC_HUNCH_FILE` and `SHAGADELIC_HUNCH_MODE`. The model is loaded and validated once, against the schema, the dimensions, and the feature names, and every admitted bot shares it. The init refuses a model for other features, an unknown mode, or a mode with no model (`a_hunch_model_must_match_the_goal_schema`). `a_hunch_model_in_shadow_leaves_the_controls_unchanged` replays identical observations and seeds with no model and with two opposite models in shadow, and requires identical controls and traced goals. Deciding, one of the same models changes the goal, so shadow really consults the model. Fixed along the way: in `on` mode, `DecisionTrace.goal` named the arbiter's goal, not the model's goal the bot pursued. B's half of item 5 is still open: the 16-bot latency, input gaps, disagreements, and clips.
+- [x] Item 5 (session A), shadow wiring. The lobby init takes `hunch_file` and `hunch_mode` (`shadow`, the default, or `on`). The supervisor passes them from `SHAGADELIC_HUNCH_FILE` and `SHAGADELIC_HUNCH_MODE`. The model is loaded and validated once, against the schema, the dimensions, and the feature names, and every admitted bot shares it. The init refuses a model for other features, an unknown mode, or a mode with no model (`a_hunch_model_must_match_the_goal_schema`). `a_hunch_model_in_shadow_leaves_the_controls_unchanged` replays identical observations and seeds with no model and with two opposite models in shadow, and requires identical controls and traced goals. Deciding, one of the same models changes the goal, so shadow really consults the model. Fixed along the way: in `on` mode, `DecisionTrace.goal` named the arbiter's goal, not the model's goal the bot pursued. The measuring half of item 5 moved to session C and is still open: the 16-bot latency, input gaps, disagreements, and clips.
