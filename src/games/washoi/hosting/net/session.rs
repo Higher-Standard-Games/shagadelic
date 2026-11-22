@@ -209,6 +209,9 @@ impl GameSession for WashoiSession {
                     if let Some(sight) = &self.assets.sight {
                         player = player.with_sight(sight.clone());
                     }
+                    if let Some(dir) = std::env::var_os("SHAGADELIC_TRACE_DIR") {
+                        player = player.with_trace_dir(std::path::Path::new(&dir));
+                    }
                     if let Some(locations) = &self.assets.locations {
                         player = player.with_locations(locations.clone());
                     }

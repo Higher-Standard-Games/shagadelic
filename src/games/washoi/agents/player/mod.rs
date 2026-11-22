@@ -157,6 +157,10 @@ pub struct BotPlayer {
     trace: Option<trace::DecisionTrace>,
     /// The arbiter was consulted this decision.
     arbitrated: bool,
+    /// Which part of the bot set this decision's movement, for traces.
+    mover: &'static str,
+    /// `SHAGADELIC_TRACE_DIR`: each decision's trace as a JSON line.
+    trace_sink: Option<std::io::BufWriter<std::fs::File>>,
     lunge: Lunge,
     opponents: Opponents,
     match_context: Option<MatchContext>,
@@ -245,6 +249,8 @@ impl BotPlayer {
             tracing: false,
             trace: None,
             arbitrated: false,
+            mover: "none",
+            trace_sink: None,
             lunge: Lunge::default(),
             opponents: Opponents::default(),
             match_context: None,
@@ -337,6 +343,17 @@ impl BotPlayer {
     /// Keep a `DecisionTrace` of each decision, for tools.
     pub fn with_trace(mut self, tracing: bool) -> Self {
         self.tracing = tracing;
+        self
+    }
+
+    /// Write each decision's trace as a JSON line to `<dir>/<pid>-<entity>.jsonl`,
+    /// as `SHAGADELIC_TRACE_DIR` asks for every bot.
+    pub fn with_trace_dir(mut self, dir: &std::path::Path) -> Self {
+        let path = dir.join(format!("{}-{}.jsonl", std::process::id(), self.entity_id));
+        if let Ok(file) = std::fs::File::create(path) {
+            self.trace_sink = Some(std::io::BufWriter::new(file));
+            self.tracing = true;
+        }
         self
     }
 
@@ -435,9 +452,15 @@ impl BotPlayer {
 
     fn decide_on(&mut self, world: &Observation, now: SimTime) {
         self.arbitrated = false;
+        self.mover = "route";
         self.combat
             .observe(&world.events, &self.entity_id, world.tick);
         self.exact_view = self.plan(world, now);
+        if self.exact_view {
+            self.mover = "traversal";
+        } else if self.ordered {
+            self.mover = "order";
+        }
         self.read_opponents(world);
         self.read_match(world);
         self.talk(world, now);
@@ -496,6 +519,7 @@ impl BotPlayer {
                 // `RETREAT`: out of the enemy's sight first, then to health
                 // on the route, the aim still on the enemy.
                 if self.should_fade(world) {
+                    self.mover = "fade";
                     self.fade(world, fight, &sight, position, now);
                 } else {
                     self.escape.reset();
@@ -535,15 +559,26 @@ impl BotPlayer {
             && let Some(lost) = self.combat.lost(world.tick)
             && !self.divert_to_item(world, position, lost, was_chasing)
         {
+            self.mover = "chase";
             self.chase_lost(world, now, &navigation, &sight, position, lost);
         } else {
             self.chase.reset();
         }
         self.hold_ground(world, position, now);
         self.look_around(world, position);
+        let before = self.planned_input.direction;
         self.turn_from_block(world, position, now);
+        if self.planned_input.direction != before {
+            self.mover = "unstick";
+        }
         if self.tracing {
-            self.trace = Some(self.record(world, position));
+            let record = self.record(world, position);
+            if let Some(sink) = &mut self.trace_sink {
+                use std::io::Write as _;
+                let _ = serde_json::to_writer(&mut *sink, &record);
+                let _ = sink.write_all(b"\n");
+            }
+            self.trace = Some(record);
         }
     }
 
@@ -599,6 +634,9 @@ impl BotPlayer {
             armor: self.vitals.armor,
             weapon: self.combat.weapon().to_owned(),
             strategy: self.strategist.explain(),
+            mover: self.mover,
+            engaged: self.engagement.is_some_and(|fight| fight.in_sight),
+            firing: self.planned_input.buttons & (FIRE | ALT_FIRE) != 0,
             hunch: if self.arbitrated {
                 self.planner.hunch_pick().map(str::to_owned)
             } else {
@@ -884,11 +922,24 @@ impl BotPlayer {
         let peek = fight.peek.filter(|_| !self.ordered);
         let (x, z) = match (peek, climb) {
             (Some(peek), _) if !self.moves.dodging(world.tick) => {
+                self.mover = "peek";
                 let peek = f64::from(peek);
                 (peek * yaw.cos(), -peek * yaw.sin())
             }
-            (None, Some([x, _, z])) => (x, z),
-            _ => (x + side * yaw.cos(), z - side * yaw.sin()),
+            (None, Some([x, _, z])) => {
+                self.mover = "climb";
+                (x, z)
+            }
+            _ => {
+                self.mover = if self.moves.dodging(world.tick) {
+                    "dodge"
+                } else if self.ordered {
+                    "order_strafe"
+                } else {
+                    "strafe"
+                };
+                (x + side * yaw.cos(), z - side * yaw.sin())
+            }
         };
         let length = x.hypot(z);
         self.planned_input.direction = if length > 1e-6 {
@@ -1240,6 +1291,7 @@ impl BotPlayer {
             self.combat.weapon(),
             self.difficulty.aim().prediction,
         ) {
+            self.mover = "lunge";
             self.planned_input = input;
             self.exact_view = true;
             self.moves.reset();
@@ -1308,6 +1360,7 @@ impl BotPlayer {
             && hunt >= hold
         {
             self.territory_walk.reset();
+            self.mover = "hunt";
             if let Some(input) =
                 self.hunt_walk
                     .steer(&navigation, &sight, position, velocity, called, now)
@@ -1341,6 +1394,7 @@ impl BotPlayer {
             self.territory_walk.reset();
             return;
         };
+        self.mover = "hold";
         if let Some(input) =
             self.territory_walk
                 .steer(&navigation, &sight, position, velocity, point, now)
@@ -1598,6 +1652,7 @@ impl BotPlayer {
             self.escape_walk
                 .steer(&navigation, sight, position, velocity, point, now)
         {
+            self.mover = "escape";
             self.planned_input.direction = input.direction;
             self.planned_input.buttons = (self.planned_input.buttons & (FIRE | ALT_FIRE))
                 | (input.buttons & !(FIRE | ALT_FIRE));
