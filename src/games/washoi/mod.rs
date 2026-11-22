@@ -18,3 +18,9 @@ pub use hosting::net::protocol;
 pub use hosting::net::session::{BotReport, SpawnBot, WashoiSession};
 pub use observation::{Body, Controls, Observation, PlayerView, SimTime, Vec3, Velocity};
 pub use perception::sight::Sight;
+
+/// Whether a player name is one of the bot names, as SHAG's `isBotName`
+/// decides: tools use it to find the human seats in a recording.
+pub fn is_bot_name(name: &str) -> bool {
+    agents::player::chat::is_bot_name(name)
+}

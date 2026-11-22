@@ -83,6 +83,10 @@ pub(in crate::games::washoi) struct Planner {
     hunch_rows: Vec<f32>,
     hunch_scores: Vec<f32>,
     hunch_pick: Option<String>,
+    /// Keep every decision's eligible candidates and their rows, for
+    /// `hunch extract`, with or without a model.
+    recording: bool,
+    hunch_ids: Vec<(usize, String)>,
     explain: String,
     /// The arbiter's score for the last goal chosen, zero for none.
     desire: f64,
@@ -118,6 +122,8 @@ impl Planner {
             hunch_rows: Vec::new(),
             hunch_scores: Vec::new(),
             hunch_pick: None,
+            recording: false,
+            hunch_ids: Vec::new(),
             desire: 0.0,
             timed: false,
             last_goal: None,
@@ -155,6 +161,20 @@ impl Planner {
         self.hunch = Some((model, mode));
     }
 
+    /// Keep each decision's candidates and `washoi.goal.v0` rows.
+    pub(in crate::games::washoi) fn record(&mut self) {
+        self.recording = true;
+    }
+
+    /// The last decision's eligible candidate IDs and their rows, one row
+    /// of `hunch_features::WIDTH` per ID.
+    pub(in crate::games::washoi) fn recorded(&self) -> (Vec<&str>, &[f32]) {
+        (
+            self.hunch_ids.iter().map(|(_, id)| id.as_str()).collect(),
+            &self.hunch_rows,
+        )
+    }
+
     /// The candidate HUNCH preferred at the last decision.
     pub(in crate::games::washoi) fn hunch_pick(&self) -> Option<&str> {
         self.hunch_pick.as_deref()
@@ -188,6 +208,8 @@ impl Planner {
             && let Some(order) = mandatory(&orders)
         {
             self.explain = format!("goal={} mandatory", order.id);
+            self.hunch_ids.clear();
+            self.hunch_rows.clear();
             self.last_goal = Some(order.id.clone());
             self.last_candidates.clear();
             self.last_gated = 0;
@@ -274,14 +296,16 @@ impl Planner {
             .collect();
         self.last_gated = traces.iter().filter(|t| t.gated.is_some()).count();
         self.last_goal = goal.map(|index| goals[index].id.clone());
-        if let Some((model, mode)) = self.hunch.clone() {
-            let eligible: Vec<usize> = (0..goals.len())
-                .filter(|index| traces[*index].gated.is_none())
-                .collect();
-            self.hunch_rows.clear();
-            for &index in &eligible {
+        self.hunch_ids.clear();
+        self.hunch_rows.clear();
+        if self.hunch.is_some() || self.recording {
+            for index in (0..goals.len()).filter(|index| traces[*index].gated.is_none()) {
                 hunch_features::push_row(&context(index), &traces[index], &mut self.hunch_rows);
+                self.hunch_ids.push((index, goals[index].id.clone()));
             }
+        }
+        if let Some((model, mode)) = self.hunch.clone() {
+            let eligible: Vec<usize> = self.hunch_ids.iter().map(|(index, _)| *index).collect();
             self.hunch_scores.resize(eligible.len(), 0.0);
             if let Some(pick) = model.choose(&self.hunch_rows, &mut self.hunch_scores) {
                 let pick = eligible[pick];

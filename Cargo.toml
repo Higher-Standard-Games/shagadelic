@@ -16,6 +16,11 @@ shagger_shared = { git = "https://github.com/Higher-Standard-Games/shagger", rev
 tokio = { version = "1", features = ["macros", "rt", "sync", "time"], optional = true }
 tokio-tungstenite = { version = "0.30", optional = true }
 
+[[bin]]
+name = "hunch"
+path = "src/bin/hunch.rs"
+required-features = ["washoi"]
+
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "net", "rt", "time"] }
 

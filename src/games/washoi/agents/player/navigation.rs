@@ -193,6 +193,14 @@ impl WashoiNavigation {
     /// The walk graph's node positions, standing origins, in graph index
     /// order and stable for the life of this navigation. Empty for
     /// authored routes.
+    /// Each known pickup's ID and standing origin, for tools.
+    pub fn pickup_spots(&self) -> Vec<(usize, [f64; 3])> {
+        self.pickups()
+            .into_iter()
+            .map(|(pickup, at)| (pickup.id, at))
+            .collect()
+    }
+
     /// Every map pickup the navigation knows, with where to stand for it
     /// (a standing origin), from the graph's goals and authored routes, once
     /// per pickup ID. Empty without pickup goals.

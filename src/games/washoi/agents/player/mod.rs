@@ -119,8 +119,10 @@ pub struct BotPlayer {
     /// What to go for, the match it is chosen in, and the server ticks the
     /// bot was hurt at lately.
     planner: Planner,
-    /// A HUNCH model, kept so a new planner gets it too.
+    /// A HUNCH model, and whether to record features, kept so a new
+    /// planner gets them too.
     hunch: Option<(Arc<crate::hunch::Model>, HunchMode)>,
+    recording: bool,
     /// Chat and team callouts, the map's location names they use, the
     /// lines waiting to be sent, the directive calls already made, and the
     /// last enemy sighting a teammate called.
@@ -218,6 +220,7 @@ impl BotPlayer {
             unstick: Unstick::default(),
             planner: Planner::new(Difficulty::default().mistake_rate()),
             hunch: None,
+            recording: false,
             chat,
             callouts,
             locations: None,
@@ -302,6 +305,28 @@ impl BotPlayer {
         self
     }
 
+    /// Keep each decision's goal candidates with their HUNCH features
+    /// (`washoi.goal.v0`), for `hunch extract`.
+    pub fn with_hunch_recording(mut self) -> Self {
+        self.recording = true;
+        self.planner.record();
+        self
+    }
+
+    /// The goal candidates and feature rows of the last decision, when the
+    /// arbiter was consulted: IDs, then one row per ID.
+    pub fn hunch_record(&self) -> Option<(Vec<&str>, &[f32])> {
+        self.arbitrated.then(|| self.planner.recorded())
+    }
+
+    /// `washoi.goal.v0`: the schema name and feature names, in row order.
+    pub fn hunch_schema() -> (&'static str, &'static [&'static str]) {
+        (
+            strategy::hunch_features::SCHEMA,
+            &strategy::hunch_features::NAMES,
+        )
+    }
+
     /// Keep a `DecisionTrace` of each decision, for tools.
     pub fn with_trace(mut self, tracing: bool) -> Self {
         self.tracing = tracing;
@@ -318,6 +343,9 @@ impl BotPlayer {
         self.planner = Planner::new(difficulty.mistake_rate());
         if let Some((model, mode)) = self.hunch.clone() {
             self.planner.set_hunch(model, mode);
+        }
+        if self.recording {
+            self.planner.record();
         }
         self.strategist = Strategist::new(
             difficulty.match_sense(),

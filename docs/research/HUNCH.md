@@ -32,6 +32,21 @@ A header scan of the 1,137 uncompressed `.shagdemo` files under SHAG's `.cache` 
 
 Most non-bot names are the default `Player_<n>`, which test clients and probes also use, and only a few are chosen names. The 614 Duel minutes on `washoi_dm2` are an upper bound on human play. H0 still has to separate people from automated clients, for example by recorded inputs (v3+ demos) and by movement statistics, and count the `.zip` archives. Even the upper bound is about 10 hours on the first map, below the 20 hours this plan wants, so expect to pair a collection drive with a cold start.
 
+### First extraction and model (H1 to H4, 2026-11-22)
+
+`hunch extract` (`src/bin/hunch.rs`) replays each non-bot seat of a demo through `BotPlayer`, using its perception, estimates, and planner, from that seat's entity. Every half second it records the eligible goal candidates with their `washoi.goal.v0` rows and the arbiter's choice. The label is the first candidate pickup the seat takes within 10 s: named by the `item_pickup` event, or seen vanishing from the pickup mask within 180 units of the seat. `hunch train` fits the model, and `hunch evaluate` compares it on held-out matches with the arbiter, the nearest candidate by walk, and uniform chance.
+
+The first 60 `washoi_dm2` Duel demos gave 25,296 decisions from 24 seats, 8,064 of them labelled. Trained on 17 matches and tested on 6 others:
+
+| Chooser | Agreement with the seat's next pickup, held out (1,774 decisions) |
+| --- | --- |
+| HUNCH v0, linear | 48.3 % |
+| Goal arbiter | 20.5 % |
+| Nearest by walk | 20.3 % |
+| Uniform chance | 13.3 % |
+
+This is a pipeline result, not yet evidence about people. H0 found that these seats may be test clients under default names. "Next pickup taken" also counts items picked up on the way, which inflates agreement for any chooser that likes routes through clusters. The largest weights, negative ammo need and health gain and positive item value, read like weapon-first scripted play. Next: separate people from clients (H0), weigh labels by detour (H2), and only then compare live in shadow mode (H5).
+
 ## Decision zero: what to go for
 
 The SHAGADELIC design starts with a tactic plus position in Duel. Start one step narrower, with the choice the arbiter already makes: which goal to pursue when not fighting. Its candidates are the pickups up or due back, orders, a teammate's call to hunt, and ground to hold.
@@ -96,7 +111,7 @@ In Washoi, the planner builds the v0 vector for each candidate it scored and ask
 
 A golden test scores a recorded trace in the trainer and the runtime and requires identical scores.
 
-Status: `src/hunch.rs` holds the model, `score_into`, and the trainer. `strategy/hunch_features.rs` builds `washoi.goal.v0`, and `BotPlayer::with_hunch(model, HunchMode::Shadow | On)` wires it into the planner. The decision trace records HUNCH's pick. Still to do: passing a model through the control init and supervisor (`hunch_file`), and the extraction tool.
+Status: `src/hunch.rs` holds the model, `score_into`, and the trainer. `strategy/hunch_features.rs` builds `washoi.goal.v0`, and `BotPlayer::with_hunch(model, HunchMode::Shadow | On)` wires it into the planner. The decision trace records HUNCH's pick. Still to do: passing a model through the control init and supervisor (`hunch_file`).
 
 ## Milestones
 
