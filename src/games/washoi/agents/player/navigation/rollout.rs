@@ -5,6 +5,7 @@
 //! rollout lands in the game, given the same collision world.
 
 use shagger_shared::{
+    bsp::trigger_table::TriggerVolume,
     collision::collision_world::CollisionWorld,
     net::game_state::Vec3,
     network::systems::movement::movement_profile::{MovementInput, ViewAngles},
@@ -53,6 +54,27 @@ impl Rollout {
         config.wall_jump_enabled = false;
         config.ledge_grab_enabled = false;
         let mut profile = MovementProfile::new(config);
+        profile.reset_physics_state(grounded);
+        Self {
+            profile,
+            position,
+            velocity,
+            tick: 0,
+        }
+    }
+
+    /// From `position` and `velocity` with Washoi's whole movement, wall
+    /// jumps and ledge grabs included, and the map's jump pads and
+    /// teleporters, as TypeScript's `FlyingStart` builds its profile: a
+    /// learned route's trick may use any of them.
+    pub(in crate::games::washoi) fn full(
+        position: Vec3,
+        velocity: Vec3,
+        grounded: bool,
+        triggers: &[TriggerVolume],
+    ) -> Self {
+        let mut profile = MovementProfile::new(DEFAULT_FPS_MOVEMENT_CONFIG);
+        profile.set_trigger_volumes(triggers);
         profile.reset_physics_state(grounded);
         Self {
             profile,

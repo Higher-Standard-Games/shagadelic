@@ -227,7 +227,7 @@ impl GameSession for WashoiSession {
                         player = player.with_sight(sight.clone());
                     }
                     if let Some(collision) = &self.assets.collision {
-                        player = player.with_collision(collision.world());
+                        player = player.with_collision(collision.world(), collision.triggers());
                     }
                     if let Some(dir) = std::env::var_os("SHAGADELIC_TRACE_DIR") {
                         player = player.with_trace_dir(std::path::Path::new(&dir));

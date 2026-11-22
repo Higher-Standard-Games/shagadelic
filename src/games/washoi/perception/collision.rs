@@ -12,11 +12,15 @@
 use std::{
     io::{self, Read},
     path::Path,
+    sync::Arc,
 };
 
 use serde::Deserialize;
 use shagger_shared::{
-    bsp::bsp_loader::load_collision,
+    bsp::{
+        bsp_loader::load_collision,
+        trigger_table::{TriggerVolume, extract_trigger_volumes},
+    },
     collision::shared_collision_world::SharedCollisionWorld,
     physics::{
         sweep_backend_adapter::SweepBackendAdapter, sweep_collision_backend::SweepCollisionBackend,
@@ -42,6 +46,9 @@ pub struct MapCollision {
     map: String,
     bsp_sha256: String,
     backend: SweepCollisionBackend,
+    /// The map's jump pads and teleporters, from its own trigger table, as
+    /// the server's movement and TypeScript's `setTriggerVolumes` read them.
+    triggers: Arc<[TriggerVolume]>,
 }
 
 fn invalid(message: &'static str) -> io::Error {
@@ -86,10 +93,12 @@ impl MapCollision {
         }
         let bsp =
             load_collision(bsp).map_err(|_| invalid("collision file holds no readable BSP"))?;
+        let triggers = extract_trigger_volumes(&bsp.entities, &bsp.models).into();
         Ok(Self {
             map: header.map,
             bsp_sha256: header.bsp_sha256.to_ascii_lowercase(),
             backend: SweepCollisionBackend::new(bsp),
+            triggers,
         })
     }
 
@@ -100,6 +109,11 @@ impl MapCollision {
     /// The SHA-256 of the full BSP the file was trimmed from, lowercase hex.
     pub fn bsp_sha256(&self) -> &str {
         &self.bsp_sha256
+    }
+
+    /// The map's jump pads and teleporters, shared by every bot.
+    pub(in crate::games::washoi) fn triggers(&self) -> Arc<[TriggerVolume]> {
+        self.triggers.clone()
     }
 
     /// A collision world of the bot's own. A trace writes the sweep's

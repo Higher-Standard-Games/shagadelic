@@ -9,7 +9,12 @@ use std::{
 
 use crate::games::washoi::{Body, SimTime};
 use serde::Deserialize;
-use shagger_shared::net::game_state::Vec3;
+use shagger_shared::{
+    bsp::trigger_table::TriggerVolume, collision::collision_world::CollisionWorld,
+    net::game_state::Vec3,
+};
+
+use super::flying_start::{self, ENTRY_BACK, State};
 
 use crate::games::washoi::{hosting::net::protocol::PlayerInput, observation::INPUT_PERIOD};
 
@@ -27,6 +32,24 @@ const STILL_SPEED: f64 = 20.0;
 // SHAG's InputButtons in src/engine/network/components/InputComponent.ts.
 const FORWARD: u16 = 1 << 0;
 const CROUCH: u16 = 1 << 5;
+const SPRINT: u16 = 1 << 6;
+/// Ticks the server is ahead of the snapshot a join is decided on: a
+/// snapshot every 2 ticks, and the decision (`JOIN_LEAD_TICKS`).
+const JOIN_LEAD_TICKS: usize = 3;
+/// The lead is a guess: the script has to land arriving a tick or two
+/// sooner or later (`JOIN_LEADS_CHECKED`).
+const JOIN_LEADS_CHECKED: [usize; 4] = [2, 3, 4, 5];
+/// The join must land from this far to either side of the predicted state
+/// too, units. Not in TypeScript: snapshots quantize the bot's position and
+/// velocity, and the run-in's heading is never quite the route's. Live on
+/// washoi_dm2, a recording whose landing lies 30 units from a teleporter
+/// joined and missed in five of seven runs; this declines such joins, and
+/// the bot stops on the mark instead.
+const JOIN_MARGIN: f64 = 6.0;
+/// Within this of the run-in's entry point, turn and run in.
+const ENTRY_RADIUS: f64 = 40.0;
+/// A run-in this far past the run-up without a join has missed it.
+const RUN_IN_OVERSHOOT: f64 = 48.0;
 
 #[derive(Deserialize)]
 #[serde(try_from = "RouteFile")]
@@ -144,6 +167,61 @@ impl LearnedRoutes {
     }
 }
 
+/// A run-in toward a learned route, after `LearnedRouteSequence._flyingStart`.
+pub(in crate::games::washoi) struct RunIn {
+    commands: Vec<PlayerInput>,
+    run_up: Vec<State>,
+    /// Still making for the entry point behind the mark.
+    to_entry: bool,
+}
+
+/// The map's collision and triggers, for a bot's own rollouts.
+pub(in crate::games::washoi) struct Rollouts<'a> {
+    pub(in crate::games::washoi) world: &'a mut dyn CollisionWorld,
+    pub(in crate::games::washoi) triggers: &'a [TriggerVolume],
+}
+
+impl LearnedRoute {
+    /// The script, one command a tick.
+    fn commands(&self) -> Vec<PlayerInput> {
+        self.script
+            .iter()
+            .flat_map(|&CommandRun(count, forward, right, yaw, pitch, buttons)| {
+                std::iter::repeat_n(
+                    PlayerInput {
+                        direction: [right, 0.0, forward],
+                        yaw,
+                        pitch,
+                        buttons,
+                        weapon_slot: 0,
+                    },
+                    count,
+                )
+            })
+            .collect()
+    }
+
+    fn start_vec(&self) -> Vec3 {
+        Vec3::new(self.start.x, self.start.y, self.start.z)
+    }
+
+    fn landing_vec(&self) -> Vec3 {
+        Vec3::new(self.landing.x, self.landing.y, self.landing.z)
+    }
+}
+
+/// Sprint straight at `target`, looking where the run goes.
+fn run_toward(position: Vec3, target: Vec3) -> PlayerInput {
+    let (x, z) = (target.x - position.x, target.z - position.z);
+    let length = x.hypot(z).max(1e-9);
+    PlayerInput {
+        direction: [x / length, 0.0, z / length],
+        yaw: x.atan2(z),
+        buttons: FORWARD | SPRINT,
+        ..PlayerInput::default()
+    }
+}
+
 #[derive(Default)]
 pub(in crate::games::washoi) enum Traversal {
     #[default]
@@ -152,10 +230,17 @@ pub(in crate::games::washoi) enum Traversal {
         route: usize,
         until: SimTime,
         settling: bool,
+        /// A run-in that may join the script on the run (`flying_start`).
+        fly: Option<Box<RunIn>>,
+        /// A run-in was tried: the bot may be far from the mark.
+        ran_in: bool,
     },
     Playing {
         route: usize,
         started: SimTime,
+        /// The script tick played first: 0 from the mark, later when joined
+        /// on the run.
+        first: usize,
         sent: usize,
         row: usize,
         offset: usize,
@@ -171,20 +256,48 @@ pub(in crate::games::washoi) enum Traversal {
 }
 
 impl Traversal {
+    /// Make for a learned route's mark. With the map's collision, and
+    /// walkable ground from here to an entry point behind the mark and on
+    /// to the mark, the bot runs in and may join the script on the run.
     pub(in crate::games::washoi) fn begin_approach(
         &mut self,
         library: &LearnedRoutes,
         id: &str,
         position: Vec3,
         now: SimTime,
+        rollouts: Option<Rollouts<'_>>,
+        walkable: &dyn Fn(Vec3, Vec3) -> bool,
     ) -> bool {
         if matches!(self, Self::Waiting)
             && let Some(route) = library.approach_target(id, position)
         {
+            let learned = &library.routes[route];
+            let fly = rollouts.and_then(|rollouts| {
+                let commands = learned.commands();
+                let start = learned.start_vec();
+                let run_up = flying_start::run_up_states(
+                    start,
+                    &commands,
+                    rollouts.world,
+                    rollouts.triggers,
+                );
+                let entry = flying_start::entry_point(start, learned.yaw);
+                (!run_up.is_empty() && walkable(entry, start) && walkable(position, entry)).then(
+                    || {
+                        Box::new(RunIn {
+                            commands,
+                            run_up,
+                            to_entry: true,
+                        })
+                    },
+                )
+            });
             *self = Self::Approaching {
                 route,
                 until: now + APPROACH_TIMEOUT,
                 settling: false,
+                ran_in: fly.is_some(),
+                fly,
             };
             return true;
         }
@@ -196,11 +309,17 @@ impl Traversal {
         library: &LearnedRoutes,
         entity: &Body,
         now: SimTime,
+        rollouts: Option<Rollouts<'_>>,
     ) -> Option<PlayerInput> {
+        if let Some(input) = self.run_in(library, entity, now, rollouts) {
+            return Some(input);
+        }
         let Self::Approaching {
             route,
             until,
             settling,
+            ran_in,
+            ..
         } = self
         else {
             return None;
@@ -222,9 +341,11 @@ impl Traversal {
         let z = destination.start.z - position.z;
         let distance = x.hypot(z);
         let height = (destination.start.y - position.y).abs();
-        if !destination
-            .start
-            .near(position, APPROACH_RADIUS, APPROACH_HEIGHT)
+        // A run-in that missed leaves the bot past the mark: it walks back.
+        if !*ran_in
+            && !destination
+                .start
+                .near(position, APPROACH_RADIUS, APPROACH_HEIGHT)
         {
             *self = Self::Failed;
             return Some(input);
@@ -256,6 +377,102 @@ impl Traversal {
             input.direction = [x / distance, 0.0, z / distance];
         }
         Some(input)
+    }
+
+    /// `_flyingStart`: run in toward the mark, joining the script at a
+    /// matching run-up state that a rollout says lands. None when there is
+    /// no run-in or it has missed, and the bot should stop on the mark.
+    fn run_in(
+        &mut self,
+        library: &LearnedRoutes,
+        entity: &Body,
+        now: SimTime,
+        rollouts: Option<Rollouts<'_>>,
+    ) -> Option<PlayerInput> {
+        let Self::Approaching {
+            route, until, fly, ..
+        } = self
+        else {
+            return None;
+        };
+        let (index, until) = (*route, *until);
+        let (Some(run_in), Some(rollouts)) = (fly.as_mut(), rollouts) else {
+            return None;
+        };
+        let (Some(position), Some(velocity)) = (entity.position, entity.velocity) else {
+            return None;
+        };
+        if now >= until {
+            return None;
+        }
+        let learned = &library.routes[index];
+        let start = learned.start_vec();
+        let Rollouts { world, triggers } = rollouts;
+        if velocity.grounded {
+            // The snapshot is a few ticks old and the bot is still
+            // sprinting: join where the server will be when the script
+            // arrives, and only if it lands for a lead a tick or two off.
+            let here = (position, velocity.linear);
+            let first = run_in.commands[0];
+            let ((ahead, moving), grounded) =
+                flying_start::predict(here, &first, JOIN_LEAD_TICKS, world, triggers);
+            let join = grounded
+                .then(|| flying_start::find_join(&run_in.run_up, ahead, moving))
+                .flatten()
+                .filter(|&k| {
+                    JOIN_LEADS_CHECKED.iter().all(|&lead| {
+                        let ((at, moving), _) =
+                            flying_start::predict(here, &first, lead, world, triggers);
+                        // Across the run, to either side.
+                        let speed = moving.x.hypot(moving.z).max(1e-9);
+                        let side = (moving.z / speed, -moving.x / speed);
+                        [-JOIN_MARGIN, 0.0, JOIN_MARGIN].iter().all(|&offset| {
+                            let shifted =
+                                Vec3::new(at.x + side.0 * offset, at.y, at.z + side.1 * offset);
+                            flying_start::join_lands(
+                                &run_in.commands,
+                                k,
+                                (shifted, moving),
+                                learned.landing_vec(),
+                                world,
+                                triggers,
+                            )
+                        })
+                    })
+                });
+            if let Some(k) = join {
+                self.start_at(library, index, now, k + 1);
+                return Some(PlayerInput {
+                    yaw: learned.yaw,
+                    ..PlayerInput::default()
+                });
+            }
+        }
+        let heading = (learned.yaw.sin(), learned.yaw.cos());
+        let along = |point: Vec3| (point.x - start.x) * heading.0 + (point.z - start.z) * heading.1;
+        let here = along(position);
+        if run_in.to_entry {
+            let entry = flying_start::entry_point(start, learned.yaw);
+            let off = (position.x - entry.x).hypot(position.z - entry.z);
+            if off > ENTRY_RADIUS && here >= -ENTRY_BACK / 2.0 {
+                return Some(run_toward(position, entry));
+            }
+            run_in.to_entry = false;
+        }
+        let run_up_length = run_in.run_up.last().map_or(0.0, |&(last, _)| along(last));
+        if here > run_up_length + RUN_IN_OVERSHOOT {
+            // Past every run-up state without a join: stop on the mark.
+            *fly = None;
+            return None;
+        }
+        // Sprint along the line, steering onto it a little ahead.
+        let ahead = (here + 96.0).max(96.0);
+        let on_line = Vec3::new(
+            start.x + heading.0 * ahead,
+            start.y,
+            start.z + heading.1 * ahead,
+        );
+        Some(run_toward(position, on_line))
     }
 
     pub(in crate::games::washoi) fn observe(
@@ -300,6 +517,7 @@ impl Traversal {
         let Self::Playing {
             route,
             started,
+            first,
             sent,
             row,
             offset,
@@ -308,7 +526,7 @@ impl Traversal {
             return None;
         };
         let learned = &library.routes[*route];
-        let owed = 1 + (now - *started).as_millis() / INPUT_PERIOD.as_millis();
+        let owed = *first as u128 + 1 + (now - *started).as_millis() / INPUT_PERIOD.as_millis();
         if owed.saturating_sub(*sent as u128) > MAX_BACKLOG as u128 {
             *self = Self::Failed;
             return Some(Vec::new());
@@ -353,9 +571,30 @@ impl Traversal {
         *self = Self::Playing {
             route,
             started: now,
+            first: 0,
             sent: 0,
             row: 0,
             offset: 0,
+        };
+    }
+
+    /// Play the script from tick `first`, joined on the run.
+    fn start_at(&mut self, library: &LearnedRoutes, route: usize, now: SimTime, first: usize) {
+        let (mut row, mut offset) = (0, first);
+        for &CommandRun(count, ..) in &library.routes[route].script {
+            if offset < count {
+                break;
+            }
+            offset -= count;
+            row += 1;
+        }
+        *self = Self::Playing {
+            route,
+            started: now,
+            first,
+            sent: first,
+            row,
+            offset,
         };
     }
 
@@ -460,17 +699,133 @@ mod tests {
         let mut approaching = Traversal::default();
         let entry = Vec3::new(48.0, 0.0, 0.0);
         entity.position = Some(entry);
-        approaching.begin_approach(&library, "demo@1", entry, start);
-        let creep = approaching.approach(&library, &entity, start).unwrap();
+        approaching.begin_approach(&library, "demo@1", entry, start, None, &|_, _| false);
+        let creep = approaching
+            .approach(&library, &entity, start, None)
+            .unwrap();
         assert_eq!(creep.direction, [-1.0, 0.0, 0.0]);
         assert_eq!(creep.buttons, FORWARD | CROUCH);
         entity.position = Some(Vec3::default());
         entity.velocity.as_mut().unwrap().is_crouching = true;
-        let settle = approaching.approach(&library, &entity, start).unwrap();
+        let settle = approaching
+            .approach(&library, &entity, start, None)
+            .unwrap();
         assert_eq!(settle.buttons, 0);
         assert!(approaching.drive(&library, start).is_none());
         entity.velocity.as_mut().unwrap().is_crouching = false;
-        approaching.approach(&library, &entity, start);
+        approaching.approach(&library, &entity, start, None);
         assert_eq!(approaching.drive(&library, start).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn runs_in_and_joins_a_learned_route_on_the_run() {
+        use crate::games::washoi::agents::player::navigation::rollout::{
+            Rollout,
+            box_world::{Boxes, world},
+        };
+        let mut floor = world(Boxes {
+            solids: vec![([-512.0, -16.0, -1024.0], [512.0, 0.0, 4096.0])],
+            ..Boxes::default()
+        });
+        // A sprint north from a mark, a jump, and the run on after it.
+        let script = [
+            [60.0, 1.0, 0.0, 0.0, 0.0, 65.0],
+            [1.0, 1.0, 0.0, 0.0, 0.0, 81.0],
+            [150.0, 1.0, 0.0, 0.0, 0.0, 65.0],
+        ];
+        let start = Vec3::new(0.0, 24.0, 0.0);
+        let commands: Vec<PlayerInput> = script
+            .iter()
+            .flat_map(|row| {
+                std::iter::repeat_n(
+                    PlayerInput {
+                        direction: [row[2], 0.0, row[1]],
+                        buttons: row[5] as u16,
+                        ..PlayerInput::default()
+                    },
+                    row[0] as usize,
+                )
+            })
+            .collect();
+        let mut body = Rollout::full(start, Vec3::default(), true, &[]);
+        for command in &commands {
+            body.step(command, &mut floor);
+        }
+        let landing = body.position;
+        let library: LearnedRoutes = serde_json::from_str(&format!(
+            r#"{{"version":1,"map":"test","routes":[{{
+                "id":"run@1","start":{{"x":0,"y":24,"z":0}},
+                "landing":{{"x":{},"y":{},"z":{}}},"yaw":0,"ticks":211,
+                "script":[[60,1,0,0,0,65],[1,1,0,0,0,81],[150,1,0,0,0,65]]
+            }}]}}"#,
+            landing.x, landing.y, landing.z
+        ))
+        .unwrap();
+        let standing = |position: Vec3, linear: Vec3| Body {
+            position: Some(position),
+            velocity: Some(Velocity {
+                linear,
+                grounded: true,
+                ..Velocity::default()
+            }),
+        };
+        let now = SimTime::ZERO;
+        fn rollouts(world: &mut dyn CollisionWorld) -> Option<Rollouts<'_>> {
+            Some(Rollouts {
+                world,
+                triggers: &[],
+            })
+        }
+        let mut traversal = Traversal::default();
+        let near = Vec3::new(0.0, 24.0, 40.0);
+        assert!(traversal.begin_approach(
+            &library,
+            "run@1",
+            near,
+            now,
+            rollouts(&mut floor),
+            &|_, _| true
+        ));
+        // Short of the run-in, it sprints back to the entry behind the mark.
+        let back = traversal
+            .approach(
+                &library,
+                &standing(near, Vec3::default()),
+                now,
+                rollouts(&mut floor),
+            )
+            .unwrap();
+        assert_eq!(back.buttons, FORWARD | SPRINT);
+        assert!(back.direction[2] < -0.99, "{:?}", back.direction);
+        // Running in as the run-up runs at its state 40, it joins there,
+        // three ticks on for the server's lead, and plays from that tick.
+        let run_up = flying_start::run_up_states(start, &commands, &mut floor, &[]);
+        let (at, moving) = run_up[40];
+        traversal.approach(&library, &standing(at, moving), now, rollouts(&mut floor));
+        let Traversal::Playing { first, .. } = traversal else {
+            panic!("joined on the run");
+        };
+        assert!((41..=46).contains(&first), "{first}");
+        let sent = traversal.drive(&library, now).unwrap();
+        assert_eq!(sent, vec![commands[first]]);
+        // Without walkable ground to the entry, no run-in: it stops on the mark.
+        let mut stopping = Traversal::default();
+        stopping.begin_approach(
+            &library,
+            "run@1",
+            near,
+            now,
+            rollouts(&mut floor),
+            &|_, _| false,
+        );
+        let creep = stopping
+            .approach(
+                &library,
+                &standing(near, Vec3::default()),
+                now,
+                rollouts(&mut floor),
+            )
+            .unwrap();
+        assert_ne!(creep.buttons & CROUCH, 0);
     }
 }

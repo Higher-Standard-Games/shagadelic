@@ -1,3 +1,4 @@
+pub(in crate::games::washoi) mod flying_start;
 mod follower;
 mod graph;
 pub(in crate::games::washoi) mod hop;

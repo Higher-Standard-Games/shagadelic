@@ -18,6 +18,7 @@ use crate::games::washoi::{
     agents::{Agent, NetworkedPlayer},
     observation::INPUT_PERIOD,
 };
+use shagger_shared::bsp::trigger_table::TriggerVolume;
 use shagger_shared::collision::collision_world::CollisionWorld;
 
 use crate::games::washoi::agents::player::callouts::{Callouts, Kind as CallKind, Locations};
@@ -57,7 +58,7 @@ use crate::games::washoi::hosting::net::protocol::{PlayerInput, SnapshotEvent};
 use crate::games::washoi::random::Random;
 use crate::games::washoi::{
     Difficulty, LearnedRoutes, Sight, WashoiNavigation,
-    agents::player::navigation::learned::Traversal,
+    agents::player::navigation::learned::{Rollouts, Traversal},
 };
 
 // `InputButtons` in `engine/network/components/InputComponent.ts`.
@@ -113,6 +114,8 @@ pub struct BotPlayer {
     /// The map's collision, the bot's own world over the session's shared
     /// map, for movement rollouts.
     collision: Option<Box<BotCollision>>,
+    /// The map's jump pads and teleporters, for the same rollouts.
+    triggers: Arc<[TriggerVolume]>,
     combat: Combat,
     engagement: Option<Engagement>,
     moves: CombatMovement,
@@ -231,6 +234,7 @@ impl BotPlayer {
             difficulty: Difficulty::default(),
             sight: None,
             collision: None,
+            triggers: Arc::from([]),
             combat,
             engagement: None,
             moves: CombatMovement::default(),
@@ -403,8 +407,13 @@ impl BotPlayer {
         self
     }
 
-    pub(in crate::games::washoi) fn with_collision(mut self, collision: BotCollision) -> Self {
+    pub(in crate::games::washoi) fn with_collision(
+        mut self,
+        collision: BotCollision,
+        triggers: Arc<[TriggerVolume]>,
+    ) -> Self {
         self.collision = Some(Box::new(collision));
+        self.triggers = triggers;
         self
     }
 
@@ -1137,7 +1146,11 @@ impl BotPlayer {
             && let Some(library) = &self.learned
             && let Some(entity) = own
         {
-            if let Some(input) = self.traversal.approach(library, entity, now) {
+            let rollouts = self.collision.as_deref_mut().map(|world| Rollouts {
+                world: world as &mut dyn CollisionWorld,
+                triggers: &self.triggers,
+            });
+            if let Some(input) = self.traversal.approach(library, entity, now, rollouts) {
                 self.planned_input = input;
                 return true;
             }
@@ -1343,9 +1356,19 @@ impl BotPlayer {
                     self.planned_input = controls;
                     return true;
                 }
+                let sight = self.sight.as_deref();
+                let walkable = |from: super::super::Vec3, to: super::super::Vec3| {
+                    sight.is_some_and(|sight| navigation::local_walk(sight, from, to))
+                };
+                let rollouts = self.collision.as_deref_mut().map(|world| Rollouts {
+                    world: world as &mut dyn CollisionWorld,
+                    triggers: &self.triggers,
+                });
                 if let Some(library) = &self.learned
                     && let Some(id) = self.route.takeoff(navigation)
-                    && self.traversal.begin_approach(library, id, position, now)
+                    && self
+                        .traversal
+                        .begin_approach(library, id, position, now, rollouts, &walkable)
                 {
                     self.route.detach();
                     self.planned_input = PlayerInput::default();
