@@ -1098,11 +1098,16 @@ impl BotPlayer {
                 let lane = self
                     .route
                     .slide_lane(navigation, position, self.sight.as_deref());
+                let item = self.route.item_leg(navigation);
                 self.planned_input = self.slide.filter(
                     &SlideView {
                         tick: world.tick,
+                        position,
                         velocity: own.and_then(|entity| entity.velocity),
                         lane,
+                        item,
+                        pickup_active: &world.pickup_active,
+                        allies: &self.allies,
                         strafe_jump_skill: self.difficulty.strafe_jump_skill(),
                     },
                     self.planned_input,

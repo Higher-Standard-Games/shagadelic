@@ -177,6 +177,27 @@ impl RouteFollower {
         }
     }
 
+    /// The pickup at the end of the route under way, once its last leg has
+    /// begun, for an item slide.
+    pub(in crate::games::washoi) fn item_leg(
+        &self,
+        navigation: &WashoiNavigation,
+    ) -> Option<crate::games::washoi::agents::player::navigation::slide::ItemLeg> {
+        let active = self.active.as_ref()?;
+        if self.exact || active.traversal.is_some() {
+            return None;
+        }
+        let route = active.route.get(navigation);
+        let pickup = route.pickup?;
+        let last = route.waypoints.len().checked_sub(1)?;
+        (active.next == last && route.maneuver_at(last).is_none()).then(|| {
+            crate::games::washoi::agents::player::navigation::slide::ItemLeg {
+                pickup: pickup.id,
+                position: route.waypoints[last],
+            }
+        })
+    }
+
     /// The heading of the route ahead when it is a lane to slide down,
     /// after TypeScript `BotTraversal.laneOpen`: the next 520 units of the
     /// walk stay within 64 units of the line to the next waypoint, widening

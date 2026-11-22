@@ -5,11 +5,15 @@
 //! duration, and skilled bots jump out of it to keep their speed. A failed
 //! slide doesn't spoil the walk: the bot simply walks on.
 //!
+//! The final walk to a pickup can slide straight onto it instead, after
+//! `sequences/ItemSlideApproachSequence.ts` and
+//! `BotTraversal.tryStartItemSlideApproach`. TypeScript tries that first.
+//!
 //! Deviations: TypeScript also requires the sprint key, which Washoi's route
 //! walker here doesn't press, so the speed check stands in for it. Dodge
 //! slides belong to fight movement.
 
-use shagger_shared::net::game_state::Velocity;
+use shagger_shared::net::game_state::{Vec3, Velocity};
 
 use crate::games::washoi::hosting::net::protocol::PlayerInput;
 
@@ -28,6 +32,18 @@ const JUMP_CANCEL_CONFIRM_TICKS: u32 = 16;
 const MAX_TICKS: u32 = 140;
 /// Skill from which a bot jumps out of a slide.
 const JUMP_CANCEL_SKILL: f64 = 0.55;
+// The item slide approach.
+const ITEM_SLIDE_MIN_DISTANCE: f64 = 260.0;
+const ITEM_SLIDE_MAX_DISTANCE: f64 = 760.0;
+/// `sv_slideSpeedMultiplier` over `sv_slideDuration`'s 0.8 s, plus 120.
+const ITEM_SLIDE_REACH_PER_SPEED: f64 = 1.2 * 0.8;
+const ITEM_SLIDE_MAX_HEIGHT: f64 = 96.0;
+const ITEM_SLIDE_MAX_VELOCITY_ERROR: f64 = std::f64::consts::FRAC_PI_6;
+const ITEM_SLIDE_ALLY_RADIUS: f64 = 80.0;
+const ITEM_RELEASE_DISTANCE: f64 = 190.0;
+const ITEM_CONFIRM_DISTANCE: f64 = 176.0;
+const ITEM_MISSED_GROWTH: f64 = 96.0;
+const ITEM_MAX_TICKS: u32 = 180;
 
 const FORWARD: u16 = 1;
 const BACK: u16 = 1 << 1;
@@ -60,21 +76,45 @@ struct Running {
     heading: f64,
 }
 
-/// One bot's route slide.
+#[derive(Clone, Copy)]
+struct ItemRun {
+    pickup: usize,
+    target: [f64; 3],
+    started: u32,
+    nearest: f64,
+    confirmed: bool,
+    released: bool,
+}
+
+/// One bot's slides: down a route lane, or onto a pickup.
 #[derive(Default)]
 pub(in crate::games::washoi) struct RouteSlide {
     running: Option<Running>,
+    item: Option<ItemRun>,
     cooldown_until: u32,
 }
 
+/// The pickup at the end of the walk under way, its last leg begun.
+#[derive(Clone, Copy)]
+pub(in crate::games::washoi) struct ItemLeg {
+    pub(in crate::games::washoi) pickup: usize,
+    pub(in crate::games::washoi) position: [f64; 3],
+}
+
 /// What a decision offers the slide.
-pub(in crate::games::washoi) struct SlideView {
+pub(in crate::games::washoi) struct SlideView<'a> {
     /// The authoritative server tick.
     pub(in crate::games::washoi) tick: u32,
+    pub(in crate::games::washoi) position: Vec3,
     pub(in crate::games::washoi) velocity: Option<Velocity>,
     /// The heading of a plain, straight, walkable lane ahead on the route,
     /// when there is one (`RouteFollower::slide_lane`).
     pub(in crate::games::washoi) lane: Option<f64>,
+    /// The pickup the walk is on its last leg to (`RouteFollower::item_leg`).
+    pub(in crate::games::washoi) item: Option<ItemLeg>,
+    pub(in crate::games::washoi) pickup_active: &'a [bool],
+    /// Living teammates, who must not stand in an item slide's lane.
+    pub(in crate::games::washoi) allies: &'a [Vec3],
     /// `strafeJumpSkill`, which decides the jump cancel.
     pub(in crate::games::washoi) strafe_jump_skill: f64,
 }
@@ -82,11 +122,77 @@ pub(in crate::games::washoi) struct SlideView {
 impl RouteSlide {
     #[cfg(test)]
     fn active(&self) -> bool {
-        self.running.is_some()
+        self.running.is_some() || self.item.is_some()
     }
 
     pub(in crate::games::washoi) fn reset(&mut self) {
         self.running = None;
+        self.item = None;
+    }
+
+    /// `tryStartItemSlideApproach`: a straight slide onto the pickup at the
+    /// end of the walk, when it is in reach of one and in the way the bot
+    /// is already moving.
+    fn start_item(&self, view: &SlideView<'_>, velocity: Velocity, speed: f64) -> Option<ItemRun> {
+        let leg = view.item?;
+        if view.pickup_active.get(leg.pickup) != Some(&true) || velocity.is_sliding {
+            return None;
+        }
+        let [x, y, z] = leg.position;
+        let (dx, dz) = (x - view.position.x, z - view.position.z);
+        let distance = dx.hypot(dz);
+        let reach = ITEM_SLIDE_MAX_DISTANCE.min(speed * ITEM_SLIDE_REACH_PER_SPEED + 120.0);
+        if !(ITEM_SLIDE_MIN_DISTANCE..=reach).contains(&distance)
+            || (y - view.position.y).abs() > ITEM_SLIDE_MAX_HEIGHT
+        {
+            return None;
+        }
+        let (ux, uz) = (dx / distance, dz / distance);
+        let along_velocity = (velocity.linear.x * ux + velocity.linear.z * uz) / speed;
+        if along_velocity.clamp(-1.0, 1.0).acos() > ITEM_SLIDE_MAX_VELOCITY_ERROR {
+            return None;
+        }
+        let blocked = view.allies.iter().any(|ally| {
+            let (rx, rz) = (ally.x - view.position.x, ally.z - view.position.z);
+            let along = rx * ux + rz * uz;
+            (ally.y - view.position.y).abs() <= ITEM_SLIDE_MAX_HEIGHT
+                && along > 0.0
+                && along < distance
+                && (rx * uz - rz * ux).abs() < ITEM_SLIDE_ALLY_RADIUS
+        });
+        (!blocked).then_some(ItemRun {
+            pickup: leg.pickup,
+            target: leg.position,
+            started: view.tick,
+            nearest: distance,
+            confirmed: false,
+            released: false,
+        })
+    }
+
+    /// One tick of the item slide: whether to crouch, or None when it ended.
+    fn step_item(run: &mut ItemRun, view: &SlideView<'_>, velocity: Velocity) -> Option<bool> {
+        let distance = (run.target[0] - view.position.x).hypot(run.target[2] - view.position.z);
+        run.nearest = run.nearest.min(distance);
+        if view.pickup_active.get(run.pickup) != Some(&true)
+            || view.tick.saturating_sub(run.started) >= ITEM_MAX_TICKS
+            || (run.nearest <= ITEM_CONFIRM_DISTANCE && distance > run.nearest + ITEM_MISSED_GROWTH)
+        {
+            return None;
+        }
+        if velocity.is_sliding {
+            run.confirmed = true;
+        }
+        if !run.confirmed {
+            return (view.tick.saturating_sub(run.started) < SLIDE_CONFIRM_TICKS).then_some(true);
+        }
+        if distance <= ITEM_RELEASE_DISTANCE {
+            run.released = true;
+        }
+        if run.released {
+            return Some(false);
+        }
+        velocity.is_sliding.then_some(true)
     }
 
     /// The route walk's input, turned into a slide when one is under way or
@@ -98,6 +204,29 @@ impl RouteSlide {
     ) -> PlayerInput {
         let velocity = view.velocity.unwrap_or_default();
         let speed = velocity.linear.x.hypot(velocity.linear.z);
+        if self.item.is_none()
+            && self.running.is_none()
+            && view.tick >= self.cooldown_until
+            && velocity.grounded
+            && input.buttons & (FIRE | ALT_FIRE | BACK | JUMP | CROUCH) == 0
+            && speed >= SLIDE_MIN_SPEED
+            && let Some(run) = self.start_item(view, velocity, speed)
+        {
+            self.cooldown_until = view.tick + SLIDE_COOLDOWN_TICKS;
+            self.item = Some(run);
+        }
+        if let Some(mut run) = self.item {
+            let crouch = Self::step_item(&mut run, view, velocity);
+            self.item = crouch.is_some().then_some(run);
+            let heading = (run.target[0] - view.position.x).atan2(run.target[2] - view.position.z);
+            let mut slide = input;
+            slide.direction = [heading.sin(), 0.0, heading.cos()];
+            slide.buttons = (input.buttons & !(MOVE_KEYS | JUMP | CROUCH | SPRINT))
+                | FORWARD
+                | SPRINT
+                | if crouch == Some(true) { CROUCH } else { 0 };
+            return slide;
+        }
         if self.running.is_none() {
             let [x, _, z] = input.direction;
             let asking = x != 0.0 || z != 0.0;
@@ -208,13 +337,73 @@ mod tests {
         }
     }
 
-    fn view(tick: u32, velocity: Option<Velocity>, lane: Option<f64>, skill: f64) -> SlideView {
+    fn view(
+        tick: u32,
+        velocity: Option<Velocity>,
+        lane: Option<f64>,
+        skill: f64,
+    ) -> SlideView<'static> {
         SlideView {
             tick,
+            position: Vec3::default(),
             velocity,
             lane,
+            item: None,
+            pickup_active: &[],
+            allies: &[],
             strafe_jump_skill: skill,
         }
+    }
+
+    #[test]
+    fn slides_onto_a_pickup_on_the_last_leg_and_stands_up_beside_it() {
+        let leg = ItemLeg {
+            pickup: 0,
+            position: [0.0, 0.0, 500.0],
+        };
+        let at = |tick, z: f64, sliding, active: &'static [bool]| SlideView {
+            position: Vec3::new(0.0, 0.0, z),
+            item: Some(leg),
+            pickup_active: active,
+            ..view(tick, moving(420.0, true, sliding), None, 0.0)
+        };
+        let mut slide = RouteSlide::default();
+        // Too near, then moving the wrong way, then an ally in the lane.
+        assert_eq!(slide.filter(&at(0, 300.0, false, &[true]), walk()), walk());
+        let mut sideways = at(0, 0.0, false, &[true]);
+        sideways.velocity = Some(Velocity {
+            linear: Vec3::new(420.0, 0.0, 0.0),
+            grounded: true,
+            ..Velocity::default()
+        });
+        assert_eq!(slide.filter(&sideways, walk()), walk());
+        let ally = [Vec3::new(10.0, 0.0, 200.0)];
+        let blocked = SlideView {
+            allies: &ally,
+            ..at(0, 0.0, false, &[true])
+        };
+        assert_eq!(slide.filter(&blocked, walk()), walk());
+
+        let crouch = slide.filter(&at(10, 0.0, false, &[true]), walk());
+        assert_eq!(crouch.buttons, FORWARD | SPRINT | CROUCH);
+        assert_eq!(crouch.direction, [0.0, 0.0, 1.0]);
+        assert_eq!(
+            slide.filter(&at(12, 100.0, true, &[true]), walk()).buttons,
+            FORWARD | SPRINT | CROUCH
+        );
+        // Within 190 units it stands up and runs on to the item.
+        assert_eq!(
+            slide.filter(&at(30, 320.0, true, &[true]), walk()).buttons,
+            FORWARD | SPRINT
+        );
+        // Taken: done.
+        assert_eq!(
+            slide
+                .filter(&at(40, 495.0, false, &[false]), walk())
+                .buttons,
+            FORWARD | SPRINT
+        );
+        assert!(!slide.active());
     }
 
     #[test]
