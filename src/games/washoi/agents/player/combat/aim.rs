@@ -36,9 +36,10 @@ const CALM_FINISH: f64 = 0.25;
 /// Brisk calm, for a bot running a route with nobody about: a person turns
 /// to the next leg quickly. The movement keys follow the view sent, so a
 /// view trailing the run sends a diagonal, and a diagonal caps the run at
-/// 320. TypeScript's feet don't follow its view, so it eases at 0.6 s.
+/// 320, and a reversal behind the view backpedals. TypeScript's feet don't
+/// follow its view, so it eases at 0.6 s and turns big ones as a fight.
 const BRISK_EASE_SECONDS: f64 = 0.12;
-const BRISK_MAX_GOAL_SPEED: f64 = 360.0 * DEG;
+const BRISK_MAX_GOAL_SPEED: f64 = 720.0 * DEG;
 const DEADZONE_POINTS: [(f64, f64); 4] = [
     (1.5, 4.0 * DEG),
     (3.0, 3.0 * DEG),
@@ -256,7 +257,11 @@ impl AimController {
         let t = self.tuning;
         yaw.track(wanted.yaw, dt);
         pitch.track(wanted.pitch, dt);
-        let eased = calm && !firing && wrap(wanted.yaw - yaw.goal).abs() <= CALM_MAX_EASED_TURN;
+        // Brisk, a turn of any size eases: a person running alone flicks
+        // round a reversal without the reaction a fight's target takes.
+        let eased = calm
+            && !firing
+            && (self.brisk || wrap(wanted.yaw - yaw.goal).abs() <= CALM_MAX_EASED_TURN);
         if eased {
             self.ease_goal(&mut yaw, &mut pitch, dt, wanted);
         } else {
@@ -511,7 +516,7 @@ mod tests {
     fn a_brisk_calm_turn_reaches_the_next_leg_much_sooner() {
         // Ticks until a calm view is within the forward key's 22.5 degrees
         // of a 90 degree turn.
-        let settle = |brisk: bool| {
+        let settle = |brisk: bool, degrees: f64| {
             let mut aim = AimController::new(Difficulty::Hard.aim());
             aim.set_brisk(brisk);
             let mut random = Random::new(3);
@@ -520,7 +525,7 @@ mod tests {
                 pitch: 0.0,
             });
             let wanted = View {
-                yaw: 90.0 * DEG,
+                yaw: degrees * DEG,
                 pitch: 0.0,
             };
             (1..=500)
@@ -530,8 +535,12 @@ mod tests {
                 })
                 .unwrap_or(500)
         };
-        let (calm, brisk) = (settle(false), settle(true));
+        let (calm, brisk) = (settle(false, 90.0), settle(true, 90.0));
         assert!(brisk * 2 < calm, "brisk {brisk} ticks, calm {calm}");
         assert!(brisk <= 50, "brisk {brisk} ticks");
+        // A reversal, which a calm bot turns as a fight, after its reaction.
+        let (calm, brisk) = (settle(false, 170.0), settle(true, 170.0));
+        assert!(brisk < calm, "reversal: brisk {brisk} ticks, calm {calm}");
+        assert!(brisk <= 50, "reversal: brisk {brisk} ticks");
     }
 }
