@@ -7,10 +7,13 @@
 // patches as their tessellated triangles, in game space (y up). Doors, lifts,
 // and other switchable brush models move and are left out.
 //
-// Format (little-endian): "SHAGSGT1", u32 header length, UTF-8 JSON header
-// { map, bsp_sha256 }, u32 plane count, planes as f32 [nx, ny, nz, dist],
+// Format (little-endian): "SHAGSGT2", u32 header length, UTF-8 JSON header
+// { map, bsp_sha256, liquids }, u32 plane count, planes as f32 [nx, ny, nz, dist],
 // u32 brush count, u32 plane count per brush, u32 triangle count, triangles
-// as f32 [ax, ay, az, bx, by, bz, cx, cy, cz].
+// as f32 [ax, ay, az, bx, by, bz, cx, cy, cz], then the slime and lava brushes:
+// u32 plane count, planes, u32 brush count, u32 plane count per brush, and u32
+// contents per brush (0x8 lava, 0x10 slime). Readers also accept "SHAGSGT1",
+// which ends after the triangles.
 import { writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
@@ -59,6 +62,30 @@ for (const index of [...brushIndices].sort((a, b) => a - b)) {
   if (count) brushPlaneCounts.push(count);
 }
 
+// Slime and lava, `CONTENTS_SLIME` and `CONTENTS_LAVA`, which hurt a body in
+// them (LiquidEscape.ts). They don't block sight, so they are kept apart.
+const HARMFUL = 0x10 | 0x8;
+const liquidPlanes = [];
+const liquidCounts = [];
+const liquidContents = [];
+for (let index = world.firstBrush; index < world.firstBrush + world.numBrushes; index++) {
+  const brush = bsp.brushes[index];
+  const contents = backend.getBrushTexture(brush)?.contentFlags ?? 0;
+  if (!brush || moving(index) || !(contents & HARMFUL)) continue;
+  let count = 0;
+  for (let side = brush.firstSide; side < brush.firstSide + brush.numSides; side++) {
+    const plane = bsp.planes[bsp.brushSides[side]?.planeIndex];
+    if (!plane) continue;
+    const [x, y, z] = plane.normal;
+    liquidPlanes.push(x, z, y, plane.dist);
+    count++;
+  }
+  if (count) {
+    liquidCounts.push(count);
+    liquidContents.push(contents & HARMFUL);
+  }
+}
+
 const triangles = [];
 for (const [faceIndex, mesh] of backend.faceCollisionMeshes.entries()) {
   if (!mesh || !blocks(backend.collisionTextures[bsp.faces[faceIndex]?.textureIndex])) continue;
@@ -69,7 +96,10 @@ for (const [faceIndex, mesh] of backend.faceCollisionMeshes.entries()) {
   }
 }
 
-const header = Buffer.from(JSON.stringify({ map: mapName, bsp_sha256: map.bspSha256 }), "utf8");
+const header = Buffer.from(
+  JSON.stringify({ map: mapName, bsp_sha256: map.bspSha256, liquids: liquidCounts.length }),
+  "utf8",
+);
 const u32 = (value) => {
   const buffer = Buffer.alloc(4);
   buffer.writeUInt32LE(value);
@@ -77,7 +107,8 @@ const u32 = (value) => {
 };
 const floats = (values) => Buffer.from(new Float32Array(values).buffer);
 await writeFile(output, Buffer.concat([
-  Buffer.from("SHAGSGT1", "ascii"),
+  // Version 2 adds the liquid section after the triangles. Readers accept v1.
+  Buffer.from("SHAGSGT2", "ascii"),
   u32(header.length),
   header,
   u32(planes.length / 4),
@@ -86,8 +117,13 @@ await writeFile(output, Buffer.concat([
   Buffer.from(new Uint32Array(brushPlaneCounts).buffer),
   u32(triangles.length / 9),
   floats(triangles),
+  u32(liquidPlanes.length / 4),
+  floats(liquidPlanes),
+  u32(liquidCounts.length),
+  Buffer.from(new Uint32Array(liquidCounts).buffer),
+  Buffer.from(new Uint32Array(liquidContents).buffer),
 ]));
-console.log(`Wrote ${brushPlaneCounts.length} brushes, ${planes.length / 4} planes, and ${triangles.length / 9} triangles to ${output}`);
+console.log(`Wrote ${brushPlaneCounts.length} brushes, ${planes.length / 4} planes, ${triangles.length / 9} triangles, and ${liquidCounts.length} slime or lava brushes to ${output}`);
 
 if (samplesFile) {
   // Sight lines between spawns and pickups at eye and knee height, answered by

@@ -34,6 +34,7 @@ use crate::games::washoi::agents::player::movement::territory::Territory;
 use crate::games::washoi::agents::player::navigation::{
     RouteFollower, RouteObservation,
     hop::{HopChain, HopView},
+    liquid::LiquidEscape,
     slide::{RouteSlide, SlideView},
     unstick::{Unstick, UnstickView},
 };
@@ -116,6 +117,7 @@ pub struct BotPlayer {
     /// Whether the last decision had a fight, to see fights start and end.
     fighting: bool,
     unstick: Unstick,
+    liquid: LiquidEscape,
     slide: RouteSlide,
     hop: HopChain,
     /// A ledge to fight from with a splash weapon, and the walk there.
@@ -227,6 +229,7 @@ impl BotPlayer {
             shooting: false,
             fighting: false,
             unstick: Unstick::default(),
+            liquid: LiquidEscape::default(),
             planner: Planner::new(Difficulty::default().mistake_rate()),
             hunch: None,
             recording: false,
@@ -566,6 +569,7 @@ impl BotPlayer {
         }
         self.hold_ground(world, position, now);
         self.look_around(world, position);
+        self.escape_liquid(world, position);
         let before = self.planned_input.direction;
         self.turn_from_block(world, position, now);
         if self.planned_input.direction != before {
@@ -642,6 +646,36 @@ impl BotPlayer {
             } else {
                 None
             },
+        }
+    }
+
+    /// In slime or lava, whatever the state, the bot jumps for the nearest dry
+    /// ground (`navigation::liquid`), keeping its aim and fire.
+    fn escape_liquid(
+        &mut self,
+        world: &Observation,
+        position: Option<shagger_shared::net::game_state::Vec3>,
+    ) {
+        let (Some(position), Some(sight)) = (position, self.sight.clone()) else {
+            self.liquid.reset();
+            return;
+        };
+        if self.respawn_at.is_some() || self.traversal.active() {
+            self.liquid.reset();
+            return;
+        }
+        let nodes = self
+            .navigation
+            .as_deref()
+            .map_or(&[][..], |navigation| navigation.nodes());
+        if let Some(out) =
+            self.liquid
+                .steer(&sight, nodes, world.tick, position, self.planned_input)
+        {
+            self.planned_input = out;
+            self.hop.reset();
+            self.slide.reset();
+            self.mover = "liquid";
         }
     }
 

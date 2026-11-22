@@ -13,6 +13,11 @@ use std::{
 use serde::Deserialize;
 
 const MAGIC: &[u8; 8] = b"SHAGSGT1";
+/// Version 2: version 1 followed by the slime and lava brushes.
+const MAGIC_V2: &[u8; 8] = b"SHAGSGT2";
+/// `CONTENTS_LAVA` and `CONTENTS_SLIME`.
+pub(in crate::games::washoi) const LAVA: u32 = 0x8;
+pub(in crate::games::washoi) const SLIME: u32 = 0x10;
 const MAX_FILE: u64 = 64 * 1024 * 1024;
 const MAX_HEADER: usize = 4096;
 /// `traceBrush` backs every crossing off by this much.
@@ -27,6 +32,14 @@ pub struct Sight {
     planes: Vec<[f64; 4]>,
     solids: Vec<Solid>,
     nodes: Vec<Node>,
+    /// Slime and lava: plane sets with their contents. They never block sight.
+    liquids: Vec<Liquid>,
+}
+
+struct Liquid {
+    planes: Vec<[f64; 4]>,
+    bounds: Bounds,
+    contents: u32,
 }
 
 #[derive(Deserialize)]
@@ -79,9 +92,14 @@ impl Sight {
 
     pub(in crate::games::washoi) fn parse(bytes: &[u8]) -> io::Result<Self> {
         let mut reader = Reader(bytes);
-        if reader.take(MAGIC.len())? != MAGIC {
+        let magic = reader.take(MAGIC.len())?;
+        let version = if magic == MAGIC {
+            1
+        } else if magic == MAGIC_V2 {
+            2
+        } else {
             return Err(invalid("not a SHAGADELIC sight file"));
-        }
+        };
         let header_length = reader.count()?;
         if header_length > MAX_HEADER {
             return Err(invalid("sight header exceeds size limit"));
@@ -127,6 +145,11 @@ impl Sight {
             shape: Shape::Triangle(corners),
             bounds: Bounds::around(&corners),
         }));
+        let liquids = if version >= 2 {
+            Self::parse_liquids(&mut reader)?
+        } else {
+            Vec::new()
+        };
         if !reader.0.is_empty() {
             return Err(invalid("sight file has trailing bytes"));
         }
@@ -135,9 +158,65 @@ impl Sight {
             planes,
             solids,
             nodes: Vec::new(),
+            liquids,
         };
         sight.build();
         Ok(sight)
+    }
+
+    /// The slime and lava brushes of a version 2 file.
+    fn parse_liquids(reader: &mut Reader<'_>) -> io::Result<Vec<Liquid>> {
+        let plane_count = reader.count()?;
+        let planes = reader.floats(plane_count, |values: [f64; 4]| {
+            let plane = [values[0], values[1], values[2], values[3]];
+            let length = (plane[0] * plane[0] + plane[1] * plane[1] + plane[2] * plane[2]).sqrt();
+            ((length - 1.0).abs() < 1e-3).then_some(plane)
+        })?;
+        let brush_count = reader.count()?;
+        let mut counts = Vec::with_capacity(brush_count);
+        for _ in 0..brush_count {
+            counts.push(reader.count()?);
+        }
+        let mut liquids = Vec::with_capacity(brush_count);
+        let mut first = 0usize;
+        for count in counts {
+            let end = first
+                .checked_add(count)
+                .filter(|&end| count > 0 && end <= planes.len())
+                .ok_or_else(|| invalid("sight liquid planes out of range"))?;
+            let contents = reader.count()? as u32;
+            if contents & (LAVA | SLIME) == 0 || contents & !(LAVA | SLIME) != 0 {
+                return Err(invalid("sight liquid is neither slime nor lava"));
+            }
+            let brush = planes[first..end].to_vec();
+            liquids.push(Liquid {
+                bounds: brush_bounds(&brush),
+                planes: brush,
+                contents,
+            });
+            first = end;
+        }
+        if first != planes.len() {
+            return Err(invalid("sight file has unused liquid planes"));
+        }
+        Ok(liquids)
+    }
+
+    /// The slime and lava contents at `point`: the contents of every liquid
+    /// brush whose planes all have it behind them, as `traceBrush` counts a
+    /// point inside a brush.
+    pub(in crate::games::washoi) fn liquid_at(&self, point: Point) -> u32 {
+        self.liquids
+            .iter()
+            .filter(|liquid| {
+                (0..3).all(|axis| {
+                    liquid.bounds.min[axis] <= point[axis] && point[axis] <= liquid.bounds.max[axis]
+                }) && liquid
+                    .planes
+                    .iter()
+                    .all(|plane| dot(plane, point) - plane[3] <= 0.0)
+            })
+            .fold(0, |contents, liquid| contents | liquid.contents)
     }
 
     /// Whether nothing static blocks the segment.
@@ -477,6 +556,36 @@ pub(in crate::games::washoi) mod tests {
     use super::*;
 
     /// A sight file in the baker's format.
+    /// A version 2 file: `encode`'s geometry plus slime and lava brushes.
+    pub(in crate::games::washoi) fn encode_v2(
+        map: &str,
+        brushes: &[Vec<[f32; 4]>],
+        triangles: &[[f32; 9]],
+        liquids: &[(Vec<[f32; 4]>, u32)],
+    ) -> Vec<u8> {
+        let mut bytes = encode(map, brushes, triangles);
+        bytes[..8].copy_from_slice(super::MAGIC_V2);
+        let planes: Vec<_> = liquids.iter().flat_map(|(planes, _)| planes).collect();
+        bytes.extend((planes.len() as u32).to_le_bytes());
+        bytes.extend(
+            planes
+                .iter()
+                .flat_map(|plane| plane.iter().flat_map(|v| v.to_le_bytes())),
+        );
+        bytes.extend((liquids.len() as u32).to_le_bytes());
+        bytes.extend(
+            liquids
+                .iter()
+                .flat_map(|(planes, _)| (planes.len() as u32).to_le_bytes()),
+        );
+        bytes.extend(
+            liquids
+                .iter()
+                .flat_map(|(_, contents)| contents.to_le_bytes()),
+        );
+        bytes
+    }
+
     pub(in crate::games::washoi) fn encode(
         map: &str,
         brushes: &[Vec<[f32; 4]>],
