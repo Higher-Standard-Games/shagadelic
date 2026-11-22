@@ -47,6 +47,17 @@ The first 60 `washoi_dm2` Duel demos gave 25,296 decisions from 24 seats, 8,064 
 
 This is a pipeline result, not yet evidence about people. H0 found that these seats may be test clients under default names. "Next pickup taken" also counts items picked up on the way, which inflates agreement for any chooser that likes routes through clusters. The largest weights, negative ammo need and health gain and positive item value, read like weapon-first scripted play. Next: separate people from clients (H0), weigh labels by detour (H2), and only then compare live in shadow mode (H5).
 
+### Collection (decided 2026-11-22)
+
+The user records human Duels against the bots. Those records give labels from a person's choices against the opponents HUNCH will face, and a direct comparison of results against each bot. Conventions for the recordings:
+
+- A chosen player name, never the default `Player_<n>`, so `hunch extract` finds the human seat.
+- `washoi_dm2` first, the map with baked navigation and sight. Other maps need `bake-washoi-walk-graph` and `bake-washoi-sight` first.
+- Mostly hard or insane bots, the Rust and the TypeScript bot both, with the bot build fixed and noted per session.
+- A held-out test needs a few hours. Shadow mode waits for about 20.
+
+People learn the bots' habits, and the labels will carry that. It is the distribution HUNCH plays in, and the habits people exploit are a list of the bots' weaknesses.
+
 ## Decision zero: what to go for
 
 The SHAGADELIC design starts with a tactic plus position in Duel. Start one step narrower, with the choice the arbiter already makes: which goal to pursue when not fighting. Its candidates are the pickups up or due back, orders, a teammate's call to hunt, and ground to hold.
@@ -138,4 +149,5 @@ Status: `src/hunch.rs` holds the model, `score_into`, and the trainer. `strategy
 - **Seat leakage.** Any feature read from the raw snapshot instead of the bot's perception inflates offline agreement and fails live. H1's wall test is a guard, not a proof. Review the feature list against perception for every schema change.
 - **Label noise.** A human passing a pickup on the way elsewhere looks like choosing it. The detour rule in labelling and the stopover candidate in the arbiter address the same ambiguity.
 - **Shift.** Humans play against humans in the demos and HUNCH plays against bots. Evaluate against both.
-- **Protocol drift.** Demos record the protocol of their time, and SHAG's snapshot format is changing (`feature/server-havok-items`). Pin each dataset to the protocol its demos decode with, and keep the extractor on shagger's demo reader.
+- **Protocol drift.** SHAG's `feature/server-havok-items` moves item drops to Havok physics and changes the snapshot format. The Rust decoder follows when it ships, and demos recorded before and after need the matching decoder.
+- **Pinning.** Demos record the protocol of their time. Pin each dataset to the protocol its demos decode with, and keep the extractor on shagger's demo reader.
