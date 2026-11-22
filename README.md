@@ -172,7 +172,7 @@ let mut bot = BotPlayer::new(entity_id)
     .with_navigation(navigation)
     .with_sight(sight);
 bot.observe_at(observation, now);   // what the bot perceives this snapshot
-bot.decide(now);                    // budgeted decision work
+bot.decide(now);                    // one decision update
 let controls = bot.inputs_at(now);  // the commands due, one per input period
 ```
 
