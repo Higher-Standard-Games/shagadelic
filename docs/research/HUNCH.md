@@ -2,6 +2,54 @@
 
 [SHAGADELIC.md](SHAGADELIC.md#hunch-a-small-learned-decision-policy) records what HUNCH is for and its first experiment. This document turns that into work: what exists now, the first decision HUNCH learns, the data, the tools, the runtime, and the order to build them in. Status as of 2026-11-22, written while the TypeScript parity work finished.
 
+## Model architecture contract
+
+**Use one shared scorer implementation and train a model for each distinct decision that earns one.** An entity type declares the decisions it makes. Several types may use the same decision and weights, and one type may use several models over its lifetime. A game with twenty entity types can start with one model. The number of models follows the decisions, their supervision, and measured differences between groups.
+
+Today the Rust library implements a linear scorer and offline trainer in `src/hunch.rs`. Washoi binds one immutable goal model through `hunch_file` and supports shadow and deciding modes. The contracts below specify the extension to multiple decisions and entity types. The existing single-file configuration remains the first supported binding.
+
+### What gets its own model?
+
+| Situation | Binding and training decision |
+| --- | --- |
+| Two archetypes choose a destination with the same candidate meanings, features, and label definition | Pool their examples and share weights. Encode relevant capabilities in candidate eligibility and features. Evaluate each archetype separately. |
+| One archetype cannot use a particular destination or action | Its game code omits that candidate. Other eligible candidates can still use the shared model. |
+| The same choice behaves differently across archetypes | First try an observable capability interacting with a candidate feature, such as travel speed with travel distance. Compare pooled and specialist models on the same held-out sessions. Add specialist weights only if the subgroup benefit repeats, other groups remain acceptable, and there is enough independent data to evaluate the specialist. |
+| The choices or labels mean something different | Define another decision. Washoi's next pickup and its best firing position have different candidates, evidence, and success criteria. Train and evaluate them independently. |
+| No credible labels or baseline exist yet | Ship the game's rule for this decision and collect traces. Designer demonstrations and preference labels can train non-player creatures. Mark their source separately from human player choices. |
+
+For example, a ground creature and a flying creature can both select a retreat destination. The game generates reachable destinations for each body. A shared scorer can compare travel time, exposure along the route, and recovery at the destination when those quantities have the same units and meaning. A stationary creature can omit the retreat decision entirely. All three can still share the same simulation, scheduler, and map. This is a contract example for a test fixture, with no second game required.
+
+### Binding, compatibility, and ownership
+
+The game declares a stable decision ID, the candidate ID and ordering rules, the feature schema, and a baseline rule. The schema specifies column order, units, transformations, missing-value encoding, perspective, and the simulation instant at which each value becomes knowable. A change in any of those meanings requires a new schema revision even if the column names stay identical. Each decision also declares which actor can execute the selection and when it may reconsider it.
+
+A session configuration maps **(entity archetype, decision ID)** to a mode and an artifact reference. Resolution is explicit: use the archetype override, otherwise the game's default for that decision, otherwise the baseline rule. An explicit off override selects the rule. Reject duplicate bindings, unsupported scorer formats, and explicitly configured incompatible artifacts during session initialization. A missing optional binding is ordinary rule-only operation. Keep an artifact's format version, decision ID, schema revision, and content digest distinct. Two training runs may produce different weights for the same schema. Deduplicate identical artifacts by digest and pin the bindings for the lifetime of a session or replay.
+
+The embedded host can supply validated artifacts from memory. The supervised host can resolve the same bindings from files at startup. Both hand immutable model handles to the same game code. Entity memory holds beliefs, commitments, reaction timers, and seeded randomness. The model holds only parameters shared across callers. Each simultaneous scoring call owns its scratch buffer. A game integration translates the selected candidate into a plan and its normal controls.
+
+### One scheduled decision
+
+1. At a simulation deadline or meaningful wakeup, collect only what this entity could perceive or remember. Apply the game's eligibility gates. Enumerate a bounded set of candidates in stable order, including the current plan when it remains legal. If the budget is exhausted, preserve the existing legal plan under the game's interruption rules.
+2. Build rows with the same schema implementation used by offline extraction. With zero candidates the game uses its defined idle or recovery action. With one candidate it can choose directly. Reject non-finite rows or scores for that decision, use the baseline and record the reason. In off mode skip model inference. In shadow mode compute both choices and execute the baseline. In on mode pass the model selection through the game's normal commitment and interruption rules.
+3. The linear scorer costs one dot product per candidate and uses caller-owned buffers. Bound candidate generation as well as score computation. Record both timings. The current scorer breaks ties by first row, so adapters implementing a lowest-ID tie rule must order rows by that ID or explicitly resolve ties. Record model digest, schema, entity generation, decision tick, eligible IDs, candidate scores, rule choice, model choice, and executed action when tracing is enabled.
+4. When two models participate, the game defines the call order. For example, a tactical choice can activate a more frequent position decision while a fight continues. A position decision can return a destination or signal that the tactic has become infeasible. Only the game changes the active tactic. Scores have meaning within their own candidate set. For choices whose value depends on location, such as attacking from cover, rank bounded **tactic–destination pairs** together before splitting the problem into two models.
+
+### Training and promotion contract
+
+Each training row belongs to a **decision episode** with a game, archetype, decision, observation tick, schema, complete eligible set, and label provenance. Capture missing candidates and ambiguous intent as review outcomes. For autonomous entities, an author can demonstrate an action or rank two proposed choices on the same observation. A preferred pair can train the same scorer with a two-candidate softmax. Preserve preferences as pairs rather than inferring a winner over options the reviewer never saw. Rule-generated examples can bootstrap a baseline, but evaluation of human or designer preference requires independently reviewed labels.
+
+Start every decision with the game rule and a normalized linear scorer. Fit weights by minimizing cross-entropy over candidates of the same episode. Fit normalization only on training examples. Group splits by match and recording session before tuning, and keep related entities and overlapping decisions from one encounter together. Report coverage, missing candidates, ambiguity, and paired improvement over the rule for each archetype, alongside a macro-average across archetypes. Report the number of independent sessions behind each result. A frequent archetype must not hide a regression in a rare one. Choose weighting and adoption criteria before opening the test split.
+
+Export the artifact with a reproducibility record covering dataset and split hashes, extractor and trainer revisions, schema, seed, hyperparameters, label source, and baseline results. Verify identical scoring on a saved fixture through training and runtime entry points. Promote each binding independently through offline evaluation, live shadow, and a private deciding run. Restore its previous artifact or off mode at the next session boundary if the result regresses. Consider a small nonlinear scorer only after held-out error analysis identifies an interaction the linear model misses and measured inference cost fits the decision budget.
+
+### Implementation order and acceptance
+
+1. **Before the next game:** define the binding manifest and a checked in-memory scoring entry point. Keep the existing Washoi configuration as shorthand for its player goal binding. Verify bad format versions, feature reordering, invalid scores, overrides, missing optional bindings, and deterministic ties. Today the artifact carries a version, but `Model::validate` checks schema, dimensions, and finite parameters without checking that version.
+2. **Prove sharing in a library test:** use two synthetic archetypes with different legal candidates and one shared model, then override one binding. Drive both on simulation time, check independent state and exact replay, and demonstrate that shadow leaves controls identical to off. Exercise two different decisions on one entity. The test should run without Washoi enabled, socket I/O, or a trainer process.
+3. **Prove the first real policy in Washoi:** complete the human pickup audit below and compare against the rule. Run the 16-bot timing experiment with a pinned artifact. Record candidate counts, decision latency percentiles, input gaps, and baseline/model disagreements. Validate offline and live results before enabling the pickup policy for play.
+4. **Add Washoi engagement as a second decision:** review tactic and position separately on Duel clips, including retreat, pursuit, and pressure after respawn. Require a reachable alternative in the proposed candidates. Compare pooled and specialized weights only after collecting enough independent examples for that comparison. The next game's entities can reuse the resulting interfaces while supplying their own decision schemas, labels, and assets.
+
 ## Next experiment and handoff
 
 Keep the Rust linear scorer for the first human experiment. Ask one question on `washoi_dm2`: given the reachable pickups at a quiet Duel decision, which one does a known human deliberately go for? Evaluate pickup choice conditional on a pickup decision. Report how many decisions qualify. Hold, hunt, and combat choices need their own evidence. The 48.3% result below measures a proxy on six held-out matches and 1,774 overlapping decision samples. It establishes a working pipeline. Human tactical judgment remains unmeasured.
