@@ -19,6 +19,8 @@ struct Initialization {
     navigation_file: Option<std::path::PathBuf>,
     learned_routes_file: Option<std::path::PathBuf>,
     sight_file: Option<std::path::PathBuf>,
+    /// The map's collision, as `tools/bake-washoi-collision.mjs` writes it.
+    collision_file: Option<std::path::PathBuf>,
     /// The map's location names, for team callouts.
     locations_file: Option<std::path::PathBuf>,
     /// SHAG's `config/bot-intel/people.json` and `<map>.json`.
@@ -97,6 +99,7 @@ pub fn run(mut reader: impl BufRead + Send + 'static, writer: &mut impl Write) -
         || init.navigation_file.is_some()
         || init.learned_routes_file.is_some()
         || init.sight_file.is_some()
+        || init.collision_file.is_some()
         || init.locations_file.is_some()
         || init.people_file.is_some()
         || init.baseline_file.is_some()
@@ -109,6 +112,7 @@ pub fn run(mut reader: impl BufRead + Send + 'static, writer: &mut impl Write) -
         || init.navigation_file.is_some()
         || init.learned_routes_file.is_some()
         || init.sight_file.is_some()
+        || init.collision_file.is_some()
         || init.locations_file.is_some()
         || init.people_file.is_some()
         || init.baseline_file.is_some())
@@ -145,6 +149,12 @@ pub fn run(mut reader: impl BufRead + Send + 'static, writer: &mut impl Write) -
         .map(shagadelic::games::washoi::Sight::load)
         .transpose()?;
     #[cfg(feature = "washoi")]
+    let collision = init
+        .collision_file
+        .as_ref()
+        .map(shagadelic::games::washoi::MapCollision::load)
+        .transpose()?;
+    #[cfg(feature = "washoi")]
     let locations = init
         .locations_file
         .as_ref()
@@ -169,6 +179,7 @@ pub fn run(mut reader: impl BufRead + Send + 'static, writer: &mut impl Write) -
             navigation.as_ref().map(|navigation| navigation.map()),
             learned.as_ref().map(|learned| learned.map()),
             sight.as_ref().map(|sight| sight.map()),
+            collision.as_ref().map(|collision| collision.map()),
             locations.as_ref().map(|locations| locations.map()),
             baseline.as_ref().map(|baseline| baseline.map()),
         ];
@@ -185,6 +196,17 @@ pub fn run(mut reader: impl BufRead + Send + 'static, writer: &mut impl Write) -
         navigation
             .validate_learned_links(learned.as_ref())
             .map_err(invalid)?;
+    }
+    // A BSP names no map: its hash ties the collision to the navigation
+    // baked from the same BSP.
+    #[cfg(feature = "washoi")]
+    if let Some(collision) = &collision
+        && navigation
+            .as_ref()
+            .and_then(|navigation| navigation.bsp_sha256())
+            != Some(collision.bsp_sha256())
+    {
+        return Err(invalid("collision BSP differs from the navigation's"));
     }
 
     emit(
@@ -209,6 +231,7 @@ pub fn run(mut reader: impl BufRead + Send + 'static, writer: &mut impl Write) -
                 navigation,
                 learned,
                 sight,
+                collision,
                 locations,
                 people,
                 baseline,
@@ -319,4 +342,51 @@ fn read_command(reader: &mut impl BufRead, record: &mut Vec<u8>) -> io::Result<O
 
 fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
+}
+
+#[cfg(all(test, feature = "washoi"))]
+mod tests {
+    use super::*;
+
+    /// `tests/fixtures/box.collision` names map "box" and this BSP hash.
+    const SHA: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    /// The child's answer to an initialization with the box's collision and
+    /// a walk graph baked from `graph_sha` on `graph_map`, or no graph.
+    fn initialize(graph: Option<(&str, &str)>) -> io::Result<String> {
+        let collision = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/box.collision");
+        let navigation = graph.map(|(map, sha)| {
+            serde_json::json!({"map": map, "graph": {
+                "bsp_sha256": sha,
+                "nodes": [[0, 0, 0], [64, 0, 0]], "edges": [[0, 1], [1, 0]],
+                "entries": [0], "goals": [1]
+            }})
+        });
+        let init = serde_json::json!({
+            "type": "initialize", "version": VERSION, "lobby_id": "lobby",
+            "washoi_endpoint": "ws://127.0.0.1:9", "collision_file": collision,
+            "navigation": navigation,
+        });
+        let mut output = Vec::new();
+        run(io::Cursor::new(format!("{init}\n")), &mut output)?;
+        Ok(String::from_utf8(output).unwrap())
+    }
+
+    #[test]
+    fn a_collision_file_must_come_from_the_navigations_bsp() {
+        // The same BSP, its hash in either case: ready.
+        let ready = initialize(Some(("box", &SHA.to_ascii_uppercase()))).unwrap();
+        assert!(ready.contains(r#""type":"ready""#), "{ready}");
+        let refused = |graph| initialize(graph).unwrap_err().to_string();
+        let other = "f".repeat(64);
+        assert_eq!(
+            refused(Some(("box", &other))),
+            "collision BSP differs from the navigation's"
+        );
+        assert_eq!(refused(None), "collision BSP differs from the navigation's");
+        assert_eq!(
+            refused(Some(("arena", SHA))),
+            "map assets refer to different maps"
+        );
+    }
 }

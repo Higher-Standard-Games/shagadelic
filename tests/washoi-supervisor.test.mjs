@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, rmdir, writeFile } from "node:fs/promises";
+import { copyFile, mkdtemp, rm, rmdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -43,6 +43,7 @@ test("map assets use the match map and reject a file labeled for a different map
     await supervisor.stopAll();
     await rm(join(directory, "washoi_dm2.json"), { force: true });
     await rm(join(directory, "washoi_dm2.sight"), { force: true });
+    await rm(join(directory, "washoi_dm2.collision"), { force: true });
     await rmdir(directory);
   });
   const endpoint = "ws://127.0.0.1:1";
@@ -60,6 +61,11 @@ test("map assets use the match map and reject a file labeled for a different map
   await assert.rejects(supervisor.start("wrong sight", endpoint, "washoi_dm2"));
   await writeFile(sight, emptySight("washoi_dm2"));
   await supervisor.start("sight", endpoint, "washoi_dm2");
+  // Collision from a BSP the authored routes were not baked from.
+  const collision = join(directory, "washoi_dm2.collision");
+  await copyFile(new URL("./fixtures/box.collision", import.meta.url), collision);
+  await assert.rejects(supervisor.start("foreign collision", endpoint, "washoi_dm2"));
+  await rm(collision);
 });
 
 /** A sight file with no geometry, in the format of tools/bake-washoi-sight.mjs. */

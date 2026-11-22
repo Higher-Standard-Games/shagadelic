@@ -643,6 +643,10 @@ impl Planner {
 }
 
 impl WalkGraph {
+    pub(in crate::games::washoi) fn bsp_sha256(&self) -> &str {
+        &self.bsp_sha256
+    }
+
     pub(in crate::games::washoi) fn routes(self) -> Result<(Vec<Route>, Planner), &'static str> {
         let count = self.nodes.len();
         if !(2..=MAX_NODES).contains(&count)

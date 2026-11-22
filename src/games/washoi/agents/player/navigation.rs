@@ -121,6 +121,8 @@ pub struct WashoiNavigation {
     map: String,
     routes: Vec<Route>,
     planner: Option<graph::Planner>,
+    /// The SHA-256 of the BSP a walk graph was baked from.
+    bsp_sha256: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -148,6 +150,10 @@ impl TryFrom<RouteFile> for WashoiNavigation {
     type Error = &'static str;
 
     fn try_from(file: RouteFile) -> Result<Self, Self::Error> {
+        let bsp_sha256 = file
+            .graph
+            .as_ref()
+            .map(|graph| graph.bsp_sha256().to_ascii_lowercase());
         let (routes, planner) = match file.graph {
             Some(graph) if file.routes.is_empty() => {
                 let (routes, planner) = graph.routes()?;
@@ -173,6 +179,7 @@ impl TryFrom<RouteFile> for WashoiNavigation {
             map: file.map,
             routes,
             planner,
+            bsp_sha256,
         })
     }
 }
@@ -194,6 +201,12 @@ impl WashoiNavigation {
 
     pub fn map(&self) -> &str {
         &self.map
+    }
+
+    /// The SHA-256 of the BSP the walk graph was baked from, in lowercase
+    /// hex. None for authored routes.
+    pub fn bsp_sha256(&self) -> Option<&str> {
+        self.bsp_sha256.as_deref()
     }
 
     /// The walk graph's node positions, standing origins, in graph index

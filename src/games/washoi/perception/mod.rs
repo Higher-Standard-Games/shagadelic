@@ -6,6 +6,7 @@
 //! play them loud enough: shots, beams, pain, pickups, footsteps, jumps, and
 //! explosions next to someone. Being hit reveals the attacker.
 
+pub(in crate::games::washoi) mod collision;
 pub(in crate::games::washoi) mod estimate;
 pub(in crate::games::washoi) mod sight;
 

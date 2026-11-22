@@ -12,6 +12,7 @@ pub mod trace;
 
 use std::{collections::VecDeque, sync::Arc, time::Duration};
 
+use crate::games::washoi::perception::collision::BotCollision;
 use crate::games::washoi::{
     Controls, Observation, SimTime,
     agents::{Agent, NetworkedPlayer},
@@ -107,6 +108,9 @@ pub struct BotPlayer {
     vitals: OwnVitals,
     difficulty: Difficulty,
     sight: Option<Arc<Sight>>,
+    /// The map's collision, the bot's own world over the session's shared
+    /// map, for movement rollouts.
+    collision: Option<Box<BotCollision>>,
     combat: Combat,
     engagement: Option<Engagement>,
     moves: CombatMovement,
@@ -222,6 +226,7 @@ impl BotPlayer {
             vitals: OwnVitals::default(),
             difficulty: Difficulty::default(),
             sight: None,
+            collision: None,
             combat,
             engagement: None,
             moves: CombatMovement::default(),
@@ -388,6 +393,11 @@ impl BotPlayer {
 
     pub fn with_sight(mut self, sight: Arc<Sight>) -> Self {
         self.sight = Some(sight);
+        self
+    }
+
+    pub(in crate::games::washoi) fn with_collision(mut self, collision: BotCollision) -> Self {
+        self.collision = Some(Box::new(collision));
         self
     }
 

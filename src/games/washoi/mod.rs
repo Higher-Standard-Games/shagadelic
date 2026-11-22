@@ -17,6 +17,7 @@ pub use difficulty::Difficulty;
 pub use hosting::net::protocol;
 pub use hosting::net::session::{BotReport, SpawnBot, WashoiSession};
 pub use observation::{Body, Controls, Observation, PlayerView, SimTime, Vec3, Velocity};
+pub use perception::collision::MapCollision;
 pub use perception::sight::Sight;
 
 /// Whether a player name is one of the bot names, as SHAG's `isBotName`

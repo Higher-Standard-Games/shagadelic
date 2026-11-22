@@ -10,8 +10,8 @@ use tokio::{sync::mpsc, task::JoinHandle};
 use crate::runtime::{Deadlines, EntityKey, GameSession, SessionEvent, Update};
 
 use crate::games::washoi::{
-    Baseline, BotPlayer, Difficulty, LearnedRoutes, Locations, PeopleProfile, Sight, SimTime,
-    WashoiNavigation,
+    Baseline, BotPlayer, Difficulty, LearnedRoutes, Locations, MapCollision, PeopleProfile, Sight,
+    SimTime, WashoiNavigation,
     agents::NetworkedPlayer,
     hosting::net::protocol::{
         self, AdmissionError, InputBatch, SnapshotEvent, WashoiEvents, connect,
@@ -45,6 +45,7 @@ struct MapAssets {
     navigation: Option<Arc<WashoiNavigation>>,
     learned: Option<Arc<LearnedRoutes>>,
     sight: Option<Arc<Sight>>,
+    collision: Option<Arc<MapCollision>>,
     locations: Option<Arc<Locations>>,
     people: Option<Arc<PeopleProfile>>,
     baseline: Option<Arc<Baseline>>,
@@ -56,6 +57,7 @@ impl MapAssets {
             self.navigation.as_ref().map(|navigation| navigation.map()),
             self.learned.as_ref().map(|learned| learned.map()),
             self.sight.as_ref().map(|sight| sight.map()),
+            self.collision.as_ref().map(|collision| collision.map()),
             self.locations.as_ref().map(|locations| locations.map()),
             self.baseline.as_ref().map(|baseline| baseline.map()),
         ]
@@ -121,6 +123,13 @@ impl WashoiSession {
 
     pub fn with_sight(mut self, sight: Sight) -> Self {
         self.assets.sight = Some(Arc::new(sight));
+        self
+    }
+
+    /// The map's collision, for the bots' movement rollouts. Each bot gets
+    /// a collision world of its own over it.
+    pub fn with_collision(mut self, collision: MapCollision) -> Self {
+        self.assets.collision = Some(Arc::new(collision));
         self
     }
 
@@ -208,6 +217,9 @@ impl GameSession for WashoiSession {
                     }
                     if let Some(sight) = &self.assets.sight {
                         player = player.with_sight(sight.clone());
+                    }
+                    if let Some(collision) = &self.assets.collision {
+                        player = player.with_collision(collision.world());
                     }
                     if let Some(dir) = std::env::var_os("SHAGADELIC_TRACE_DIR") {
                         player = player.with_trace_dir(std::path::Path::new(&dir));

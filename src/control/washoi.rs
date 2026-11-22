@@ -6,8 +6,8 @@ use std::{
 use serde::{Deserialize, Serialize};
 use shagadelic::{
     games::washoi::{
-        Baseline, BotReport, Difficulty, LearnedRoutes, Locations, PeopleProfile, Sight, SpawnBot,
-        WashoiNavigation, WashoiSession,
+        Baseline, BotReport, Difficulty, LearnedRoutes, Locations, MapCollision, PeopleProfile,
+        Sight, SpawnBot, WashoiNavigation, WashoiSession,
     },
     runtime::{Budget, EntityKey, EntityStatus, Runtime, SpawnError},
 };
@@ -63,6 +63,7 @@ pub(super) struct MapAssets {
     pub(super) navigation: Option<WashoiNavigation>,
     pub(super) learned: Option<LearnedRoutes>,
     pub(super) sight: Option<Sight>,
+    pub(super) collision: Option<MapCollision>,
     pub(super) locations: Option<Locations>,
     pub(super) people: Option<PeopleProfile>,
     pub(super) baseline: Option<Baseline>,
@@ -100,6 +101,9 @@ pub(super) fn run(
     }
     if let Some(sight) = assets.sight {
         session = session.with_sight(sight);
+    }
+    if let Some(collision) = assets.collision {
+        session = session.with_collision(collision);
     }
     if let Some(locations) = assets.locations {
         session = session.with_locations(locations);

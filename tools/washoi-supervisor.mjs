@@ -227,21 +227,26 @@ async function mapAssets(map, { navigationDir, learnedRoutesDir, intelDir }) {
     await access(path);
     return path;
   };
-  const [navigation_file, learned_routes_file, sight_file, locations_file, people_file, baseline_file] = await Promise.all([
-    navigationDir ? optionalFile(resolve(navigationDir, name), existing) : undefined,
-    learnedRoutesDir ? optionalFile(resolve(learnedRoutesDir, name), existing) : undefined,
-    // Baked by tools/bake-washoi-sight.mjs. The child checks its map.
-    navigationDir ? optionalFile(resolve(navigationDir, map + ".sight"), existing) : undefined,
-    // Baked by tools/bake-washoi-locations.mjs, for team callouts.
-    navigationDir ? optionalFile(resolve(navigationDir, map + ".locations.json"), existing) : undefined,
-    intelDir ? optionalFile(resolve(intelDir, "people.json"), existing) : undefined,
-    intelDir ? optionalFile(resolve(intelDir, name), existing) : undefined,
-  ]);
+  const [navigation_file, learned_routes_file, sight_file, collision_file, locations_file, people_file, baseline_file] =
+    await Promise.all([
+      navigationDir ? optionalFile(resolve(navigationDir, name), existing) : undefined,
+      learnedRoutesDir ? optionalFile(resolve(learnedRoutesDir, name), existing) : undefined,
+      // Baked by tools/bake-washoi-sight.mjs. The child checks its map.
+      navigationDir ? optionalFile(resolve(navigationDir, map + ".sight"), existing) : undefined,
+      // Baked by tools/bake-washoi-collision.mjs. The child checks its BSP
+      // hash against the navigation's.
+      navigationDir ? optionalFile(resolve(navigationDir, map + ".collision"), existing) : undefined,
+      // Baked by tools/bake-washoi-locations.mjs, for team callouts.
+      navigationDir ? optionalFile(resolve(navigationDir, map + ".locations.json"), existing) : undefined,
+      intelDir ? optionalFile(resolve(intelDir, "people.json"), existing) : undefined,
+      intelDir ? optionalFile(resolve(intelDir, name), existing) : undefined,
+    ]);
   return {
     washoi_map: map,
     navigation_file,
     learned_routes_file,
     sight_file,
+    collision_file,
     locations_file,
     people_file,
     baseline_file,
