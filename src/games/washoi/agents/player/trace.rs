@@ -64,6 +64,12 @@ pub struct DecisionTrace {
     pub hunch: Option<String>,
     /// The digest of the HUNCH goal model bound to this bot, if any.
     pub hunch_model: Option<String>,
+    /// Wall-clock nanoseconds HUNCH took to build its rows and score them,
+    /// when a model scores goals.
+    pub hunch_nanos: Option<u64>,
+    /// Wall-clock microseconds the whole decision took, up to this record.
+    /// Traces only: decisions run on simulation time.
+    pub decide_micros: u64,
     /// Which part of the bot set the movement: `route`, `order`,
     /// `traversal`, `strafe`, `order_strafe`, `peek`, `climb`, `dodge`,
     /// `fade`, `escape`, `chase`, `hunt`, `hold`, `lunge`, or `unstick`.

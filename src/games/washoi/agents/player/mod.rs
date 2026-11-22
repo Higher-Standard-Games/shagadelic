@@ -499,6 +499,8 @@ impl BotPlayer {
     }
 
     fn decide_on(&mut self, world: &Observation, now: SimTime) {
+        // Wall-clock time, for the trace alone: no decision reads it.
+        let started = self.tracing.then(std::time::Instant::now);
         self.arbitrated = false;
         self.mover = "route";
         self.combat
@@ -632,7 +634,10 @@ impl BotPlayer {
             self.mover = "unstick";
         }
         if self.tracing {
-            let record = self.record(world, position);
+            let mut record = self.record(world, position);
+            record.decide_micros = started.map_or(0, |started| {
+                u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX)
+            });
             self.fired = false;
             if let Some(sink) = &mut self.trace_sink {
                 use std::io::Write as _;
@@ -712,6 +717,12 @@ impl BotPlayer {
             } else {
                 Vec::new()
             },
+            hunch_nanos: if self.arbitrated {
+                self.planner.hunch_nanos()
+            } else {
+                None
+            },
+            decide_micros: 0,
             hunch: if self.arbitrated {
                 self.planner.hunch_pick().map(str::to_owned)
             } else {

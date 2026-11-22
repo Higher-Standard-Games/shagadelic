@@ -92,6 +92,10 @@ pub(in crate::games::washoi) struct Planner {
     /// The arbiter's own goal, which differs from `last_goal` when HUNCH
     /// decides.
     rule_goal: Option<String>,
+    /// Wall-clock nanoseconds HUNCH took at the last decision, building its
+    /// rows and scoring them, when a model scores goals. For traces only:
+    /// no decision reads it.
+    hunch_nanos: Option<u64>,
     last_candidates: Vec<TracedCandidate>,
     last_gated: usize,
     /// The pickup pursued, and how it is going.
@@ -126,6 +130,7 @@ impl Planner {
             timed: false,
             last_goal: None,
             rule_goal: None,
+            hunch_nanos: None,
             last_candidates: Vec::new(),
             last_gated: 0,
             pursuit: None,
@@ -172,6 +177,12 @@ impl Planner {
             self.hunch_ids.iter().map(|(_, id)| id.as_str()).collect(),
             &self.hunch_rows,
         )
+    }
+
+    /// How long HUNCH took at the last decision, rows and scores, in
+    /// wall-clock nanoseconds, when a model scores goals.
+    pub(in crate::games::washoi) fn hunch_nanos(&self) -> Option<u64> {
+        self.hunch_nanos
     }
 
     /// The arbiter's own goal at the last decision.
@@ -320,6 +331,7 @@ impl Planner {
         self.rule_goal.clone_from(&self.last_goal);
         self.hunch_ids.clear();
         self.hunch_rows.clear();
+        let started = self.hunch.is_some().then(std::time::Instant::now);
         if self.hunch.is_some() || self.recording {
             for index in (0..goals.len()).filter(|index| traces[*index].gated.is_none()) {
                 hunch_features::push_row(&context(index), &traces[index], &mut self.hunch_rows);
@@ -343,6 +355,8 @@ impl Planner {
                 self.explain.push_str(" hunch=rejected");
             }
         }
+        self.hunch_nanos =
+            started.map(|started| u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX));
         let Some(index) = goal else {
             self.stopover = None;
             return None;
@@ -796,6 +810,7 @@ mod tests {
         let ids: Vec<&str> = scores.iter().map(|score| score.id.as_str()).collect();
         assert_eq!(ids, ["pickup:0", "pickup:1"]);
         assert!(scores[1].score > scores[0].score, "{scores:?}");
+        assert!(on.hunch_nanos().is_some(), "timed when a model scores");
     }
 
     #[test]
