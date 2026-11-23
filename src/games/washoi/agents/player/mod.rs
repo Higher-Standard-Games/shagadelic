@@ -104,6 +104,11 @@ struct SentKeys {
     commands: u32,
     sprint: u32,
     run: u32,
+    /// Degrees the view was off the move, summed over the sprinting
+    /// commands that moved, and how many lagged past 45 degrees.
+    off: f64,
+    moving: u32,
+    wide: u32,
 }
 
 impl SentKeys {
@@ -114,10 +119,26 @@ impl SentKeys {
         }
         self.sprint += 1;
         let [x, _, z] = input.direction;
-        let forward = x.hypot(z) > 0.01 && wrap(x.atan2(z) - input.yaw).abs() < FORWARD_ALONE;
+        let off = wrap(x.atan2(z) - input.yaw).abs();
+        if x.hypot(z) > 0.01 {
+            self.moving += 1;
+            self.off += off.to_degrees();
+            self.wide += u32::from(off > std::f64::consts::FRAC_PI_4);
+        }
+        let forward = x.hypot(z) > 0.01 && off < FORWARD_ALONE;
         if forward && input.buttons & (FIRE | ALT_FIRE | CROUCH) == 0 {
             self.run += 1;
         }
+    }
+
+    /// The mean degrees a sprinting view was off its move, and the share
+    /// of those commands off past 45 degrees.
+    fn lag(&self) -> (f32, f32) {
+        if self.moving == 0 {
+            return (0.0, 0.0);
+        }
+        let n = f64::from(self.moving);
+        ((self.off / n) as f32, (f64::from(self.wide) / n) as f32)
     }
 
     fn share(&self, n: u32) -> f32 {
@@ -807,6 +828,8 @@ impl BotPlayer {
             firing: self.fired,
             sprint: self.sent_keys.share(self.sent_keys.sprint),
             run_keys: self.sent_keys.share(self.sent_keys.run),
+            sprint_off: self.sent_keys.lag().0,
+            sprint_wide: self.sent_keys.lag().1,
             hunch_model: self
                 .hunch
                 .as_ref()
@@ -2667,6 +2690,12 @@ mod tests {
         keys.count(&input(0.0, 0));
         assert_eq!((keys.commands, keys.sprint, keys.run), (4, 3, 1));
         assert_eq!(keys.share(keys.sprint), 0.75);
+        let (off, wide) = keys.lag();
+        assert!(
+            (off - (0.1f64.to_degrees() + 30.0) as f32 / 3.0).abs() < 1e-3,
+            "{off}"
+        );
+        assert_eq!(wide, 0.0);
     }
 
     #[test]

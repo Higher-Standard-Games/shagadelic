@@ -88,6 +88,12 @@ pub struct DecisionTrace {
     pub sprint: f32,
     #[serde(default)]
     pub run_keys: f32,
+    /// Over the sprinting commands that moved, the mean degrees the sent
+    /// view was off the move, and the share off past 45 degrees.
+    #[serde(default)]
+    pub sprint_off: f32,
+    #[serde(default)]
+    pub sprint_wide: f32,
     /// Clearance turned the heading round a wall, ledge, or trigger
     /// (`navigation::clearance`), as TypeScript `BotSteering.steered`.
     pub steered: bool,
