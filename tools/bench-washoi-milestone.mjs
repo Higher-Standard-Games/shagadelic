@@ -15,6 +15,11 @@
 //   S&D   (--snd-map, default washoi_snd1): a Rust pair against a
 //         TypeScript pair, swapping teams each match. Rounds won by side,
 //         plants, defuses, and carrier deaths.
+//   Amphi (--amphi-map, default washoi_dm2): one Rust bot against one
+//         TypeScript bot, best of three rounds on the server's kit, on
+//         teams as Amphi needs. Rounds and matches won, the frag gap per
+//         round, and deaths the TypeScript bot didn't cause. A match runs
+//         until the server ends it, or --amphi-seconds.
 //
 // With SHAGADELIC_TRACE_DIR-style decision traces kept per arm, mode, and
 // match, the summary adds trace statistics for each arm: the share of moving
@@ -28,7 +33,7 @@
 //
 //   node node_modules/vite-node/vite-node.mjs <SHAGADELIC>/tools/bench-washoi-milestone.mjs -- \
 //     --exe-a <shagadelic.exe> [--exe-b <shagadelic.exe>] --nav <navigation dir> \
-//     [--learned <learned routes dir>] [--modes duel,ffa,snd] [--blocks 2] [--block 4] \
+//     [--learned <learned routes dir>] [--modes duel,ffa,snd,amphi] [--blocks 2] [--block 4] \
 //     [--seconds 90] [--snd-seconds 240] [--difficulty hard] [--port 8700] \
 //     [--traces <dir>] [--out <results.jsonl>]
 //
@@ -49,7 +54,7 @@ const option = (name, fallback) => {
 const arms = [["a", option("exe-a")], ["b", option("exe-b")]].filter(([, exe]) => exe);
 const navigationDir = option("nav");
 if (arms.length === 0 || !navigationDir) {
-  throw new Error("Usage: bench-washoi-milestone.mjs --exe-a <exe> [--exe-b <exe>] --nav <dir> [--learned <dir>] [--modes duel,ffa,snd] [--blocks] [--block] [--seconds] [--snd-seconds] [--difficulty] [--port] [--traces <dir>] [--out <file>]");
+  throw new Error("Usage: bench-washoi-milestone.mjs --exe-a <exe> [--exe-b <exe>] --nav <dir> [--learned <dir>] [--modes duel,ffa,snd,amphi] [--blocks] [--block] [--seconds] [--snd-seconds] [--difficulty] [--port] [--traces <dir>] [--out <file>]");
 }
 const learnedRoutesDir = option("learned", undefined);
 const modes = option("modes", "duel,ffa,snd").split(",");
@@ -57,11 +62,12 @@ const blocks = Number(option("blocks", "2"));
 const block = Number(option("block", "4"));
 const seconds = Number(option("seconds", "90"));
 const sndSeconds = Number(option("snd-seconds", "240"));
+const amphiSeconds = Number(option("amphi-seconds", "720"));
 const difficulty = option("difficulty", "hard");
 const basePort = Number(option("port", "8700"));
 const traces = option("traces", undefined);
 const out = option("out", undefined);
-const maps = { duel: option("duel-map", "washoi_dm2"), ffa: option("ffa-map", "washoi_dm2"), snd: option("snd-map", "washoi_snd1") };
+const maps = { duel: option("duel-map", "washoi_dm2"), ffa: option("ffa-map", "washoi_dm2"), snd: option("snd-map", "washoi_snd1"), amphi: option("amphi-map", "washoi_dm2") };
 // A map without its bake runs bots that can't navigate, and the bench would
 // score them anyway.
 for (const mode of modes) {
@@ -79,6 +85,8 @@ const { GameServer } = await load("src/games/fps/server/GameServer.ts");
 const { Duel } = await load("src/games/fps/server/gametypes/Duel.ts");
 const { Deathmatch } = await load("src/games/fps/server/gametypes/Deathmatch.ts");
 const { SearchAndDestroy } = await load("src/games/fps/server/gametypes/SearchAndDestroy.ts");
+const { Amphi } = await load("src/games/fps/server/gametypes/Amphi.ts");
+const { botLoadout } = await load("src/shared/server/gametype/Loadout.ts");
 const { BotServer } = await load("src/games/fps/bot/BotServer.ts");
 const { MatchPhase } = await load("src/shared/server/gametype/index.ts");
 const { EntityType } = await load("src/engine/server/ecs/types.ts");
@@ -96,7 +104,7 @@ async function playMatch({ arm, exe, mode, index }) {
   const map = maps[mode];
   const bsp = bsps[map];
   const port = basePort + (portSlot++ % 20) * 2;
-  const Gametype = { duel: Duel, ffa: Deathmatch, snd: SearchAndDestroy }[mode];
+  const Gametype = { duel: Duel, ffa: Deathmatch, snd: SearchAndDestroy, amphi: Amphi }[mode];
   const gametype = new Gametype();
   const server = new GameServer(
     { port, serverName: "bench-washoi-milestone", mapName: map, maxClients: 8, tickRate: 125, snapshotRate: 60, certPath: "", keyPath: "" },
@@ -125,7 +133,8 @@ async function playMatch({ arm, exe, mode, index }) {
   // S&D swaps teams each match; the others have no teams.
   const rustTeam = index % 2 === 0 ? "soba" : "udon";
   const tsTeam = rustTeam === "soba" ? "udon" : "soba";
-  const count = mode === "duel" ? 1 : 2;
+  const count = mode === "duel" || mode === "amphi" ? 1 : 2;
+  const teamed = mode === "snd" || mode === "amphi";
   try {
     await supervisor.start(matchId, endpoint, map);
     const joins = [];
@@ -134,12 +143,12 @@ async function playMatch({ arm, exe, mode, index }) {
         const bot = await supervisor.launch(matchId, {
           name: `SHAGADELIC ${i}`,
           difficulty,
-          ...(mode === "snd" ? { team: rustTeam } : {}),
+          ...(teamed ? { team: rustTeam } : {}),
         });
         rust.push(String(bot.playerId));
       });
       joins.push(async () => {
-        const bot = await botServer.addBot(endpoint, { difficulty, chat: false, ...(mode === "snd" ? { team: tsTeam } : {}) });
+        const bot = await botServer.addBot(endpoint, { difficulty, chat: false, ...(teamed ? { team: tsTeam } : {}) });
         ts.push(bot);
       });
     }
@@ -235,8 +244,41 @@ async function playMatch({ arm, exe, mode, index }) {
         }) + "\n");
       }
     }, 100) : null;
-    await wait((mode === "snd" ? sndSeconds : seconds) * 1000);
+    // Amphi: each round's winner and frags as the server decides it, and
+    // Rust deaths the TypeScript bot didn't cause (self, world), from the
+    // gametype's own death hook. Scores reset each round, so the match
+    // score can't give them.
+    const amphi = { rounds: [], rustNonTsDeaths: 0, rustDeaths: 0, matchWinner: null };
+    let amphiSampler = null;
+    if (mode === "amphi") {
+      const isRust = (ownerId) => rust.includes(`player_${ownerId}`);
+      const onDeath = gametype.onDeath.bind(gametype);
+      gametype.onDeath = (victim, killer, world) => {
+        if (state.phase === MatchPhase.Active && isRust(victim.ownerId)) {
+          amphi.rustDeaths++;
+          if (!killer || killer.ownerId === undefined || isRust(killer.ownerId)) amphi.rustNonTsDeaths++;
+        }
+        return onDeath(victim, killer, world);
+      };
+      let last = null;
+      amphiSampler = setInterval(() => {
+        const result = state.roundResult;
+        if (result && result !== last) {
+          last = result;
+          const frags = gametype.roundFrags ?? new Map();
+          amphi.rounds.push({
+            winner: result.winner === rustTeam ? "rust" : result.winner ? "ts" : null,
+            key: result.resultKey ?? result.reason,
+            rust: frags.get(rustTeam) ?? 0,
+            ts: frags.get(tsTeam) ?? 0,
+          });
+        }
+      }, 100);
+    }
+    const limit = Date.now() + (mode === "snd" ? sndSeconds : mode === "amphi" ? amphiSeconds : seconds) * 1000;
+    while (Date.now() < limit && !(mode === "amphi" && state.phase === MatchPhase.PostGame)) await wait(500);
     if (sampler) clearInterval(sampler);
+    if (amphiSampler) clearInterval(amphiSampler);
 
     // The server keys its scores by number; clients see `player_<n>`.
     const key = (id) => {
@@ -254,6 +296,13 @@ async function playMatch({ arm, exe, mode, index }) {
       all.sort((x, y) => y.frags - x.frags || x.deaths - y.deaths);
       all.forEach((bot, i) => (bot.rank = i + 1));
       result.bots = all;
+    } else if (mode === "amphi") {
+      const wins = (side) => amphi.rounds.filter((r) => r.winner === side).length;
+      amphi.matchWinner = wins("rust") > wins("ts") ? "rust" : wins("ts") > wins("rust") ? "ts" : null;
+      amphi.ended = state.phase === MatchPhase.PostGame;
+      const kit = (id) => botLoadout(Number(String(id).replace(/^player_/, "")));
+      amphi.kits = { rust: kit(rust[0]), ts: kit(tsIds[0]) };
+      result.amphi = amphi;
     } else {
       result.snd = snd;
       result.rustTeam = rustTeam;
@@ -353,6 +402,14 @@ for (const [arm, exe] of arms) {
     const bots = ffa.flatMap((r) => r.bots);
     const side = (s) => bots.filter((x) => x.side === s);
     print(`  FFA ${maps.ffa}, ${ffa.length} matches: mean rank Rust ${mean(side("rust").map((x) => x.rank)).toFixed(2)}, TS ${mean(side("ts").map((x) => x.rank)).toFixed(2)}; frags per bot Rust ${mean(side("rust").map((x) => x.frags)).toFixed(1)}, TS ${mean(side("ts").map((x) => x.frags)).toFixed(1)}; firsts Rust ${side("rust").filter((x) => x.rank === 1).length} of ${ffa.length}`);
+  }
+  const amphiRuns = mine.filter((r) => r.mode === "amphi");
+  if (amphiRuns.length) {
+    const rounds = amphiRuns.flatMap((r) => r.amphi.rounds);
+    const matches = (side) => amphiRuns.filter((r) => r.amphi.matchWinner === side).length;
+    const roundWins = (side) => rounds.filter((x) => x.winner === side).length;
+    print(`  Amphi ${maps.amphi}, ${amphiRuns.length} matches (${amphiRuns.filter((r) => r.amphi.ended).length} ended by the server): matches Rust ${matches("rust")}, TS ${matches("ts")}; rounds Rust ${roundWins("rust")}, TS ${roundWins("ts")} of ${rounds.length}; sign test p = ${signTest(roundWins("rust"), roundWins("ts")).toFixed(3)}`);
+    print(`    round frag gap (Rust - TS) ${interval(rounds.map((x) => x.rust - x.ts))}; Rust deaths ${sum(amphiRuns, (r) => r.amphi.rustDeaths)}, not by the TS bot ${sum(amphiRuns, (r) => r.amphi.rustNonTsDeaths)}`);
   }
   const snd = mine.filter((r) => r.mode === "snd");
   if (snd.length) {
