@@ -81,6 +81,13 @@ pub struct DecisionTrace {
     /// The aim gate adds and holds fire as commands are paced out, after
     /// the decision plans them, so the planned input alone never shows it.
     pub firing: bool,
+    /// Of the commands sent since the previous decision, the share that
+    /// held sprint, and the share whose keys Washoi gives run speed to:
+    /// sprint, forward alone, no fire or crouch.
+    #[serde(default)]
+    pub sprint: f32,
+    #[serde(default)]
+    pub run_keys: f32,
     /// Clearance turned the heading round a wall, ledge, or trigger
     /// (`navigation::clearance`), as TypeScript `BotSteering.steered`.
     pub steered: bool,

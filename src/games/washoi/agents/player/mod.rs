@@ -92,6 +92,42 @@ const WALL_JUMP_NEAR: f64 = 12.0;
 const WALL_JUMP_CHECK_TICKS: u32 = 6;
 const WALL_JUMP_GAIN: f64 = 96.0;
 const SPRINT: u16 = 1 << 6;
+/// The widest angle between the view and the move that the virtual keys
+/// send as forward alone.
+const FORWARD_ALONE: f64 = std::f64::consts::PI / 8.0;
+
+/// Which of the commands sent held sprint, and which held what Washoi's
+/// `MovementProfile.simulate` gives `runSpeed` to: sprint with forward
+/// alone, not firing or crouching.
+#[derive(Clone, Copy, Debug, Default)]
+struct SentKeys {
+    commands: u32,
+    sprint: u32,
+    run: u32,
+}
+
+impl SentKeys {
+    fn count(&mut self, input: &PlayerInput) {
+        self.commands += 1;
+        if input.buttons & SPRINT == 0 {
+            return;
+        }
+        self.sprint += 1;
+        let [x, _, z] = input.direction;
+        let forward = x.hypot(z) > 0.01 && wrap(x.atan2(z) - input.yaw).abs() < FORWARD_ALONE;
+        if forward && input.buttons & (FIRE | ALT_FIRE | CROUCH) == 0 {
+            self.run += 1;
+        }
+    }
+
+    fn share(&self, n: u32) -> f32 {
+        if self.commands == 0 {
+            0.0
+        } else {
+            n as f32 / self.commands as f32
+        }
+    }
+}
 /// `WILD_SHOT_OFFSET`: a wild shot opens fire this far to one side.
 const WILD_SHOT_OFFSET: f64 = 5.0 * std::f64::consts::PI / 180.0;
 /// `ITEM_GLANCE_RANGE`.
@@ -156,6 +192,9 @@ pub struct BotPlayer {
     shooting: bool,
     /// Fire or alt-fire went out in a command since the last trace.
     fired: bool,
+    /// Commands sent since the last trace, and how many held sprint and
+    /// how many held keys Washoi gives run speed (`SentKeys`).
+    sent_keys: SentKeys,
     /// Whether the last decision had a fight, to see fights start and end.
     fighting: bool,
     unstick: Unstick,
@@ -296,6 +335,7 @@ impl BotPlayer {
             allies: Vec::new(),
             shooting: false,
             fired: false,
+            sent_keys: SentKeys::default(),
             fighting: false,
             unstick: Unstick::default(),
             clearance: Clearance::default(),
@@ -700,6 +740,7 @@ impl BotPlayer {
                 u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX)
             });
             self.fired = false;
+            self.sent_keys = SentKeys::default();
             if let Some(sink) = &mut self.trace_sink {
                 use std::io::Write as _;
                 let _ = serde_json::to_writer(&mut *sink, &record);
@@ -764,6 +805,8 @@ impl BotPlayer {
             mover: self.mover,
             engaged: self.engagement.is_some_and(|fight| fight.in_sight),
             firing: self.fired,
+            sprint: self.sent_keys.share(self.sent_keys.sprint),
+            run_keys: self.sent_keys.share(self.sent_keys.run),
             hunch_model: self
                 .hunch
                 .as_ref()
@@ -2472,6 +2515,7 @@ impl BotPlayer {
             input.buttons = safety::spare_allies(input.buttons, position, sent, &self.allies);
         }
         self.fired |= input.buttons & (FIRE | ALT_FIRE) != 0;
+        self.sent_keys.count(&input);
         input
     }
 
@@ -2605,6 +2649,25 @@ impl NetworkedPlayer for BotPlayer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Run speed needs sprint with forward alone: a move 30 degrees off the
+    /// view is a diagonal chord, and fire or crouch caps the speed too.
+    #[test]
+    fn sent_keys_count_what_washoi_gives_run_speed() {
+        let mut keys = SentKeys::default();
+        let input = |off: f64, buttons: u16| PlayerInput {
+            direction: [(1.0 + off).sin(), 0.0, (1.0 + off).cos()],
+            yaw: 1.0,
+            buttons,
+            ..PlayerInput::default()
+        };
+        keys.count(&input(0.1, SPRINT));
+        keys.count(&input(30f64.to_radians(), SPRINT));
+        keys.count(&input(0.0, SPRINT | FIRE));
+        keys.count(&input(0.0, 0));
+        assert_eq!((keys.commands, keys.sprint, keys.run), (4, 3, 1));
+        assert_eq!(keys.share(keys.sprint), 0.75);
+    }
 
     #[test]
     fn input_debt_is_bounded_and_stale_observations_stop_movement() {
