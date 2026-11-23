@@ -229,6 +229,7 @@ async function playMatch({ arm, exe, mode, index }) {
           brains: Object.fromEntries(ts.map((bot) => [String(bot._gameState?.selfPlayerId), {
             state: bot.brainState ?? null,
             strategy: bot._brain?.strategyExplain ?? bot.strategyId ?? null,
+            goal: bot._brain?._itemGoalPlanner?.last?.goalId ?? null,
           }])),
           damage: damage.splice(0),
         }) + "\n");
