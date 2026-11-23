@@ -29,13 +29,16 @@
 // and older ones no decision time. S&D matches also write `world.jsonl`:
 // every player's position, health, and fire button, and the bomb, ten
 // times a second, with each TypeScript bot's brain state and strategy and
-// the server's damage events since the last sample.
+// the server's damage events since the last sample. With --moves and
+// --traces, every mode also writes `moves.jsonl`: each player's position,
+// velocity, grounded, crouch and slide state, and jump and crouch buttons,
+// ten times a second, for finding where each side's speed comes from.
 //
 //   node node_modules/vite-node/vite-node.mjs <SHAGADELIC>/tools/bench-washoi-milestone.mjs -- \
 //     --exe-a <shagadelic.exe> [--exe-b <shagadelic.exe>] --nav <navigation dir> \
 //     [--learned <learned routes dir>] [--modes duel,ffa,snd,amphi] [--blocks 2] [--block 4] \
 //     [--seconds 90] [--snd-seconds 240] [--difficulty hard] [--port 8700] \
-//     [--traces <dir>] [--out <results.jsonl>]
+//     [--traces <dir>] [--moves] [--out <results.jsonl>]
 //
 // The navigation directory holds each map's baked files (<map>.json,
 // .sight, .collision, .locations.json). A block plays --block matches of
@@ -54,7 +57,7 @@ const option = (name, fallback) => {
 const arms = [["a", option("exe-a")], ["b", option("exe-b")]].filter(([, exe]) => exe);
 const navigationDir = option("nav");
 if (arms.length === 0 || !navigationDir) {
-  throw new Error("Usage: bench-washoi-milestone.mjs --exe-a <exe> [--exe-b <exe>] --nav <dir> [--learned <dir>] [--modes duel,ffa,snd,amphi] [--blocks] [--block] [--seconds] [--snd-seconds] [--difficulty] [--port] [--traces <dir>] [--out <file>]");
+  throw new Error("Usage: bench-washoi-milestone.mjs --exe-a <exe> [--exe-b <exe>] --nav <dir> [--learned <dir>] [--modes duel,ffa,snd,amphi] [--blocks] [--block] [--seconds] [--snd-seconds] [--difficulty] [--port] [--traces <dir>] [--moves] [--out <file>]");
 }
 const learnedRoutesDir = option("learned", undefined);
 const modes = option("modes", "duel,ffa,snd").split(",");
@@ -94,6 +97,10 @@ const { signTest } = await load("src/games/fps/bot/AbStats.ts");
 
 // Fire and alt fire in a command's buttons (InputButtons).
 const FIRE_BUTTONS = (1 << 8) | (1 << 9);
+// Jump and crouch (InputButtons), for the movement log.
+const JUMP_BUTTON = 1 << 4;
+const CROUCH_BUTTON = 1 << 5;
+const moves = argv.includes("--moves");
 const wait = (ms) => new Promise((done) => setTimeout(done, ms));
 const bsps = {};
 for (const mode of modes) bsps[maps[mode]] ??= await loadBspCollision(maps[mode], "./game");
@@ -275,10 +282,40 @@ async function playMatch({ arm, exe, mode, index }) {
         }
       }, 100);
     }
+    // The movement log: what each player's speed comes from (see --moves).
+    const movesSampler = moves && traceDir ? setInterval(() => {
+      const world = sim?.getState?.();
+      const players = [...(world?.entitiesByType(EntityType.Player) ?? [])];
+      const round = (v) => Math.round(v);
+      appendFileSync(join(traceDir, "moves.jsonl"), JSON.stringify({
+        tick: world?.tick ?? null,
+        players: players.map((e) => {
+          const p = e.transform?.position;
+          // The server player's physics: velocity, grounded, and the
+          // movement profile's crouch and slide state.
+          const m = e.physics;
+          const v = m?.velocity;
+          const buttons = physics?.lastInput?.get(e.id)?.buttons ?? 0;
+          return {
+            player: `player_${e.ownerId}`,
+            side: rust.includes(`player_${e.ownerId}`) ? "rust" : "ts",
+            dead: !!e.health?.dead,
+            at: p ? [round(p.x), round(p.y), round(p.z)] : null,
+            vel: v ? [round(v.x), round(v.y), round(v.z)] : null,
+            grounded: !!m?.grounded,
+            sliding: !!m?.isSliding,
+            crouching: !!m?.isCrouching,
+            jump: (buttons & JUMP_BUTTON) !== 0,
+            crouch: (buttons & CROUCH_BUTTON) !== 0,
+          };
+        }),
+      }) + "\n");
+    }, 100) : null;
     const limit = Date.now() + (mode === "snd" ? sndSeconds : mode === "amphi" ? amphiSeconds : seconds) * 1000;
     while (Date.now() < limit && !(mode === "amphi" && state.phase === MatchPhase.PostGame)) await wait(500);
     if (sampler) clearInterval(sampler);
     if (amphiSampler) clearInterval(amphiSampler);
+    if (movesSampler) clearInterval(movesSampler);
 
     // The server keys its scores by number; clients see `player_<n>`.
     const key = (id) => {
@@ -323,7 +360,7 @@ function traceStats(dirs) {
   const movers = {};
   for (const dir of dirs) {
     if (!existsSync(dir)) continue;
-    for (const file of readdirSync(dir).filter((f) => f.endsWith(".jsonl") && f !== "world.jsonl")) {
+    for (const file of readdirSync(dir).filter((f) => f.endsWith(".jsonl") && f !== "world.jsonl" && f !== "moves.jsonl")) {
       for (const line of readFileSync(join(dir, file), "utf8").split("\n")) {
         if (!line) continue;
         let record;
