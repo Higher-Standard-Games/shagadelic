@@ -21,7 +21,9 @@
 // decisions at 375 u/s or more, the movers that steered, the unstick share,
 // the share of fighting decisions that fired, and decision-time percentiles
 // from `decide_micros`. Traces from builds before ca0754d record no firing,
-// and older ones no decision time.
+// and older ones no decision time. S&D matches also write `world.jsonl`:
+// every player's position, health, and fire button, and the bomb, ten
+// times a second.
 //
 //   node node_modules/vite-node/vite-node.mjs <SHAGADELIC>/tools/bench-washoi-milestone.mjs -- \
 //     --exe-a <shagadelic.exe> [--exe-b <shagadelic.exe>] --nav <navigation dir> \
@@ -81,6 +83,8 @@ const { MatchPhase } = await load("src/shared/server/gametype/index.ts");
 const { EntityType } = await load("src/engine/server/ecs/types.ts");
 const { signTest } = await load("src/games/fps/bot/AbStats.ts");
 
+// Fire and alt fire in a command's buttons (InputButtons).
+const FIRE_BUTTONS = (1 << 8) | (1 << 9);
 const wait = (ms) => new Promise((done) => setTimeout(done, ms));
 const bsps = {};
 for (const mode of modes) bsps[maps[mode]] ??= await loadBspCollision(maps[mode], "./game");
@@ -150,6 +154,7 @@ async function playMatch({ arm, exe, mode, index }) {
 
     const tsIds = ts.map((bot) => String(bot._gameState?.selfPlayerId));
     const sim = server.simulation ?? server._simulation;
+    const physics = server.getPhysicsSystem?.();
     const snd = { rounds: [], plants: { rust: 0, ts: 0 }, carries: { rust: 0, ts: 0 }, carrierDeaths: { rust: 0, ts: 0 } };
     let lastResult = null;
     let carrier = null;
@@ -167,10 +172,11 @@ async function playMatch({ arm, exe, mode, index }) {
         const entity = players.find((e) => e.id === id);
         return entity ? { side: rust.includes(`player_${entity.ownerId}`) ? "rust" : "ts", dead: !!entity.health?.dead } : null;
       };
-      if (bomb?.carrierId != null && bomb.carrierId !== carrier) {
+      // A carry starts with a living carrier. The bomb can stay with a dead
+      // one for a few samples, which counted a carry and a death each.
+      if (bomb?.carrierId != null && bomb.carrierId !== carrier && owner(bomb.carrierId)?.dead === false) {
         carrier = bomb.carrierId;
-        const who = owner(carrier);
-        if (who) snd.carries[who.side]++;
+        snd.carries[owner(carrier).side]++;
       }
       if (carrier != null) {
         const who = owner(carrier);
@@ -185,6 +191,27 @@ async function playMatch({ arm, exe, mode, index }) {
         snd.plants[attackers === rustTeam ? "rust" : "ts"]++;
       }
       armed = nowArmed;
+      // The S&D world log: every player and the bomb each sample, for
+      // finding where carriers die and where defenders hold.
+      if (traceDir) {
+        const world = sim?.getState?.();
+        const at = (p) => (p ? [Math.round(p.x), Math.round(p.y), Math.round(p.z)] : null);
+        appendFileSync(join(traceDir, "world.jsonl"), JSON.stringify({
+          tick: world?.tick ?? null,
+          round: gametype.getRoundState?.() ?? null,
+          rustAttack: (gametype.attackers ?? null) === rustTeam,
+          bomb: bomb ? { phase: bomb.phase, at: at(bomb.position), carrier: bomb.carrierId, site: bomb.siteId } : null,
+          players: players.map((e) => ({
+            id: e.id,
+            player: `player_${e.ownerId}`,
+            side: rust.includes(`player_${e.ownerId}`) ? "rust" : "ts",
+            at: at(e.transform?.position),
+            hp: e.health?.health ?? null,
+            dead: !!e.health?.dead,
+            fire: ((physics?.lastInput?.get(e.id)?.buttons ?? 0) & FIRE_BUTTONS) !== 0,
+          })),
+        }) + "\n");
+      }
     }, 100) : null;
     await wait((mode === "snd" ? sndSeconds : seconds) * 1000);
     if (sampler) clearInterval(sampler);
@@ -225,7 +252,7 @@ function traceStats(dirs) {
   const movers = {};
   for (const dir of dirs) {
     if (!existsSync(dir)) continue;
-    for (const file of readdirSync(dir).filter((f) => f.endsWith(".jsonl"))) {
+    for (const file of readdirSync(dir).filter((f) => f.endsWith(".jsonl") && f !== "world.jsonl")) {
       for (const line of readFileSync(join(dir, file), "utf8").split("\n")) {
         if (!line) continue;
         let record;
