@@ -23,7 +23,8 @@
 // from `decide_micros`. Traces from builds before ca0754d record no firing,
 // and older ones no decision time. S&D matches also write `world.jsonl`:
 // every player's position, health, and fire button, and the bomb, ten
-// times a second.
+// times a second, with each TypeScript bot's brain state and strategy and
+// the server's damage events since the last sample.
 //
 //   node node_modules/vite-node/vite-node.mjs <SHAGADELIC>/tools/bench-washoi-milestone.mjs -- \
 //     --exe-a <shagadelic.exe> [--exe-b <shagadelic.exe>] --nav <navigation dir> \
@@ -155,6 +156,20 @@ async function playMatch({ arm, exe, mode, index }) {
     const tsIds = ts.map((bot) => String(bot._gameState?.selfPlayerId));
     const sim = server.simulation ?? server._simulation;
     const physics = server.getPhysicsSystem?.();
+    // Server damage for the S&D world log: the combat system's merged
+    // events, copied as snapshot building clears them.
+    const combat = server.combatSystem;
+    const damage = [];
+    if (mode === "snd" && traceDir && combat?.clearProcessedDamage) {
+      const clear = combat.clearProcessedDamage.bind(combat);
+      combat.clearProcessedDamage = () => {
+        const tick = sim?.getState?.()?.tick ?? null;
+        for (const d of combat.processedDamage ?? []) {
+          damage.push({ tick, victim: d.victimId, attacker: d.attackerId ?? null, damage: d.damage, type: d.damageType, location: d.hitLocation });
+        }
+        clear();
+      };
+    }
     const snd = { rounds: [], plants: { rust: 0, ts: 0 }, carries: { rust: 0, ts: 0 }, carrierDeaths: { rust: 0, ts: 0 } };
     let lastResult = null;
     let carrier = null;
@@ -210,6 +225,12 @@ async function playMatch({ arm, exe, mode, index }) {
             dead: !!e.health?.dead,
             fire: ((physics?.lastInput?.get(e.id)?.buttons ?? 0) & FIRE_BUTTONS) !== 0,
           })),
+          // Each TypeScript bot's brain state, and its strategy with the reason.
+          brains: Object.fromEntries(ts.map((bot) => [String(bot._gameState?.selfPlayerId), {
+            state: bot.brainState ?? null,
+            strategy: bot._brain?.strategyExplain ?? bot.strategyId ?? null,
+          }])),
+          damage: damage.splice(0),
         }) + "\n");
       }
     }, 100) : null;
