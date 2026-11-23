@@ -6,8 +6,8 @@ use shagger_shared::net::game_state::{Vec3, Velocity};
 
 use crate::games::washoi::agents::player::navigation::traversal::{Outcome, Traversal};
 use crate::games::washoi::agents::player::navigation::{
-    MAX_HEIGHT_DELTA, PlayerInput, Route, WashoiNavigation, horizontal_distance, local_walk,
-    sprint_on_long_legs,
+    MAX_HEIGHT_DELTA, PlayerInput, Route, WashoiNavigation, horizontal_distance,
+    jump_up_to_waypoint, local_walk, sprint_on_long_legs,
 };
 use crate::games::washoi::{Difficulty, Sight, agents::player::strategy::goals::OwnVitals};
 
@@ -514,6 +514,7 @@ impl RouteFollower {
         // Roaming walks sprint as objective walks do. Live, the Rust bot
         // topped out near 330 u/s while the TypeScript bot ran at 380 to 430.
         sprint_on_long_legs(&mut input, route, *next, position, velocity);
+        jump_up_to_waypoint(&mut input, route, *next, position, velocity);
         if *next > reached {
             self.anchor = Some(route.waypoints[*next - 1]);
         }

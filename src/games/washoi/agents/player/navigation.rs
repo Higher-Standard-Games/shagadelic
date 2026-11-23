@@ -80,6 +80,7 @@ impl ObjectiveWalk {
             self.arrival,
         );
         sprint_on_long_legs(&mut input, &self.route, self.next, position, velocity);
+        jump_up_to_waypoint(&mut input, &self.route, self.next, position, velocity);
         input
     }
 
@@ -623,6 +624,47 @@ fn sprint_on_long_legs(
     }
 }
 
+// Washoi `shared/server/simulation/physics/constants.ts` STEP_HEIGHT is 18:
+// a rise past this is no step.
+const JUMP_UP_RISE: f64 = 20.0;
+// A standing jump clears about 45, and the landing steps up 18 more.
+const JUMP_UP_MAX: f64 = 64.0;
+const JUMP_UP_RADIUS: f64 = 96.0;
+// Held at the lip: a bot running up stairs is faster than this.
+const JUMP_UP_SPEED: f64 = 160.0;
+const JUMP: u16 = 1 << 4;
+
+/// Jump onto a waypoint above step height that the walk is held under, as
+/// TypeScript `BotNavigator` jumps a "jump" step when grounded within 180 of
+/// it. The bake keeps unvalidated jump links out of the graph, but a walk
+/// link round corners can still climb a lip: on snd1 every way west from
+/// site 1 meets the platform 39 above the floor, and walks stood at its
+/// face. Only up: never on a drop, and not under a recorded maneuver.
+fn jump_up_to_waypoint(
+    input: &mut PlayerInput,
+    route: &Route,
+    next: usize,
+    position: Vec3,
+    velocity: Option<Velocity>,
+) {
+    let Some(&waypoint) = route.waypoints.get(next) else {
+        return;
+    };
+    let rise = waypoint[1] - position.y;
+    let held = velocity.is_some_and(|velocity| {
+        velocity.grounded && velocity.linear.x.hypot(velocity.linear.z) < JUMP_UP_SPEED
+    });
+    if input.direction != [0.0; 3]
+        && held
+        && route.maneuver_at(next).is_none()
+        && rise > JUMP_UP_RISE
+        && rise <= JUMP_UP_MAX
+        && horizontal_distance(position, waypoint) <= JUMP_UP_RADIUS
+    {
+        input.buttons |= JUMP;
+    }
+}
+
 /// A short connector on the present floor. The sight geometry supplies
 /// clearance and support samples, while the game server runs player physics.
 pub(in crate::games::washoi) fn local_walk(sight: &Sight, from: Vec3, to: Vec3) -> bool {
@@ -696,7 +738,7 @@ mod tests {
             r#"{"map":"stairs","graph":{
                 "bsp_sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
                 "nodes":[[0,0,0],[256,128,0],[400,128,0]],
-                "edges":[[0,1,[[96,48,0],[160,80,0]]],[1,2],[2,1],[1,0]],
+                "edges":[[0,1,[[96,24,0],[160,56,0]]],[1,2],[2,1],[1,0]],
                 "entries":[0],"goals":[2]
             }}"#,
         )
@@ -871,6 +913,99 @@ mod tests {
             walk.steer(Vec3::new(240.0, 0.0, 0.0), grounded).buttons & SPRINT,
             0
         );
+    }
+
+    #[test]
+    fn walk_corners_are_lifted_to_standing_height_and_a_lip_is_jumped() {
+        // snd1's link from node 66 on the platform down to node 16 on the
+        // floor, as baked: nodes at standing height, corners on the floor.
+        let map: WashoiNavigation = serde_json::from_str(
+            r#"{"map":"test","graph":{
+                "bsp_sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                "nodes":[[1584,64,48],[1736,-5,64]],
+                "edges":[[0,1,[[1648,9.3,48],[1680,-30.7,48]]],[1,0,[[1662.6,9.3,9.4]]]],
+                "entries":[0,1],"goals":[0,1]
+            }}"#,
+        )
+        .unwrap();
+        let down = map
+            .objective_walk(
+                Vec3::new(1584.0, 64.0, 48.0),
+                Vec3::new(1736.0, -5.0, 64.0),
+                16.0,
+                None,
+                None,
+            )
+            .unwrap();
+        // The corner at the foot is on node 16's level, not 24 below it.
+        let foot = down
+            .route
+            .waypoints
+            .iter()
+            .find(|p| p[0] == 1680.0)
+            .unwrap();
+        assert!((foot[1] - -6.7).abs() < 1e-9);
+        let up = map
+            .objective_walk(
+                Vec3::new(1736.0, -5.0, 64.0),
+                Vec3::new(1584.0, 64.0, 48.0),
+                16.0,
+                None,
+                None,
+            )
+            .unwrap();
+        let lip = up
+            .route
+            .waypoints
+            .iter()
+            .position(|p| p[0] == 1662.6)
+            .unwrap();
+        assert!((up.route.waypoints[lip][1] - 33.3).abs() < 1e-9);
+
+        let held = |speed: f64| {
+            Some(Velocity {
+                linear: Vec3::new(speed, 0.0, 0.0),
+                grounded: true,
+                ..Velocity::default()
+            })
+        };
+        let jumps = |next: usize, at: Vec3, velocity: Option<Velocity>| {
+            let mut input = PlayerInput {
+                direction: [0.0, 0.0, -1.0],
+                ..PlayerInput::default()
+            };
+            jump_up_to_waypoint(&mut input, &up.route, next, at, velocity);
+            input.buttons & JUMP != 0
+        };
+        // Held under the lip, 39 below it: jump.
+        let under = Vec3::new(1664.0, -6.0, 48.0);
+        assert!(jumps(lip, under, held(0.0)));
+        // Running up to it, or in the air, or far off: no jump yet.
+        assert!(!jumps(lip, under, held(300.0)));
+        assert!(!jumps(lip, under, None));
+        assert!(!jumps(lip, Vec3::new(1664.0, -6.0, 200.0), held(0.0)));
+        // A step, or a rise no jump clears: no jump.
+        assert!(!jumps(lip, Vec3::new(1664.0, 20.0, 48.0), held(0.0)));
+        assert!(!jumps(lip, Vec3::new(1664.0, -40.0, 48.0), held(0.0)));
+        // Down a ledge, never.
+        let foot_at = down
+            .route
+            .waypoints
+            .iter()
+            .position(|p| p[0] == 1680.0)
+            .unwrap();
+        let mut input = PlayerInput {
+            direction: [1.0, 0.0, 0.0],
+            ..PlayerInput::default()
+        };
+        jump_up_to_waypoint(
+            &mut input,
+            &down.route,
+            foot_at,
+            Vec3::new(1650.0, 33.0, 48.0),
+            held(0.0),
+        );
+        assert_eq!(input.buttons & JUMP, 0);
     }
 
     #[test]
@@ -1177,7 +1312,7 @@ mod tests {
             "map":"test","graph":{
                 "bsp_sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
                 "nodes":[[0,0,0],[400,0,400]],
-                "edges":[[0,1,[[200,0,0],[400,0,200]]],[1,0]],"entries":[0],"goals":[0,1]
+                "edges":[[0,1,[[200,-24,0],[400,-24,200]]],[1,0]],"entries":[0],"goals":[0,1]
             }
         }"#,
         )

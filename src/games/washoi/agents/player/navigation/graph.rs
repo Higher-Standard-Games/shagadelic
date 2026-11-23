@@ -23,7 +23,14 @@ const MAX_CORNERS: usize = 32;
 /// How far a bot off the graph looks for a node in clear view.
 const FAR_RADIUS: f64 = 1024.0;
 
-/// Intermediate points of a walk edge, from the TypeScript nav cache `via`.
+/// The bake lifts floor and item nodes by SHAG's `STANDING_LIFT` to the
+/// standing origin (`BotNavGraph.walkOrigin`), but writes an edge's `via`
+/// as the cache has it, on the floor. Corners are lifted by this on load so
+/// a walk compares the bot's origin with points at the same height.
+const STANDING_LIFT: f64 = 24.0;
+
+/// Intermediate points of a walk edge, from the TypeScript nav cache `via`,
+/// at standing height.
 type Corners = BTreeMap<(usize, usize), Vec<[f64; 3]>>;
 type Maneuvers = BTreeMap<(usize, usize), Maneuver>;
 /// A walk edge a bot stands on: how far off it, the edge, and the rest of
@@ -704,7 +711,11 @@ impl WalkGraph {
             neighbors[from].push(to);
             if let Some(via) = via.filter(|via| !via.is_empty()) {
                 // The first duplicate edge decides its corners.
-                corners.entry((from, to)).or_insert_with(|| via.clone());
+                corners.entry((from, to)).or_insert_with(|| {
+                    via.iter()
+                        .map(|&[x, y, z]| [x, y + STANDING_LIFT, z])
+                        .collect()
+                });
             }
         }
         let mut maneuvers = Maneuvers::new();
