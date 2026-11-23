@@ -72,7 +72,8 @@ pub struct DecisionTrace {
     pub decide_micros: u64,
     /// Which part of the bot set the movement: `route`, `order`,
     /// `traversal`, `strafe`, `order_strafe`, `peek`, `climb`, `dodge`,
-    /// `fade`, `escape`, `chase`, `hunt`, `hold`, `lunge`, or `unstick`.
+    /// `fade`, `escape`, `chase`, `hunt`, `hold`, `lunge`, `unstick`,
+    /// `pad_ride`, `climb_jump`, or `wall_jump`.
     pub mover: &'static str,
     /// An enemy in sight this decision.
     pub engaged: bool,
@@ -80,4 +81,7 @@ pub struct DecisionTrace {
     /// The aim gate adds and holds fire as commands are paced out, after
     /// the decision plans them, so the planned input alone never shows it.
     pub firing: bool,
+    /// Clearance turned the heading round a wall, ledge, or trigger
+    /// (`navigation::clearance`), as TypeScript `BotSteering.steered`.
+    pub steered: bool,
 }

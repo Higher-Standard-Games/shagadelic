@@ -463,7 +463,7 @@ fn strafe_gain_angle(speed: f64) -> f64 {
 
 /// `sideTurnAngle`: a side key alone, nearly square to the velocity, turns
 /// it fast without losing speed.
-fn side_turn_angle(speed: f64) -> f64 {
+pub(in crate::games::washoi) fn side_turn_angle(speed: f64) -> f64 {
     let step = SIDE_ACCEL * accel_falloff(speed) / TICK_RATE;
     let along = MAX_AIR_SPEED * (1.0 - step).max(0.0);
     (along / speed.max(1.0)).clamp(-1.0, 1.0).acos()

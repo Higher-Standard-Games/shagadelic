@@ -1,3 +1,4 @@
+pub(in crate::games::washoi) mod clearance;
 pub(in crate::games::washoi) mod flying_start;
 mod follower;
 mod graph;
@@ -8,6 +9,7 @@ pub(in crate::games::washoi) mod liquid;
 pub(in crate::games::washoi) mod rollout;
 pub(in crate::games::washoi) mod slide;
 mod traversal;
+pub(in crate::games::washoi) mod tricks;
 pub(in crate::games::washoi) mod unstick;
 
 use std::{

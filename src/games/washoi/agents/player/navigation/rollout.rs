@@ -11,7 +11,9 @@ use shagger_shared::{
     network::systems::movement::movement_profile::{MovementInput, ViewAngles},
     server::simulation::types::Vec3 as SimVec3,
 };
-use washoi_movement::simulation::movement_profile::{DEFAULT_FPS_MOVEMENT_CONFIG, MovementProfile};
+use washoi_movement::simulation::movement_profile::{
+    DEFAULT_FPS_MOVEMENT_CONFIG, MovementProfile, MovementProfileState,
+};
 
 use crate::games::washoi::hosting::net::protocol::PlayerInput;
 
@@ -82,6 +84,29 @@ impl Rollout {
             velocity,
             tick: 0,
         }
+    }
+
+    /// From `position` and `velocity` with the game's own profile, wall jumps
+    /// and ledge grabs on and no trigger volumes, as `BotVisionTracer.rollout`
+    /// builds it to prove a climb or a wall jump. Its first tick is tick 1.
+    pub(in crate::games::washoi) fn with_tricks(
+        position: Vec3,
+        velocity: Vec3,
+        grounded: bool,
+    ) -> Self {
+        let mut profile = MovementProfile::new(DEFAULT_FPS_MOVEMENT_CONFIG);
+        profile.reset_physics_state(grounded);
+        Self {
+            profile,
+            position,
+            velocity,
+            tick: 1,
+        }
+    }
+
+    /// What the movement carries between ticks besides position and velocity.
+    pub(in crate::games::washoi) fn state(&self) -> MovementProfileState {
+        self.profile.save_state()
     }
 
     /// One tick of `input`, as the server applies it.

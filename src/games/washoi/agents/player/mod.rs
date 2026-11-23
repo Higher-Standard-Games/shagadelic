@@ -23,7 +23,7 @@ use shagger_shared::collision::collision_world::CollisionWorld;
 
 use crate::games::washoi::agents::player::callouts::{Callouts, Kind as CallKind, Locations};
 use crate::games::washoi::agents::player::chat::{Chat, Frag};
-use crate::games::washoi::agents::player::combat::aim::{AimController, View};
+use crate::games::washoi::agents::player::combat::aim::{AimController, View, wrap};
 use crate::games::washoi::agents::player::combat::lunge::{self, Lunge, Mark, Runner};
 use crate::games::washoi::agents::player::combat::mood::{BotMood, Mistake};
 use crate::games::washoi::agents::player::combat::safety;
@@ -36,10 +36,12 @@ use crate::games::washoi::agents::player::movement::strafe::{self, Body, CombatM
 use crate::games::washoi::agents::player::movement::territory::Territory;
 use crate::games::washoi::agents::player::navigation::{
     RouteFollower, RouteObservation,
-    hop::{HopChain, HopView},
+    clearance::{self, Clearance},
+    hop::{self, HopChain, HopView},
     ledge_slide::{self, LedgeJump, StartView},
     liquid::LiquidEscape,
     slide::{RouteSlide, SlideView},
+    tricks,
     unstick::{Unstick, UnstickView},
 };
 use crate::games::washoi::agents::player::strategy::candidates::{Candidate, GoalTarget};
@@ -64,6 +66,31 @@ use crate::games::washoi::{
 // `InputButtons` in `engine/network/components/InputComponent.ts`.
 const JUMP: u16 = 1 << 4;
 const CROUCH: u16 = 1 << 5;
+/// Rising faster than any jump, units/s: a jump pad has thrown the bot
+/// (`BotSteering.ts` `PAD_LAUNCH_SPEED`).
+/// Whether the ground probe turns the walk. Off: on `washoi_dm2` against
+/// the TypeScript bots, turning the walk lost frags in every variant tried
+/// (docs/research/WORK_SPLIT.md, steering benches 3 and 4). The probe still
+/// runs, for the climbs it finds blocked ground for.
+const STEER_GROUND: bool = false;
+const PAD_LAUNCH_SPEED: f64 = 450.0;
+/// A pad whose ride ended back on it starts no ride for this long, ticks.
+const PAD_REST_TICKS: u32 = 250;
+/// `BotSteering.ts` tricks: after a climbing jump, forward is held toward
+/// the target this long for the ledge grab, ticks. A target this much
+/// higher, at most this far off, behind something in the way (under this
+/// much clear run) is worth a climb. Checks run at most this often, ticks,
+/// since each runs the movement forward. A wall this near the hull is one
+/// to wall jump from, and a wall jump is taken when it ends this much
+/// nearer the target than not jumping.
+const CLIMB_HOLD_TICKS: u32 = 90;
+const CLIMB_RISE: f64 = 30.0;
+const CLIMB_REACH: f64 = 500.0;
+const CLIMB_BLOCKED: f64 = 0.7;
+const TRICK_CHECK_TICKS: u32 = 20;
+const WALL_JUMP_NEAR: f64 = 12.0;
+const WALL_JUMP_CHECK_TICKS: u32 = 6;
+const WALL_JUMP_GAIN: f64 = 96.0;
 const SPRINT: u16 = 1 << 6;
 /// `WILD_SHOT_OFFSET`: a wild shot opens fire this far to one side.
 const WILD_SHOT_OFFSET: f64 = 5.0 * std::f64::consts::PI / 180.0;
@@ -132,6 +159,28 @@ pub struct BotPlayer {
     /// Whether the last decision had a fight, to see fights start and end.
     fighting: bool,
     unstick: Unstick,
+    /// Keeps the feet clear of walls, corners, and ledges (`navigation::clearance`).
+    clearance: Clearance,
+    /// Whether clearance turned this decision's heading round something.
+    steered: bool,
+    /// Where a jump pad that threw the bot unplanned throws it, flown to
+    /// until it is down again (TypeScript `BotLife.padRide`).
+    pad_ride: Option<(usize, [f64; 3])>,
+    /// A pad whose ride ended back on it, and the tick it may start one
+    /// again: off it, the bot's own steering finds the way.
+    pad_rest: Option<(usize, u32)>,
+    /// How clear the way ahead ran on the last ground steer, 0 to 1.
+    clear_ahead: f64,
+    /// A climbing jump under way: forward to its target until this tick,
+    /// for the ledge grab. The next tick a climb or wall jump may be checked
+    /// for, since each check runs the movement forward. A wall jump waiting
+    /// for a fresh press, and whether the last decision held jump
+    /// (TypeScript `BotLife.climb`, `trickCheckTick`, `wallJumpPress`, and
+    /// `lastJumpHeld`).
+    climb_jump: Option<(super::super::Vec3, u32)>,
+    trick_check_tick: u32,
+    wall_jump_press: bool,
+    last_jump_held: bool,
     liquid: LiquidEscape,
     slide: RouteSlide,
     hop: HopChain,
@@ -249,6 +298,15 @@ impl BotPlayer {
             fired: false,
             fighting: false,
             unstick: Unstick::default(),
+            clearance: Clearance::default(),
+            steered: false,
+            pad_ride: None,
+            pad_rest: None,
+            clear_ahead: 1.0,
+            climb_jump: None,
+            trick_check_tick: 0,
+            wall_jump_press: false,
+            last_jump_held: false,
             liquid: LiquidEscape::default(),
             planner: Planner::new(Difficulty::default().mistake_rate()),
             hunch: None,
@@ -633,6 +691,9 @@ impl BotPlayer {
         if self.planned_input.direction != before {
             self.mover = "unstick";
         }
+        self.keep_clear(world, position);
+        self.try_tricks(world, position);
+        self.last_jump_held = self.planned_input.buttons & JUMP != 0;
         if self.tracing {
             let mut record = self.record(world, position);
             record.decide_micros = started.map_or(0, |started| {
@@ -723,11 +784,245 @@ impl BotPlayer {
                 None
             },
             decide_micros: 0,
+            steered: self.steered,
             hunch: if self.arbitrated {
                 self.planner.hunch_pick().map(str::to_owned)
             } else {
                 None
             },
+        }
+    }
+
+    /// `BotSteering.steer` on the ground: turn the move onto the nearest
+    /// heading the map leaves clear (`navigation::clearance`). TypeScript
+    /// turns only its feet, sent apart from the view, which no client can
+    /// do. Out of a fight the view turns with the feet, as a person's
+    /// does, so the keys keep the run; in a fight it stays on the enemy and
+    /// only the keys turn. Not on a line held exactly.
+    fn keep_clear(&mut self, world: &Observation, position: Option<super::super::Vec3>) {
+        self.steered = false;
+        self.clear_ahead = 1.0;
+        if self.respawn_at.is_some() {
+            self.pad_ride = None;
+        }
+        if self.exact_view || self.respawn_at.is_some() {
+            return;
+        }
+        let [x, _, z] = self.planned_input.direction;
+        let run = x.hypot(z);
+        let (Some(position), Some(collision), Some(velocity)) = (
+            position,
+            self.collision.as_deref_mut(),
+            world.body(&self.entity_id).and_then(|body| body.velocity),
+        ) else {
+            return;
+        };
+        if velocity.grounded {
+            // Landed back on the pad that threw it: rest that pad a while.
+            if let Some((pad, _)) = self.pad_ride.take()
+                && clearance::on_pad(&self.triggers, pad, position)
+            {
+                self.pad_rest = Some((pad, world.tick + PAD_REST_TICKS));
+            }
+        }
+        if run < 0.01 {
+            return;
+        }
+        let calm = self.engagement.is_none() && self.chasing.is_none();
+        if !velocity.grounded {
+            // Thrown by a pad with no traversal flying it (one the route did
+            // not mean to use, or one whose traversal gave up): fly on to
+            // where it throws, until down. A bot that steers back toward its
+            // own way falls onto the pad and is thrown again.
+            if self.pad_ride.is_none() && velocity.linear.y > PAD_LAUNCH_SPEED {
+                let resting = |pad: usize| {
+                    self.pad_rest
+                        .is_some_and(|(rested, until)| rested == pad && world.tick < until)
+                };
+                self.pad_ride = clearance::pad_under(&self.triggers, position)
+                    .filter(|(pad, _)| !resting(*pad));
+            }
+            if let Some((_, dest)) = self.pad_ride {
+                let yaw = (dest[0] - position.x).atan2(dest[2] - position.z);
+                self.planned_input.direction = [yaw.sin(), 0.0, yaw.cos()];
+                self.planned_input.buttons &= FIRE | ALT_FIRE | CROUCH;
+                if calm {
+                    self.planned_input.yaw = yaw;
+                }
+                self.mover = "pad_ride";
+                return;
+            }
+            // `steerAir`: about to fly into a wall, a side key alone toward
+            // the open side, at the angle that turns the flight without
+            // losing speed. Out of a fight the view looks a quarter turn off
+            // the key, along the flight, so the key is the side key alone.
+            let side = clearance::wall_ahead_side(collision, position, velocity.linear);
+            if side == 0.0 {
+                return;
+            }
+            self.steered = true;
+            let flight = velocity.linear;
+            let wish =
+                flight.x.atan2(flight.z) + side * hop::side_turn_angle(flight.x.hypot(flight.z));
+            self.planned_input.direction = [wish.sin(), 0.0, wish.cos()];
+            self.planned_input.buttons &= JUMP | FIRE | ALT_FIRE | CROUCH;
+            if calm {
+                self.planned_input.yaw = wrap(wish - side * std::f64::consts::FRAC_PI_2);
+            }
+            return;
+        }
+        // A fight's movement is its own: strafing and dodging already
+        // answer the enemy, and turning them for walls cost frags.
+        if self.engagement.is_some() {
+            return;
+        }
+        let wanted = x.atan2(z);
+        // Route walks know the point they make for. Other movers look the
+        // full distance ahead.
+        let walk = self
+            .navigation
+            .as_deref()
+            .filter(|_| self.mover == "route")
+            .and_then(|navigation| self.route.walk_target(navigation));
+        let request = clearance::Request {
+            tick: world.tick,
+            position,
+            velocity: velocity.linear,
+            grounded: velocity.grounded,
+            yaw: wanted,
+            target_distance: walk
+                .map(|(target, _)| (target.x - position.x).hypot(target.z - position.z)),
+            dropping: walk
+                .is_some_and(|(target, _)| target.y < position.y - clearance::STEER_DROP_HEIGHT),
+            through_triggers: walk.is_some_and(|(_, through)| through),
+            // A graph walk runs edges baked walkable with clearance, as
+            // TypeScript's route lines are built clear of the walls: the
+            // hull alone, and the smaller lean, so the walk keeps its edge.
+            on_line: walk.is_some(),
+        };
+        let Some(steered) = self.clearance.steer(collision, &self.triggers, &request) else {
+            return;
+        };
+        self.clear_ahead = steered.clear;
+        if !STEER_GROUND {
+            return;
+        }
+        let turn = wrap(steered.yaw - wanted);
+        if turn == 0.0 {
+            return;
+        }
+        self.steered = steered.turned;
+        let yaw = wanted + turn;
+        self.planned_input.direction = [
+            yaw.sin() * run,
+            self.planned_input.direction[1],
+            yaw.cos() * run,
+        ];
+        if calm {
+            self.planned_input.yaw = wrap(self.planned_input.yaw + turn);
+        }
+    }
+
+    /// `BotSteering.tryTricks`: on the way to the point a route walk makes
+    /// for, a jump onto what stands in the way when the point is above it,
+    /// and a wall jump when one ends nearer the point than falling on. Each
+    /// is proven first by running the movement forward
+    /// (`navigation::tricks`). Navigation only: a fight moves for the fight.
+    fn try_tricks(&mut self, world: &Observation, position: Option<super::super::Vec3>) {
+        let navigating = matches!(self.mover, "route" | "chase" | "hunt" | "fade" | "escape");
+        let (Some(position), Some(velocity), true, true) = (
+            position,
+            world.body(&self.entity_id).and_then(|body| body.velocity),
+            navigating && !self.exact_view && self.respawn_at.is_none(),
+            self.collision.is_some(),
+        ) else {
+            self.climb_jump = None;
+            self.wall_jump_press = false;
+            return;
+        };
+        let tick = world.tick;
+        let calm = self.engagement.is_none() && self.chasing.is_none();
+        let forward_to = |input: &mut PlayerInput, target: super::super::Vec3, jump: bool| {
+            let yaw = (target.x - position.x).atan2(target.z - position.z);
+            input.direction = [yaw.sin(), 0.0, yaw.cos()];
+            input.buttons &= !CROUCH;
+            if jump {
+                input.buttons |= JUMP;
+            }
+            if calm {
+                input.yaw = yaw;
+            }
+        };
+        // A climb under way: forward to its target until down again.
+        if let Some((target, until)) = self.climb_jump {
+            if tick > until || (velocity.grounded && tick + CLIMB_HOLD_TICKS > until + 10) {
+                self.climb_jump = None;
+            } else if !velocity.grounded {
+                forward_to(&mut self.planned_input, target, false);
+                return;
+            }
+        }
+        let Some((target, _)) = self
+            .navigation
+            .as_deref()
+            .filter(|_| self.mover == "route")
+            .and_then(|navigation| self.route.walk_target(navigation))
+        else {
+            return;
+        };
+        let Some(collision) = self.collision.as_deref_mut() else {
+            return;
+        };
+        let toward = (target.x - position.x).atan2(target.z - position.z);
+        if velocity.grounded {
+            self.wall_jump_press = false;
+            let rise = target.y - position.y;
+            let far = (target.x - position.x).hypot(target.z - position.z);
+            if rise < CLIMB_RISE
+                || far > CLIMB_REACH
+                || self.clear_ahead >= CLIMB_BLOCKED
+                || tick < self.trick_check_tick
+            {
+                return;
+            }
+            self.trick_check_tick = tick + TRICK_CHECK_TICKS;
+            let Some(top) = tricks::climb_by_jump(collision, position, velocity.linear, toward)
+            else {
+                return;
+            };
+            if top.y < position.y + CLIMB_RISE {
+                return;
+            }
+            self.climb_jump = Some((target, tick + CLIMB_HOLD_TICKS));
+            self.mover = "climb_jump";
+            forward_to(&mut self.planned_input, target, true);
+            return;
+        }
+        // In the air beside a wall: press for a wall jump that ends nearer.
+        if self.wall_jump_press {
+            self.wall_jump_press = false;
+            self.mover = "wall_jump";
+            forward_to(&mut self.planned_input, target, true);
+            return;
+        }
+        if tick < self.trick_check_tick || !tricks::wall_within(collision, position, WALL_JUMP_NEAR)
+        {
+            return;
+        }
+        self.trick_check_tick = tick + WALL_JUMP_CHECK_TICKS;
+        let gain = tricks::wall_jump_gain(collision, position, velocity.linear, toward, target);
+        if gain.is_none_or(|gain| gain < WALL_JUMP_GAIN) {
+            return;
+        }
+        self.mover = "wall_jump";
+        // Jump held from the take-off would make this no fresh press: let go
+        // first.
+        if self.last_jump_held {
+            self.wall_jump_press = true;
+            forward_to(&mut self.planned_input, target, false);
+            self.planned_input.buttons &= !JUMP;
+        } else {
+            forward_to(&mut self.planned_input, target, true);
         }
     }
 

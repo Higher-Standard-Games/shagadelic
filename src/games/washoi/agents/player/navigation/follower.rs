@@ -305,6 +305,30 @@ impl RouteFollower {
             .then(|| dx.atan2(dz))
     }
 
+    /// The waypoint the walk makes for, and whether its leg leads into a
+    /// jump pad or teleporter, for steering (TypeScript
+    /// `BotSteering.target` and `routeUsesTrigger`). None on a maneuver.
+    pub(in crate::games::washoi) fn walk_target(
+        &self,
+        navigation: &WashoiNavigation,
+    ) -> Option<(Vec3, bool)> {
+        let active = self.active.as_ref()?;
+        if self.exact || active.traversal.is_some() {
+            return None;
+        }
+        let route = active.route.get(navigation);
+        let point = route.waypoints.get(active.next)?;
+        let trigger = |at: usize| {
+            route
+                .maneuver_at(at)
+                .is_some_and(super::traversal::Maneuver::uses_trigger)
+        };
+        Some((
+            Vec3::new(point[0], point[1], point[2]),
+            trigger(active.next) || trigger(active.next + 1),
+        ))
+    }
+
     pub(in crate::games::washoi) fn traversing(&self) -> bool {
         self.active
             .as_ref()

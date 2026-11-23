@@ -49,6 +49,11 @@ impl Maneuver {
         }
     }
 
+    /// Through a jump pad or teleporter, rather than a jump.
+    pub(in crate::games::washoi) fn uses_trigger(self) -> bool {
+        matches!(self, Self::Jumppad { .. } | Self::Teleporter { .. })
+    }
+
     /// A teleporter's exit origin and the view yaw it sets.
     pub(in crate::games::washoi) fn teleport_exit(self) -> Option<([f64; 3], f64)> {
         match self {
