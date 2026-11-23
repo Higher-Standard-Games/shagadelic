@@ -654,15 +654,31 @@ fn jump_up_to_waypoint(
     let held = velocity.is_some_and(|velocity| {
         velocity.grounded && velocity.linear.x.hypot(velocity.linear.z) < JUMP_UP_SPEED
     });
-    if input.direction != [0.0; 3]
-        && held
-        && route.maneuver_at(next).is_none()
-        && rise > JUMP_UP_RISE
-        && rise <= JUMP_UP_MAX
-        && horizontal_distance(position, waypoint) <= JUMP_UP_RADIUS
+    if !held
+        || route.maneuver_at(next).is_some()
+        || rise <= JUMP_UP_RISE
+        || rise > JUMP_UP_MAX
+        || horizontal_distance(position, waypoint) > JUMP_UP_RADIUS
     {
-        input.buttons |= JUMP;
+        return;
     }
+    // Right under the waypoint the walk stops, since it is not on this
+    // level. Jump on along the leg in, over the lip.
+    if input.direction == [0.0; 3] {
+        let from = if next == 0 {
+            route.entry
+        } else {
+            route.waypoints[next - 1]
+        };
+        let (x, z) = (waypoint[0] - from[0], waypoint[2] - from[2]);
+        let length = x.hypot(z);
+        if length < 1.0 {
+            return;
+        }
+        input.direction = [x / length, 0.0, z / length];
+        input.yaw = x.atan2(z);
+    }
+    input.buttons |= JUMP;
 }
 
 /// A short connector on the present floor. The sight geometry supplies
@@ -980,6 +996,18 @@ mod tests {
         // Held under the lip, 39 below it: jump.
         let under = Vec3::new(1664.0, -6.0, 48.0);
         assert!(jumps(lip, under, held(0.0)));
+        // Right under it, where the walk stops: jump on along the leg in.
+        let mut input = PlayerInput::default();
+        jump_up_to_waypoint(
+            &mut input,
+            &up.route,
+            lip,
+            Vec3::new(1663.0, -6.0, 9.0),
+            held(0.0),
+        );
+        assert_ne!(input.buttons & JUMP, 0);
+        let leg = (1662.6 - 1736.0_f64).atan2(9.4 - 64.0);
+        assert!((input.yaw - leg).abs() < 1e-9);
         // Running up to it, or in the air, or far off: no jump yet.
         assert!(!jumps(lip, under, held(300.0)));
         assert!(!jumps(lip, under, None));
