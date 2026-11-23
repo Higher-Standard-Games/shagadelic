@@ -14,9 +14,11 @@
 //! 400 u/s ground cap doesn't apply in the air, so strafe keys gain speed there.
 //!
 //! Deviations: only straight lanes, not chains bent along a held route line,
-//! and the walk to each landing's next lane comes from the route follower.
-//! Allies in the lane don't stop a chain yet. A chain is planned once per
-//! decision, so its keys hold for the decision's input ticks.
+//! and the walk to each landing's next lane comes from the route follower or
+//! the order's walk. An ally in the lane ahead stops a chain from starting, as
+//! `routeStrafeLane`'s `allyBlocksRoute` does, measured along the lane's
+//! heading for 600 units rather than to the route step's end. A chain is
+//! planned once per decision, so its keys hold for the decision's input ticks.
 
 use std::f64::consts::{FRAC_1_SQRT_2, FRAC_PI_2, FRAC_PI_4, PI};
 
@@ -57,6 +59,11 @@ const MAX_TICKS: u32 = 10 * 125;
 const RETRY_TICKS: u32 = 30;
 /// The least `strafeJumpSkill` that hops at all.
 const MIN_SKILL: f64 = 0.35;
+/// `ROUTE_STRAFE_ALLY_LOOKAHEAD` and `ROUTE_STRAFE_ALLY_RADIUS`: an ally this
+/// far along the lane and this close to its line blocks a chain's start.
+const ALLY_LOOKAHEAD: f64 = 600.0;
+const ALLY_RADIUS: f64 = 80.0;
+const ALLY_HEIGHT: f64 = 96.0;
 // `BotVisionTracer` probes.
 const HULL_HALF: f64 = 16.0;
 const AIR_LOOKAHEAD_SECONDS: f64 = 0.3;
@@ -96,6 +103,8 @@ pub(in crate::games::washoi) struct HopView<'a> {
     pub(in crate::games::washoi) view_yaw: f64,
     /// A fight or chase at the last decision. No chain starts in one.
     pub(in crate::games::washoi) fighting: bool,
+    /// Living teammates. None in the lane ahead may stand in a chain's way.
+    pub(in crate::games::washoi) allies: &'a [Vec3],
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -184,6 +193,9 @@ impl HopChain {
         let lane = view.lane?;
         // Already running along it, `ROUTE_STRAFE_MAX_VELOCITY_ERROR_RADIANS`.
         if normalize(heading(velocity, lane.yaw) - lane.yaw).abs() > FRAC_PI_4 {
+            return None;
+        }
+        if ally_in_lane(view.allies, view.position, lane.yaw) {
             return None;
         }
         let fallback = if self.next_side == 0.0 {
@@ -469,6 +481,21 @@ pub(in crate::games::washoi) fn side_turn_angle(speed: f64) -> f64 {
     (along / speed.max(1.0)).clamp(-1.0, 1.0).acos()
 }
 
+/// `allyBlocksRoute`: a living ally ahead along `yaw` from `position`, within
+/// `ALLY_LOOKAHEAD`, `ALLY_RADIUS` of the line, and `ALLY_HEIGHT` of the floor.
+fn ally_in_lane(allies: &[Vec3], position: Vec3, yaw: f64) -> bool {
+    let (sin, cos) = yaw.sin_cos();
+    allies.iter().any(|ally| {
+        let (dx, dz) = (ally.x - position.x, ally.z - position.z);
+        let along = dx * sin + dz * cos;
+        let lateral = (dx * cos - dz * sin).abs();
+        (ally.y - position.y).abs() <= ALLY_HEIGHT
+            && along > 0.0
+            && along < ALLY_LOOKAHEAD
+            && lateral < ALLY_RADIUS
+    })
+}
+
 /// Seconds in the air for a hop off flat ground.
 fn hop_seconds() -> f64 {
     JUMP_VELOCITY / GRAVITY
@@ -588,6 +615,7 @@ mod tests {
             skill: 0.7,
             view_yaw: 0.0,
             fighting: false,
+            allies: &[],
         }
     }
 
@@ -656,6 +684,34 @@ mod tests {
             .unwrap();
         assert_eq!(down.buttons, FORWARD | SPRINT);
         assert!(!chain.active());
+    }
+
+    #[test]
+    fn an_ally_in_the_lane_ahead_holds_the_chain_back() {
+        // On the line 300 ahead: no chain. Behind, 200 to the side, or a
+        // floor up: the chain starts.
+        let ahead = [Vec3::new(10.0, 0.0, 300.0)];
+        let blocked = HopView {
+            allies: &ahead,
+            ..view(0, 0.0, moving(400.0, true), Some(LANE))
+        };
+        assert!(HopChain::default().steer(&blocked, walk()).is_none());
+        for clear in [
+            Vec3::new(0.0, 0.0, -100.0),
+            Vec3::new(200.0, 0.0, 300.0),
+            Vec3::new(0.0, 200.0, 300.0),
+            Vec3::new(0.0, 0.0, 700.0),
+        ] {
+            let allies = [clear];
+            let view = HopView {
+                allies: &allies,
+                ..view(0, 0.0, moving(400.0, true), Some(LANE))
+            };
+            assert!(
+                HopChain::default().steer(&view, walk()).is_some(),
+                "{clear:?}"
+            );
+        }
     }
 
     #[test]

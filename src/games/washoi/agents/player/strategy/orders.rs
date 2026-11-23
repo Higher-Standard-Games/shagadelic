@@ -237,6 +237,12 @@ impl Orders {
         };
     }
 
+    /// The walk to the order's next point, while the order is walking rather
+    /// than holding, patrolling, or waiting to replan.
+    pub(in crate::games::washoi) fn walk(&self) -> Option<&ObjectiveWalk> {
+        self.walk.as_ref().map(|(_, walk)| walk)
+    }
+
     pub(in crate::games::washoi) fn input(
         &mut self,
         navigation: Option<&WashoiNavigation>,

@@ -73,6 +73,17 @@ const CROUCH: u16 = 1 << 5;
 /// (docs/research/WORK_SPLIT.md, steering benches 3 and 4). The probe still
 /// runs, for the climbs it finds blocked ground for.
 const STEER_GROUND: bool = false;
+
+/// Where the walk under way leaves room for a route trick: the lane for a
+/// strafe-jump chain, the heading of a lane to crouch-slide down, a drop for a
+/// ledge slide jump, and the item at the end of the walk's last leg.
+#[derive(Clone, Copy, Default)]
+struct TrickLanes {
+    hop: Option<navigation::hop::HopLane>,
+    slide: Option<f64>,
+    ledge: Option<super::super::Vec3>,
+    item: Option<navigation::slide::ItemLeg>,
+}
 const PAD_LAUNCH_SPEED: f64 = 450.0;
 /// A pad whose ride ended back on it starts no ride for this long, ticks.
 const PAD_REST_TICKS: u32 = 250;
@@ -1633,10 +1644,26 @@ impl BotPlayer {
             self.route.detach();
             self.planned_input = input;
             self.ordered = true;
-            return false;
+            // TypeScript runs an order as ITEM_RUN, whose walk takes the
+            // route's tricks like any other: lanes along the order's walk
+            // while it walks, none while it holds or patrols, so a trick
+            // under way finishes and none starts.
+            let sight = self.sight.as_deref();
+            let lanes = self
+                .orders
+                .walk()
+                .map_or_else(TrickLanes::default, |walk| TrickLanes {
+                    hop: walk.hop_lane(position, sight),
+                    slide: walk.slide_lane(position, sight),
+                    ledge: walk.ledge_leg(position),
+                    item: None,
+                });
+            let velocity = entity.velocity;
+            return self.route_tricks(world, now, position, velocity, lanes);
         }
         self.ordered = false;
-        if let Some(navigation) = &self.navigation {
+        if let Some(navigation) = self.navigation.clone() {
+            let navigation = navigation.as_ref();
             self.planned_input = PlayerInput::default();
             if self.respawn_at.is_none()
                 && let Some(position) = own.and_then(|entity| entity.position)
@@ -1671,112 +1698,23 @@ impl BotPlayer {
                     self.ledge.reset();
                     return true;
                 }
-                // A ledge slide jump under way owns the controls; each
-                // snapshot must match its rollout (`navigation::ledge_slide`).
-                if self.ledge.active() {
-                    match own.and_then(|entity| entity.velocity) {
-                        Some(velocity) => {
-                            self.ledge.check(
-                                world.tick,
-                                position,
-                                velocity.linear,
-                                velocity.grounded,
-                            );
-                        }
-                        None => self.ledge.abort(world.tick, true),
-                    }
-                    if self.ledge.active() {
-                        self.slide.reset();
-                        self.hop.reset();
-                        self.planned_input = PlayerInput::default();
-                        return true;
-                    }
-                }
-                // A strafe-jump chain under way owns the controls
-                // (`navigation::hop`).
-                let hop_view = HopView {
-                    tick: world.tick,
-                    position,
-                    velocity: own.and_then(|entity| entity.velocity),
-                    lane: self
+                let lanes = TrickLanes {
+                    hop: self
                         .route
                         .hop_lane(navigation, position, self.sight.as_deref()),
-                    sight: self.sight.as_deref(),
-                    skill: self.difficulty.strafe_jump_skill(),
-                    view_yaw: self
-                        .aim
-                        .current()
-                        .map_or(self.planned_input.yaw, |view| view.yaw),
-                    fighting: self.engagement.is_some() || self.chasing.is_some(),
+                    slide: self
+                        .route
+                        .slide_lane(navigation, position, self.sight.as_deref()),
+                    ledge: self.route.ledge_leg(navigation, position),
+                    item: self.route.item_leg(navigation),
                 };
-                if self.hop.active()
-                    && let Some(controls) = self.hop.steer(&hop_view, self.planned_input)
-                {
-                    self.slide.reset();
-                    self.planned_input = controls;
-                    return true;
-                }
-                // Running at slide speed toward a drop, slide off the ledge
-                // into a jump, when the rollout proves the landing. TypeScript
-                // tries it first of the route's tricks.
-                if let Some(velocity) = own.and_then(|entity| entity.velocity)
-                    && let Some(landing) = self.route.ledge_leg(navigation, position)
-                {
-                    let view = self.aim.current().unwrap_or(View {
-                        yaw: self.planned_input.yaw,
-                        pitch: self.planned_input.pitch,
-                    });
-                    let start = StartView {
-                        tick: world.tick,
-                        start: ledge_slide::Start {
-                            position,
-                            velocity: velocity.linear,
-                            grounded: velocity.grounded,
-                            sliding: velocity.is_sliding,
-                            yaw: view.yaw,
-                            pitch: view.pitch,
-                        },
-                        walk: self.planned_input,
-                        landing: Some(landing),
-                        skill: self.difficulty.strafe_jump_skill(),
-                        fighting: self.engagement.is_some() || self.chasing.is_some(),
-                        world: self
-                            .collision
-                            .as_deref_mut()
-                            .map(|world| world as &mut dyn CollisionWorld),
-                    };
-                    if self.ledge.try_start(start, now) {
-                        self.slide.reset();
-                        self.hop.reset();
-                        self.planned_input = PlayerInput::default();
-                        return true;
-                    }
-                }
-                // Fast down a straight, plain walk, crouch-slide
-                // (`navigation::slide`). A fight's movement replaces it.
-                let lane = self
-                    .route
-                    .slide_lane(navigation, position, self.sight.as_deref());
-                let item = self.route.item_leg(navigation);
-                self.planned_input = self.slide.filter(
-                    &SlideView {
-                        tick: world.tick,
-                        position,
-                        velocity: own.and_then(|entity| entity.velocity),
-                        lane,
-                        item,
-                        pickup_active: &world.pickup_active,
-                        allies: &self.allies,
-                        strafe_jump_skill: self.difficulty.strafe_jump_skill(),
-                        fighting: self.engagement.is_some() || self.chasing.is_some(),
-                    },
-                    self.planned_input,
-                );
-                // Then, as TypeScript tries them, a strafe-jump chain.
-                if !self.slide.active()
-                    && let Some(controls) = self.hop.steer(&hop_view, self.planned_input)
-                {
-                    self.planned_input = controls;
+                if self.route_tricks(
+                    world,
+                    now,
+                    position,
+                    own.and_then(|entity| entity.velocity),
+                    lanes,
+                ) {
                     return true;
                 }
                 let sight = self.sight.as_deref();
@@ -1798,6 +1736,121 @@ impl BotPlayer {
                     return true;
                 }
             }
+        }
+        false
+    }
+
+    /// The route's tricks, as TypeScript tries them on any walk whose movement
+    /// nobody holds (`StateMachineBrain` before `tryTricks`): a ledge slide
+    /// jump or strafe-jump chain under way, then a ledge slide jump, a
+    /// crouch-slide, and a strafe-jump chain, along `lanes`. True when a trick
+    /// owns the controls and the view.
+    fn route_tricks(
+        &mut self,
+        world: &Observation,
+        now: SimTime,
+        position: super::super::Vec3,
+        velocity: Option<shagger_shared::net::game_state::Velocity>,
+        lanes: TrickLanes,
+    ) -> bool {
+        // A ledge slide jump under way owns the controls; each
+        // snapshot must match its rollout (`navigation::ledge_slide`).
+        if self.ledge.active() {
+            match velocity {
+                Some(velocity) => {
+                    self.ledge
+                        .check(world.tick, position, velocity.linear, velocity.grounded);
+                }
+                None => self.ledge.abort(world.tick, true),
+            }
+            if self.ledge.active() {
+                self.slide.reset();
+                self.hop.reset();
+                self.planned_input = PlayerInput::default();
+                return true;
+            }
+        }
+        // A strafe-jump chain under way owns the controls
+        // (`navigation::hop`).
+        let hop_view = HopView {
+            tick: world.tick,
+            position,
+            velocity,
+            lane: lanes.hop,
+            sight: self.sight.as_deref(),
+            skill: self.difficulty.strafe_jump_skill(),
+            view_yaw: self
+                .aim
+                .current()
+                .map_or(self.planned_input.yaw, |view| view.yaw),
+            fighting: self.engagement.is_some() || self.chasing.is_some(),
+            allies: &self.allies,
+        };
+        if self.hop.active()
+            && let Some(controls) = self.hop.steer(&hop_view, self.planned_input)
+        {
+            self.slide.reset();
+            self.planned_input = controls;
+            return true;
+        }
+        // Running at slide speed toward a drop, slide off the ledge
+        // into a jump, when the rollout proves the landing. TypeScript
+        // tries it first of the route's tricks.
+        if let Some(velocity) = velocity
+            && let Some(landing) = lanes.ledge
+        {
+            let view = self.aim.current().unwrap_or(View {
+                yaw: self.planned_input.yaw,
+                pitch: self.planned_input.pitch,
+            });
+            let start = StartView {
+                tick: world.tick,
+                start: ledge_slide::Start {
+                    position,
+                    velocity: velocity.linear,
+                    grounded: velocity.grounded,
+                    sliding: velocity.is_sliding,
+                    yaw: view.yaw,
+                    pitch: view.pitch,
+                },
+                walk: self.planned_input,
+                landing: Some(landing),
+                skill: self.difficulty.strafe_jump_skill(),
+                fighting: self.engagement.is_some() || self.chasing.is_some(),
+                world: self
+                    .collision
+                    .as_deref_mut()
+                    .map(|world| world as &mut dyn CollisionWorld),
+            };
+            if self.ledge.try_start(start, now) {
+                self.slide.reset();
+                self.hop.reset();
+                self.planned_input = PlayerInput::default();
+                return true;
+            }
+        }
+        // Fast down a straight, plain walk, crouch-slide
+        // (`navigation::slide`). A fight's movement replaces it.
+        self.planned_input = self.slide.filter(
+            &SlideView {
+                tick: world.tick,
+                position,
+                velocity,
+                lane: lanes.slide,
+                item: lanes.item,
+                pickup_active: &world.pickup_active,
+                allies: &self.allies,
+                strafe_jump_skill: self.difficulty.strafe_jump_skill(),
+                fighting: self.engagement.is_some() || self.chasing.is_some(),
+            },
+            self.planned_input,
+        );
+        // Then, as TypeScript tries them, a strafe-jump chain.
+        if !self.slide.active()
+            && let Some(controls) = self.hop.steer(&hop_view, self.planned_input)
+        {
+            self.planned_input = controls;
+            return true;
         }
         false
     }
@@ -3029,6 +3082,72 @@ mod tests {
             strafed |= guard.planned_input.direction != [1.0, 0.0, 0.0];
         }
         assert!(strafed);
+    }
+
+    #[test]
+    fn a_bot_walking_an_order_down_an_open_lane_slides_and_hops_short_of_its_end() {
+        use crate::games::washoi::{
+            Body, Vec3, Velocity,
+            perception::sight::tests::{cube, encode},
+        };
+        // A straight walk 1,800 units down open floor to a hold order's spot.
+        let navigation = r#"{"map":"lane","graph":{
+                "bsp_sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                "nodes":[[0,24,0],[0,24,600],[0,24,1200],[0,24,1800]],
+                "edges":[[0,1],[1,0],[1,2],[2,1],[2,3],[3,2]],
+                "entries":[0],"goals":[0,3]
+            }}"#;
+        let sight = Arc::new(
+            Sight::parse(&encode(
+                "lane",
+                &[cube([-400.0, -10.0, -400.0], [400.0, 0.0, 2400.0])],
+                &[],
+            ))
+            .unwrap(),
+        );
+        let order = r#"[{"id":"snd_stage_0_0","kind":"hold_area",
+             "target":{"type":"position","position":{"x":0,"y":24,"z":1800},"radius":125},
+             "priority":0.55,"expiresAtTick":100000,"interrupt":"enemy_visible"}]"#;
+        let running = |z: f64, speed: f64| {
+            let mut world = Observation {
+                tick: 10,
+                events: vec![SnapshotEvent::AgentDirectives {
+                    entity_id: "bot".into(),
+                    directives: shagger_shared::json::parse(order).unwrap(),
+                }],
+                ..Observation::default()
+            };
+            *world.body_or_insert("bot") = Body {
+                position: Some(Vec3::new(0.0, 24.0, z)),
+                velocity: Some(Velocity {
+                    linear: Vec3::new(0.0, 0.0, speed),
+                    grounded: true,
+                    ..Velocity::default()
+                }),
+            };
+            let mut bot = BotPlayer::new("bot".into())
+                .with_difficulty(Difficulty::Hard)
+                .with_navigation(Arc::new(serde_json::from_str(navigation).unwrap()))
+                .with_sight(sight.clone());
+            let tricked = bot.plan(&world, SimTime::ZERO);
+            (bot, tricked)
+        };
+        // At sprint speed down the lane under the order, it crouch-slides,
+        // which TypeScript tries before a strafe-jump chain.
+        let (bot, _) = running(10.0, 400.0);
+        assert!(bot.ordered && bot.slide.active());
+        assert_ne!(bot.planned_input.buttons & CROUCH, 0);
+        // Too slow to slide, fast enough to hop: a chain takes off.
+        let (bot, tricked) = running(10.0, 350.0);
+        assert!(bot.ordered);
+        assert!(tricked && bot.hop.active());
+        assert_ne!(bot.planned_input.buttons & JUMP, 0);
+        // 700 from the spot it walks on: no chain, and 400 from it no slide.
+        let (bot, tricked) = running(1100.0, 350.0);
+        assert!(bot.ordered && !tricked && !bot.hop.active());
+        assert_eq!(bot.planned_input.buttons & JUMP, 0);
+        let (bot, _) = running(1400.0, 400.0);
+        assert!(bot.ordered && !bot.slide.active());
     }
 
     #[test]

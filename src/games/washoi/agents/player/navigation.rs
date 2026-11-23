@@ -109,6 +109,52 @@ impl ObjectiveWalk {
         let distance = horizontal_distance(position, waypoint).hypot(position.y - waypoint[1]);
         Some((self.next, distance))
     }
+
+    /// How far the walk's end is, straight.
+    fn remaining(&self, position: Vec3) -> f64 {
+        self.route
+            .waypoints
+            .last()
+            .map_or(0.0, |end| horizontal_distance(position, *end))
+    }
+
+    /// The open stretch ahead to strafe-jump down, as TypeScript's route
+    /// strafe jump takes any walk an order makes (`routeStrafeLane` in
+    /// ITEM_RUN). Deviation: none within 800 of the walk's end, the distance
+    /// TypeScript keeps from an item, so a hop doesn't carry the bot past a
+    /// spot to plant, defuse, or hold.
+    pub(in crate::games::washoi) fn hop_lane(
+        &self,
+        position: Vec3,
+        sight: Option<&Sight>,
+    ) -> Option<hop::HopLane> {
+        const END_MIN_REMAINING: f64 = 800.0;
+        if self.remaining(position) < END_MIN_REMAINING {
+            return None;
+        }
+        hop_lane_along(&self.route, self.next, position, sight?)
+    }
+
+    /// The heading of the walk ahead when it is a lane to slide down, as
+    /// `RouteFollower::slide_lane`, and none within the 520 units it checks
+    /// of the walk's end.
+    pub(in crate::games::washoi) fn slide_lane(
+        &self,
+        position: Vec3,
+        sight: Option<&Sight>,
+    ) -> Option<f64> {
+        const REACH: f64 = 520.0;
+        if self.remaining(position) < REACH {
+            return None;
+        }
+        self.route
+            .open_lane(self.next, position, sight?, 320.0, REACH, 64.0)
+    }
+
+    /// A drop ahead on the walk for a ledge slide jump to land on.
+    pub(in crate::games::washoi) fn ledge_leg(&self, position: Vec3) -> Option<Vec3> {
+        self.route.drop_ahead(self.next, position)
+    }
 }
 
 /// Authored walking routes. Coordinates are Washoi world-space XYZ.
@@ -591,6 +637,92 @@ impl Route {
             .ok()?;
         Some(self.maneuvers[index].1)
     }
+
+    /// `BotTraversal.laneOpen` from waypoint `next`: the heading to it when
+    /// the walk for `reach` stays within `width` of that line, widening past
+    /// `run`, with no maneuver or change of floor, and `run` of it is
+    /// walkable straight.
+    fn open_lane(
+        &self,
+        next: usize,
+        position: Vec3,
+        sight: &Sight,
+        run: f64,
+        reach: f64,
+        width: f64,
+    ) -> Option<f64> {
+        let first = *self.waypoints.get(next)?;
+        let (dx, dz) = (first[0] - position.x, first[2] - position.z);
+        let length = dx.hypot(dz);
+        if length < 1.0 {
+            return None;
+        }
+        let (dx, dz) = (dx / length, dz / length);
+        for at in next..self.waypoints.len() {
+            let [x, y, z] = self.waypoints[at];
+            let along = (x - position.x) * dx + (z - position.z) * dz;
+            if along >= reach {
+                break;
+            }
+            let lateral = ((x - position.x) * dz - (z - position.z) * dx).abs();
+            if lateral > width + (along - run).max(0.0)
+                || self.maneuver_at(at).is_some()
+                || (y - position.y).abs() > MAX_HEIGHT_DELTA
+            {
+                return None;
+            }
+        }
+        let ahead = |distance: f64| {
+            Vec3::new(
+                position.x + dx * distance,
+                position.y,
+                position.z + dz * distance,
+            )
+        };
+        // A straight local walk reaches 256 units: check the run in pieces.
+        let pieces = (run / 160.0).ceil().max(1.0);
+        (0..pieces as u32)
+            .all(|piece| {
+                let from = ahead(run * f64::from(piece) / pieces);
+                local_walk(sight, from, ahead(run * f64::from(piece + 1) / pieces))
+            })
+            .then(|| dx.atan2(dz))
+    }
+
+    /// A drop of more than a step at waypoint `next` or the one after, with
+    /// no maneuver there: where a ledge slide jump may land.
+    fn drop_ahead(&self, next: usize, position: Vec3) -> Option<Vec3> {
+        let drops = |from: f64, to: usize| {
+            let point = *self.waypoints.get(to)?;
+            (self.maneuver_at(to).is_none() && from - point[1] > MAX_HEIGHT_DELTA)
+                .then(|| Vec3::new(point[0], point[1], point[2]))
+        };
+        let here = self.waypoints.get(next)?;
+        drops(position.y, next).or_else(|| drops(here[1], next + 1))
+    }
+}
+
+/// The open stretch to strafe-jump down, `BotTraversal.routeStrafeLane` on a
+/// straight lane: 480 units of run, 640 of reach, 96 wide, held to 260 past
+/// the run.
+fn hop_lane_along(
+    route: &Route,
+    next: usize,
+    position: Vec3,
+    sight: &Sight,
+) -> Option<hop::HopLane> {
+    const RUN: f64 = 480.0;
+    const EXIT_MARGIN: f64 = 260.0;
+    let yaw = route.open_lane(next, position, sight, RUN, 640.0, 96.0)?;
+    let reach = RUN + EXIT_MARGIN;
+    Some(hop::HopLane {
+        yaw,
+        end: [
+            position.x + yaw.sin() * reach,
+            position.y,
+            position.z + yaw.cos() * reach,
+        ],
+    })
 }
 
 /// Sprint while walking, as TypeScript bots sprint whenever they move
@@ -833,6 +965,60 @@ mod tests {
                 )
                 .is_none()
         );
+    }
+
+    #[test]
+    fn an_order_walk_offers_its_open_lane_to_hop_and_slide_short_of_its_end() {
+        use crate::games::washoi::perception::sight::tests::{cube, encode};
+        // A straight walk 1,800 units down open floor.
+        let navigation: WashoiNavigation = serde_json::from_str(
+            r#"{"map":"lane","graph":{
+                "bsp_sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                "nodes":[[0,24,0],[0,24,600],[0,24,1200],[0,24,1800]],
+                "edges":[[0,1],[1,0],[1,2],[2,1],[2,3],[3,2]],
+                "entries":[0],"goals":[0,3]
+            }}"#,
+        )
+        .unwrap();
+        let sight = Sight::parse(&encode(
+            "lane",
+            &[cube([-400.0, -10.0, -400.0], [400.0, 0.0, 2400.0])],
+            &[],
+        ))
+        .unwrap();
+        let start = Vec3::new(0.0, 24.0, 10.0);
+        let mut walk = navigation
+            .objective_walk(
+                start,
+                Vec3::new(0.0, 24.0, 1800.0),
+                48.0,
+                None,
+                Some(&sight),
+            )
+            .unwrap();
+        // The order steers first, passing the node it stands on.
+        walk.steer(start, None);
+        let lane = walk
+            .hop_lane(start, Some(&sight))
+            .expect("an open lane to hop down");
+        assert!(lane.yaw.abs() < 1e-6, "{lane:?}");
+        assert!(walk.slide_lane(start, Some(&sight)).is_some());
+        assert!(walk.ledge_leg(start).is_none());
+        // Within 800 of the end no chain starts, within 520 no slide, and
+        // without a sight neither is offered.
+        assert!(
+            walk.hop_lane(Vec3::new(0.0, 24.0, 1100.0), Some(&sight))
+                .is_none()
+        );
+        assert!(
+            walk.slide_lane(Vec3::new(0.0, 24.0, 1100.0), Some(&sight))
+                .is_some()
+        );
+        assert!(
+            walk.slide_lane(Vec3::new(0.0, 24.0, 1400.0), Some(&sight))
+                .is_none()
+        );
+        assert!(walk.hop_lane(start, None).is_none());
     }
 
     #[test]

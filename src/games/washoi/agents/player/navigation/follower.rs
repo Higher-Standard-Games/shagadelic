@@ -7,7 +7,7 @@ use shagger_shared::net::game_state::{Vec3, Velocity};
 use crate::games::washoi::agents::player::navigation::traversal::{Outcome, Traversal};
 use crate::games::washoi::agents::player::navigation::{
     MAX_HEIGHT_DELTA, PlayerInput, Route, WashoiNavigation, horizontal_distance,
-    jump_up_to_waypoint, local_walk, look_along_route, sprint_on_long_legs,
+    jump_up_to_waypoint, look_along_route, sprint_on_long_legs,
 };
 use crate::games::washoi::{Difficulty, Sight, agents::player::strategy::goals::OwnVitals};
 
@@ -222,10 +222,11 @@ impl RouteFollower {
         position: Vec3,
         sight: Option<&Sight>,
     ) -> Option<crate::games::washoi::agents::player::navigation::hop::HopLane> {
-        const RUN: f64 = 480.0;
-        const EXIT_MARGIN: f64 = 260.0;
         const ITEM_MIN_REMAINING: f64 = 800.0;
         let active = self.active.as_ref()?;
+        if self.exact || active.traversal.is_some() {
+            return None;
+        }
         let route = active.route.get(navigation);
         let last = route.waypoints.len().checked_sub(1)?;
         if route.pickup.is_some()
@@ -234,24 +235,10 @@ impl RouteFollower {
         {
             return None;
         }
-        let yaw = self.lane(navigation, position, sight, RUN, 640.0, 96.0)?;
-        let reach = RUN + EXIT_MARGIN;
-        Some(
-            crate::games::washoi::agents::player::navigation::hop::HopLane {
-                yaw,
-                end: [
-                    position.x + yaw.sin() * reach,
-                    position.y,
-                    position.z + yaw.cos() * reach,
-                ],
-            },
-        )
+        super::hop_lane_along(route, active.next, position, sight?)
     }
 
-    /// `BotTraversal.laneOpen`: the heading to the next waypoint when the
-    /// walk for `reach` stays within `width` of that line, widening past
-    /// `run`, with no maneuver or change of floor, and `run` of it is
-    /// walkable straight.
+    /// `BotTraversal.laneOpen` from the next waypoint (`Route::open_lane`).
     fn lane(
         &self,
         navigation: &WashoiNavigation,
@@ -266,43 +253,10 @@ impl RouteFollower {
         if self.exact || active.traversal.is_some() {
             return None;
         }
-        let route = active.route.get(navigation);
-        let first = *route.waypoints.get(active.next)?;
-        let (dx, dz) = (first[0] - position.x, first[2] - position.z);
-        let length = dx.hypot(dz);
-        if length < 1.0 {
-            return None;
-        }
-        let (dx, dz) = (dx / length, dz / length);
-        for next in active.next..route.waypoints.len() {
-            let [x, y, z] = route.waypoints[next];
-            let along = (x - position.x) * dx + (z - position.z) * dz;
-            if along >= reach {
-                break;
-            }
-            let lateral = ((x - position.x) * dz - (z - position.z) * dx).abs();
-            if lateral > width + (along - run).max(0.0)
-                || route.maneuver_at(next).is_some()
-                || (y - position.y).abs() > MAX_HEIGHT_DELTA
-            {
-                return None;
-            }
-        }
-        let ahead = |distance: f64| {
-            Vec3::new(
-                position.x + dx * distance,
-                position.y,
-                position.z + dz * distance,
-            )
-        };
-        // A straight local walk reaches 256 units: check the run in pieces.
-        let pieces = (run / 160.0).ceil().max(1.0);
-        (0..pieces as u32)
-            .all(|piece| {
-                let from = ahead(run * f64::from(piece) / pieces);
-                local_walk(sight, from, ahead(run * f64::from(piece + 1) / pieces))
-            })
-            .then(|| dx.atan2(dz))
+        active
+            .route
+            .get(navigation)
+            .open_lane(active.next, position, sight, run, reach, width)
     }
 
     /// The waypoint the walk makes for, and whether its leg leads into a
@@ -351,14 +305,10 @@ impl RouteFollower {
         if self.exact || active.traversal.is_some() {
             return None;
         }
-        let route = active.route.get(navigation);
-        let drops = |from: f64, to: usize| {
-            let point = *route.waypoints.get(to)?;
-            (route.maneuver_at(to).is_none() && from - point[1] > super::MAX_HEIGHT_DELTA)
-                .then(|| Vec3::new(point[0], point[1], point[2]))
-        };
-        let here = route.waypoints.get(active.next)?;
-        drops(position.y, active.next).or_else(|| drops(here[1], active.next + 1))
+        active
+            .route
+            .get(navigation)
+            .drop_ahead(active.next, position)
     }
 
     pub(in crate::games::washoi) fn takeoff<'a>(
