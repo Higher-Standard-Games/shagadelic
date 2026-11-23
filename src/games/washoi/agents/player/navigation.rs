@@ -409,10 +409,28 @@ impl WashoiNavigation {
                 ARRIVAL_RADIUS
             };
             let (x, z) = if distance > threshold {
-                (
-                    (waypoint[0] - position.x) / distance,
-                    (waypoint[2] - position.z) / distance,
-                )
+                // `followRouteLine`: on a level run of the route, make for
+                // the point a little way along it, so a corner turns the
+                // walk over the run into it, as a player rounds one.
+                match line_ahead(route, *next, position) {
+                    Some((passed, _)) if passed > 0 => {
+                        *next += passed;
+                        continue;
+                    }
+                    Some((_, ahead))
+                        if (ahead[0] - position.x).hypot(ahead[2] - position.z) > 1e-6 =>
+                    {
+                        let length = (ahead[0] - position.x).hypot(ahead[2] - position.z);
+                        (
+                            (ahead[0] - position.x) / length,
+                            (ahead[2] - position.z) / length,
+                        )
+                    }
+                    _ => (
+                        (waypoint[0] - position.x) / distance,
+                        (waypoint[2] - position.z) / distance,
+                    ),
+                }
             } else if drop > MAX_HEIGHT_DELTA {
                 // Over the landing but still on the ledge: keep stepping off
                 // along the leg. A route that starts at the landing, as one
@@ -471,6 +489,96 @@ impl WashoiNavigation {
         }
         PlayerInput::default()
     }
+}
+
+/// How far along the route line a walk makes for, `ROUTE_LINE_AHEAD` in
+/// TypeScript's `BotNavigator`.
+const ROUTE_LINE_AHEAD: f64 = 64.0;
+/// Waypoints of the level run looked along at most.
+const ROUTE_LINE_POINTS: usize = 6;
+/// A bot this near its route's first leg is on it.
+const ROUTE_LINE_JOIN: f64 = 48.0;
+
+/// Horizontal distance from `at` to the segment from `a` to `b`, and the
+/// fraction along it of the nearest point.
+fn nearest_on_segment(at: Vec3, a: [f64; 3], b: [f64; 3]) -> (f64, f64) {
+    let (dx, dz) = (b[0] - a[0], b[2] - a[2]);
+    let length_sq = dx * dx + dz * dz;
+    let t = if length_sq < 1.0 {
+        1.0
+    } else {
+        (((at.x - a[0]) * dx + (at.z - a[2]) * dz) / length_sq).clamp(0.0, 1.0)
+    };
+    ((at.x - (a[0] + dx * t)).hypot(at.z - (a[2] + dz * t)), t)
+}
+
+fn segment_distance(at: Vec3, a: [f64; 3], b: [f64; 3]) -> f64 {
+    nearest_on_segment(at, a, b).0
+}
+
+/// `RouteLine.pointAlong` over the route's level run from the leg into
+/// waypoint `next`: the run's points, from the waypoint before (the bot,
+/// on the first leg), while each
+/// is on the level of the last and reached by walking, no maneuver. Returns
+/// how many of its waypoints the bot has passed, its nearest point lying
+/// on a later stretch, and the point `ROUTE_LINE_AHEAD` along the run past
+/// its nearest point. None off the run's level, where ledges and climbs
+/// steer for the waypoint itself.
+fn line_ahead(route: &Route, next: usize, position: Vec3) -> Option<(usize, [f64; 3])> {
+    let waypoint = *route.waypoints.get(next)?;
+    if route.maneuver_at(next).is_some() || (position.y - waypoint[1]).abs() > MAX_HEIGHT_DELTA {
+        return None;
+    }
+    // The first leg runs from the route's entry when the bot is on it, and
+    // otherwise from where the bot is, as TypeScript joins a line from the
+    // bot: an entry need not be where the bot stands.
+    let start = match next {
+        0 if segment_distance(position, route.entry, waypoint) > ROUTE_LINE_JOIN => {
+            [position.x, position.y, position.z]
+        }
+        0 => route.entry,
+        _ => route.waypoints[next - 1],
+    };
+    if (start[1] - waypoint[1]).abs() > MAX_HEIGHT_DELTA {
+        return None;
+    }
+    let mut points = vec![start, waypoint];
+    for index in next + 1..route.waypoints.len().min(next + ROUTE_LINE_POINTS) {
+        let point = route.waypoints[index];
+        if route.maneuver_at(index).is_some()
+            || (point[1] - points[points.len() - 1][1]).abs() > MAX_HEIGHT_DELTA
+        {
+            break;
+        }
+        points.push(point);
+    }
+    // Nearest point on the first stretches: the line is followed forward.
+    let mut best = (0, 0.0, f64::INFINITY);
+    for stretch in 0..(points.len() - 1).min(3) {
+        let (distance, t) = nearest_on_segment(position, points[stretch], points[stretch + 1]);
+        if distance < best.2 {
+            best = (stretch, t, distance);
+        }
+    }
+    let (stretch, t, _) = best;
+    let lerp = |a: [f64; 3], b: [f64; 3], t: f64| {
+        [
+            a[0] + (b[0] - a[0]) * t,
+            a[1] + (b[1] - a[1]) * t,
+            a[2] + (b[2] - a[2]) * t,
+        ]
+    };
+    let mut left = ROUTE_LINE_AHEAD;
+    let mut a = lerp(points[stretch], points[stretch + 1], t);
+    for &b in &points[stretch + 1..] {
+        let length = (b[0] - a[0]).hypot(b[2] - a[2]);
+        if length >= left {
+            return Some((stretch, lerp(a, b, left / length)));
+        }
+        left -= length;
+        a = b;
+    }
+    Some((stretch, points[points.len() - 1]))
 }
 
 impl Route {
@@ -643,6 +751,51 @@ mod tests {
             .unwrap();
         assert_eq!(down.route.waypoints[0], [400.0, 0.0, 0.0]);
         assert!(down.route.waypoints.iter().all(|point| point[0] > 0.0));
+    }
+
+    /// A level corner is rounded: 40 units before it the walk already
+    /// bends toward the next leg, past it the corner counts as passed, and
+    /// a leg up a step steers for its waypoint.
+    #[test]
+    fn a_walk_rounds_level_corners_along_the_route_line() {
+        let route = Route {
+            entry: [0.0; 3],
+            waypoints: vec![[200.0, 0.0, 0.0], [200.0, 0.0, 200.0], [200.0, 80.0, 400.0]],
+            maneuvers: Vec::new(),
+            learned_route: None,
+            resumed_from: None,
+            pickup: None,
+        };
+        let (passed, ahead) = line_ahead(&route, 0, Vec3::new(160.0, 0.0, 0.0)).unwrap();
+        assert_eq!(passed, 0);
+        assert!(
+            (ahead[0] - 200.0).abs() < 1e-9 && (ahead[2] - 24.0).abs() < 1e-9,
+            "{ahead:?}"
+        );
+        let mut next = 0;
+        let input = WashoiNavigation::steer_with_arrival(
+            &route,
+            &mut next,
+            Vec3::new(160.0, 0.0, 0.0),
+            None,
+            ARRIVAL_RADIUS,
+        );
+        assert_eq!(next, 0);
+        assert!(input.direction[2] > 0.3, "{:?}", input.direction);
+        // Cut inside the corner, nearest the second leg: the corner is passed.
+        let mut next = 0;
+        WashoiNavigation::steer_with_arrival(
+            &route,
+            &mut next,
+            Vec3::new(190.0, 0.0, 30.0),
+            None,
+            ARRIVAL_RADIUS,
+        );
+        assert_eq!(next, 1);
+        // The leg up to the step's top is not on the line.
+        let (_, ahead) = line_ahead(&route, 1, Vec3::new(200.0, 0.0, 180.0)).unwrap();
+        assert_eq!(ahead, [200.0, 0.0, 200.0]);
+        assert_eq!(line_ahead(&route, 2, Vec3::new(200.0, 0.0, 210.0)), None);
     }
 
     #[test]
@@ -1158,7 +1311,8 @@ mod tests {
                 None,
             )
             .direction,
-            [1.0, 0.0, 0.0]
+            // 64 units along the line: round the corner, to (40, 0, 24).
+            [40.0 / 40f64.hypot(24.0), 0.0, 24.0 / 40f64.hypot(24.0)]
         );
         assert_eq!(
             WashoiNavigation::steer(
