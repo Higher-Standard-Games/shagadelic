@@ -832,6 +832,14 @@ impl BotPlayer {
             run_keys: self.sent_keys.share(self.sent_keys.run),
             sprint_off: self.sent_keys.lag().0,
             sprint_wide: self.sent_keys.lag().1,
+            planned_off: {
+                let [x, _, z] = self.planned_input.direction;
+                if x.hypot(z) > 0.01 {
+                    wrap(x.atan2(z) - self.planned_input.yaw).abs().to_degrees() as f32
+                } else {
+                    0.0
+                }
+            },
             hunch_model: self
                 .hunch
                 .as_ref()

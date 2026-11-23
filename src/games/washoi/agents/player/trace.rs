@@ -94,6 +94,9 @@ pub struct DecisionTrace {
     pub sprint_off: f32,
     #[serde(default)]
     pub sprint_wide: f32,
+    /// Degrees the decision's planned view is off its planned move.
+    #[serde(default)]
+    pub planned_off: f32,
     /// Clearance turned the heading round a wall, ledge, or trigger
     /// (`navigation::clearance`), as TypeScript `BotSteering.steered`.
     pub steered: bool,
