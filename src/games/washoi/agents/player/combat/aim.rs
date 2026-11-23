@@ -38,8 +38,15 @@ const CALM_FINISH: f64 = 0.25;
 /// view trailing the run sends a diagonal, and a diagonal caps the run at
 /// 320, and a reversal behind the view backpedals. TypeScript's feet don't
 /// follow its view, so it eases at 0.6 s and turns big ones as a fight.
-const BRISK_EASE_SECONDS: f64 = 0.12;
-const BRISK_MAX_GOAL_SPEED: f64 = 720.0 * DEG;
+const BRISK_EASE_SECONDS: f64 = 0.03;
+const BRISK_MAX_GOAL_SPEED: f64 = 900.0 * DEG;
+/// Brisk, the view keeps to the run as a hand on the mouse does: it
+/// settles in this share of the aim's settle time, at up to
+/// `BRISK_MAX_YAW_SPEED`. At the aim's own pace a 30 degree bend held the
+/// view off the forward key for 14 ticks on Hard, and a corner rounded at
+/// 400 degrees a second trailed by over 60.
+const BRISK_SETTLE_SHARE: f64 = 0.35;
+const BRISK_MAX_YAW_SPEED: f64 = 900.0 * DEG;
 const DEADZONE_POINTS: [(f64, f64); 4] = [
     (1.5, 4.0 * DEG),
     (3.0, 3.0 * DEG),
@@ -254,7 +261,7 @@ impl AimController {
         let Some((mut yaw, mut pitch)) = self.view else {
             unreachable!()
         };
-        let t = self.tuning;
+        let mut t = self.tuning;
         yaw.track(wanted.yaw, dt);
         pitch.track(wanted.pitch, dt);
         // Brisk, a turn of any size eases: a person running alone flicks
@@ -264,6 +271,10 @@ impl AimController {
             && (self.brisk || wrap(wanted.yaw - yaw.goal).abs() <= CALM_MAX_EASED_TURN);
         if eased {
             self.ease_goal(&mut yaw, &mut pitch, dt, wanted);
+            if self.brisk {
+                t.settle_seconds *= BRISK_SETTLE_SHARE;
+                t.max_yaw_speed = t.max_yaw_speed.max(BRISK_MAX_YAW_SPEED);
+            }
         } else {
             self.choose_goal(&mut yaw, &mut pitch, dt, wanted, firing, random);
         }
@@ -510,6 +521,37 @@ mod tests {
         }
         let (yaw, _) = aim.view.unwrap();
         assert!(yaw.goal > 0.0 && yaw.goal <= 25.0 * DT * CALM_MAX_GOAL_SPEED + 1e-9);
+    }
+
+    /// Running alone, a Hard view keeps to a corner rounded at 400 degrees
+    /// a second within the forward key's 22.5 degrees, and a 30 degree bend
+    /// leaves it for no more than five ticks.
+    #[test]
+    fn a_brisk_view_keeps_to_the_run() {
+        let wide = |turn: &dyn Fn(u32) -> f64| {
+            let mut aim = AimController::new(Difficulty::Hard.aim());
+            aim.set_brisk(true);
+            let mut random = Random::new(3);
+            aim.reset(View {
+                yaw: 0.0,
+                pitch: 0.0,
+            });
+            (1..=125)
+                .filter(|&tick| {
+                    let wanted = View {
+                        yaw: turn(tick),
+                        pitch: 0.0,
+                    };
+                    let view = aim.step(0.008, wanted, false, true, &mut random);
+                    wrap(wanted.yaw - view.yaw).abs() > 22.5 * DEG
+                })
+                .count()
+        };
+        assert_eq!(
+            wide(&|tick| (f64::from(tick) * 0.008 * 400.0).min(105.0) * DEG),
+            0
+        );
+        assert!(wide(&|_| 30.0 * DEG) <= 5);
     }
 
     #[test]
