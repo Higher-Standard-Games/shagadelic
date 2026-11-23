@@ -477,6 +477,11 @@ impl Orders {
         best.map(|(_, point)| point)
     }
 
+    /// Where the followed order points, for traces.
+    pub(in crate::games::washoi) fn destination(&self) -> Option<Vec3> {
+        self.directive.as_ref().and(self.destination)
+    }
+
     /// Whether the followed order holds the bot through a fight: only an
     /// `interrupt: "never"` order (plant, arm, defuse) does, as TypeScript's
     /// `BotOrders.selectMandatoryGoal` makes only those mandatory. Under any

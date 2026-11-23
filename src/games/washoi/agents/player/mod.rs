@@ -861,6 +861,11 @@ impl BotPlayer {
             },
             decide_micros: 0,
             steered: self.steered,
+            order_target: self
+                .orders
+                .destination()
+                .filter(|_| self.ordered)
+                .map(|at| [at.x, at.y, at.z]),
             hunch: if self.arbitrated {
                 self.planner.hunch_pick().map(str::to_owned)
             } else {

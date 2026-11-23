@@ -100,4 +100,7 @@ pub struct DecisionTrace {
     /// Clearance turned the heading round a wall, ledge, or trigger
     /// (`navigation::clearance`), as TypeScript `BotSteering.steered`.
     pub steered: bool,
+    /// Where the followed gametype order points, while one is followed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub order_target: Option<[f64; 3]>,
 }
