@@ -7,7 +7,7 @@ use shagger_shared::net::game_state::{Vec3, Velocity};
 use crate::games::washoi::agents::player::navigation::traversal::{Outcome, Traversal};
 use crate::games::washoi::agents::player::navigation::{
     MAX_HEIGHT_DELTA, PlayerInput, Route, WashoiNavigation, horizontal_distance,
-    jump_up_to_waypoint, local_walk, sprint_on_long_legs,
+    jump_up_to_waypoint, local_walk, look_along_route, sprint_on_long_legs,
 };
 use crate::games::washoi::{Difficulty, Sight, agents::player::strategy::goals::OwnVitals};
 
@@ -515,6 +515,7 @@ impl RouteFollower {
         // topped out near 330 u/s while the TypeScript bot ran at 380 to 430.
         sprint_on_long_legs(&mut input, route, *next, position, velocity);
         jump_up_to_waypoint(&mut input, route, *next, position, velocity);
+        look_along_route(&mut input, route, *next, position);
         if *next > reached {
             self.anchor = Some(route.waypoints[*next - 1]);
         }

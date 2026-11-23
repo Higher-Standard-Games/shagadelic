@@ -81,6 +81,7 @@ impl ObjectiveWalk {
         );
         sprint_on_long_legs(&mut input, &self.route, self.next, position, velocity);
         jump_up_to_waypoint(&mut input, &self.route, self.next, position, velocity);
+        look_along_route(&mut input, &self.route, self.next, position);
         input
     }
 
@@ -624,6 +625,58 @@ fn sprint_on_long_legs(
     }
 }
 
+// TypeScript `BotNavigator` ROUTE_LOOK_AHEAD and ROUTE_LOOK_MIN_DISTANCE.
+const ROUTE_LOOK_AHEAD: f64 = 250.0;
+const ROUTE_LOOK_MIN_DISTANCE: f64 = 32.0;
+
+/// Look a way along the route rather than along the next leg, as
+/// TypeScript `BotNavigator.lookAlongRoute` does: the view eases round a
+/// corner before the bot reaches it, and sees round it sooner. Movement
+/// keeps its direction. The look stops at a maneuver, which is looked at
+/// when reached, and is not taken more than 90 degrees off the heading.
+/// Sprinting, it stays within reach of the forward key
+/// (`look::keep_sprint`), so the look does not cost the run its speed.
+fn look_along_route(input: &mut PlayerInput, route: &Route, next: usize, position: Vec3) {
+    let [x, _, z] = input.direction;
+    if x == 0.0 && z == 0.0 {
+        return;
+    }
+    let mut from = (position.x, position.z);
+    let mut left = ROUTE_LOOK_AHEAD;
+    for index in next..route.waypoints.len() {
+        if left <= 0.0 || (index > next && route.maneuver_at(index).is_some()) {
+            break;
+        }
+        let to = route.waypoints[index];
+        let length = (to[0] - from.0).hypot(to[2] - from.1);
+        if length >= left {
+            let share = left / length;
+            from = (
+                from.0 + (to[0] - from.0) * share,
+                from.1 + (to[2] - from.1) * share,
+            );
+            break;
+        }
+        left -= length;
+        from = (to[0], to[2]);
+    }
+    let (dx, dz) = (from.0 - position.x, from.1 - position.z);
+    if dx.hypot(dz) < ROUTE_LOOK_MIN_DISTANCE {
+        return;
+    }
+    let heading = x.atan2(z);
+    let look = dx.atan2(dz);
+    let off = (look - heading).sin().atan2((look - heading).cos());
+    if off.abs() > std::f64::consts::FRAC_PI_2 {
+        return;
+    }
+    input.yaw = if input.buttons & SPRINT != 0 {
+        crate::games::washoi::agents::player::look::keep_sprint(look, heading)
+    } else {
+        look
+    };
+}
+
 // Washoi `shared/server/simulation/physics/constants.ts` STEP_HEIGHT is 18:
 // a rise past this is no step.
 const JUMP_UP_RISE: f64 = 20.0;
@@ -814,6 +867,54 @@ mod tests {
     /// A level corner is rounded: 40 units before it the walk already
     /// bends toward the next leg, past it the corner counts as passed, and
     /// a leg up a step steers for its waypoint.
+    #[test]
+    fn the_view_looks_round_the_corner_ahead() {
+        // Running +x toward a corner at (200, 0), then on along +z.
+        let route = Route {
+            entry: [0.0; 3],
+            waypoints: vec![[200.0, 0.0, 0.0], [200.0, 0.0, 400.0]],
+            maneuvers: Vec::new(),
+            learned_route: None,
+            resumed_from: None,
+            pickup: None,
+        };
+        let east = std::f64::consts::FRAC_PI_2;
+        let look = |at: Vec3, buttons: u16| {
+            let mut input = PlayerInput {
+                direction: [1.0, 0.0, 0.0],
+                yaw: east,
+                buttons,
+                ..PlayerInput::default()
+            };
+            look_along_route(&mut input, &route, 0, at);
+            input
+        };
+        // 100 short of the corner, the look is 150 along the next leg.
+        let input = look(Vec3::new(100.0, 0.0, 0.0), 0);
+        assert!((input.yaw - 100.0_f64.atan2(150.0)).abs() < 1e-9);
+        assert_eq!(input.direction, [1.0, 0.0, 0.0]);
+        // Far from it, the look is down the leg.
+        assert!((look(Vec3::new(-200.0, 0.0, 0.0), 0).yaw - east).abs() < 1e-9);
+        // Sprinting, it keeps within reach of the forward key.
+        let sprinting = look(Vec3::new(100.0, 0.0, 0.0), SPRINT);
+        assert!((sprinting.yaw - (east - 20.0_f64.to_radians())).abs() < 1e-9);
+        // Overrun past the corner, a look behind the heading is not taken.
+        let mut input = PlayerInput {
+            direction: [1.0, 0.0, 0.0],
+            yaw: east,
+            ..PlayerInput::default()
+        };
+        look_along_route(&mut input, &route, 1, Vec3::new(300.0, 0.0, 100.0));
+        assert_eq!(input.yaw, east);
+        // Standing, the view is left alone.
+        let mut input = PlayerInput {
+            yaw: 1.0,
+            ..PlayerInput::default()
+        };
+        look_along_route(&mut input, &route, 0, Vec3::new(100.0, 0.0, 0.0));
+        assert_eq!(input.yaw, 1.0);
+    }
+
     #[test]
     fn a_walk_rounds_level_corners_along_the_route_line() {
         let route = Route {

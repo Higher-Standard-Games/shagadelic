@@ -1242,6 +1242,7 @@ impl BotPlayer {
         let glance = self.look.glance(
             world.tick,
             position,
+            self.planned_input.yaw,
             travel,
             view_yaw,
             &spots,

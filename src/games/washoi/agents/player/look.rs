@@ -104,20 +104,21 @@ impl Look {
         }
     }
 
-    /// `lookIntoOpenSpace`: the view yaw for a run along `travel`, from a
-    /// view now at `view_yaw`.
+    /// `lookIntoOpenSpace`: the view yaw for a run along `travel`, looking
+    /// on from `base` (the route's look ahead), from a view now at
+    /// `view_yaw`. Glances stay within 90 degrees of the run.
     #[allow(clippy::too_many_arguments)]
     pub(in crate::games::washoi) fn glance(
         &mut self,
         tick: u32,
         position: Vec3,
+        base: f64,
         travel: f64,
         view_yaw: f64,
         spots: &[(usize, [f64; 3])],
         sight: &Sight,
         random: &mut Random,
     ) -> f64 {
-        let base = travel;
         let allowed = |off: f64| wrap(base + off - travel).abs() <= FRAC_PI_2;
         if let Some(glance) = self.glance.as_mut()
             && let Some((id, at, since)) = glance.spot
@@ -286,12 +287,12 @@ mod tests {
         let mut look = Look::default();
         let mut random = Random::new(4);
         // Straight ahead is walled at 300; 30 degrees right is open.
-        let yaw = look.glance(0, me, 0.0, 0.0, &[], &sight, &mut random);
+        let yaw = look.glance(0, me, 0.0, 0.0, 0.0, &[], &sight, &mut random);
         assert!(yaw > 0.0 && yaw <= LOOK_MAX_OFF_TRAVEL + 1e-9, "{yaw}");
         // After the glance it comes back to the run for a rest.
         let mut back = None;
         for tick in 1..200 {
-            let yaw = look.glance(tick, me, 0.0, yaw, &[], &sight, &mut random);
+            let yaw = look.glance(tick, me, 0.0, 0.0, yaw, &[], &sight, &mut random);
             if yaw == 0.0 {
                 back = Some(tick);
                 break;
@@ -311,13 +312,13 @@ mod tests {
         let mut look = Look::default();
         let mut random = Random::new(5);
         // Never seen: the bot looks at it, 45 degrees right of its run.
-        let yaw = look.glance(2000, me, 0.0, 0.0, &red_armor, &sight, &mut random);
+        let yaw = look.glance(2000, me, 0.0, 0.0, 0.0, &red_armor, &sight, &mut random);
         assert!((yaw - PI / 4.0).abs() < 1e-9);
         // Seen now, so that look ends at once; a spot seen lately is left be.
         look.watch(2001, me, yaw, &red_armor, &sight);
         let mut fresh = Look::default();
         fresh.watch(2000, me, PI / 4.0, &red_armor, &sight);
-        let yaw = fresh.glance(2001, me, 0.0, 0.0, &red_armor, &sight, &mut random);
+        let yaw = fresh.glance(2001, me, 0.0, 0.0, 0.0, &red_armor, &sight, &mut random);
         assert_eq!(yaw, 0.0);
     }
 
