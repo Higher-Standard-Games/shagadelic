@@ -731,12 +731,14 @@ impl BotPlayer {
         if self.engagement.is_none()
             && !forgot
             && !self.exact_view
-            && !self.ordered
+            && !(self.ordered && self.orders.holds_fight())
             && self.respawn_at.is_none()
             && let (Some(navigation), Some(sight), Some(position)) =
                 (self.navigation.clone(), self.sight.clone(), position)
             && self.strategist.stance().chase
             && let Some(lost) = self.combat.lost(world.tick)
+            // A guard lets an enemy past its leash go (`pastLeash`).
+            && (!self.ordered || self.orders.within_leash(lost.predicted))
             && !self.divert_to_item(world, position, lost, was_chasing)
         {
             self.mover = "chase";
@@ -1390,19 +1392,21 @@ impl BotPlayer {
             moves.strafe,
         ));
         let [x, _, z] = self.planned_input.direction;
-        // An order that says stand means stand. Since 9507ab5 an order leaves
-        // the bot still only on a `move_to` arrival: an S&D carrier planting
-        // or a defender defusing. Washoi's `BombModel` starts either only
-        // below `maxPlantSpeed`, so a strafe or dodge there would hold the
-        // plant off until the fight ends. `hold_area`, `defend`, and `escort`
-        // patrol with a direction and keep their strafe. Aim and fire go on.
-        if self.ordered && x == 0.0 && z == 0.0 {
+        // An order that holds the fight (`Orders::holds_fight`) and says stand
+        // means stand: arming or defusing on arrival. Washoi's `BombModel`
+        // starts either only below `maxPlantSpeed`, so a strafe or dodge
+        // there would hold the work off until the fight ends. Under any other
+        // order, a `move_to` plant walk included, the bot fights as without
+        // one, as TypeScript's FIGHT state does. Aim and fire go on.
+        let held = self.ordered && self.orders.holds_fight();
+        if held && x == 0.0 && z == 0.0 {
             return;
         }
         // Peeking from cover, the bot keeps its spot: only the side step.
-        // Making for high ground, the walk there replaces the strafe. A server
-        // order outranks both: the bot keeps walking it and only strafes.
-        let peek = fight.peek.filter(|_| !self.ordered);
+        // Making for high ground, the walk there replaces the strafe. An order
+        // that holds the fight outranks both: the bot keeps walking it and
+        // only strafes.
+        let peek = fight.peek.filter(|_| !held);
         let (x, z) = match (peek, climb) {
             (Some(peek), _) if !self.moves.dodging(world.tick) => {
                 self.mover = "peek";
@@ -1416,7 +1420,7 @@ impl BotPlayer {
             _ => {
                 self.mover = if self.moves.dodging(world.tick) {
                     "dodge"
-                } else if self.ordered {
+                } else if held {
                     "order_strafe"
                 } else {
                     "strafe"
@@ -1462,7 +1466,11 @@ impl BotPlayer {
         now: SimTime,
     ) -> Option<[f64; 3]> {
         let navigation = self.navigation.clone()?;
-        if self.ordered || !fight.splash || !fight.in_sight || fight.peek.is_some() {
+        if (self.ordered && self.orders.holds_fight())
+            || !fight.splash
+            || !fight.in_sight
+            || fight.peek.is_some()
+        {
             self.high_ground.reset();
             self.climb.reset();
             return None;
@@ -1976,7 +1984,9 @@ impl BotPlayer {
         const SOUND_DIVERT_DISTANCE: f64 = 384.0;
         let far = (lost.predicted.x - position.x).hypot(lost.predicted.z - position.z)
             > SOUND_DIVERT_DISTANCE;
-        lost.heard && far && !was_chasing && self.should_seek_items(world)
+        // Under an order the bot has somewhere to be, as TypeScript's
+        // `_evaluateItemState` returns ITEM_RUN while directives stand.
+        lost.heard && far && !was_chasing && (self.ordered || self.should_seek_items(world))
     }
 
     /// `_shouldSeekItems` and the retreat: hurt or out of ammo, always;
@@ -2896,7 +2906,7 @@ mod tests {
     }
 
     #[test]
-    fn a_server_order_outranks_cover_while_fighting() {
+    fn only_an_order_that_holds_the_fight_outranks_cover() {
         use crate::games::washoi::{
             Vec3,
             perception::sight::tests::{cube, encode},
@@ -2919,12 +2929,24 @@ mod tests {
         };
         let world = Observation::default();
         let here = Vec3::new(0.0, 24.0, 0.0);
-        for (ordered, expected) in [(true, [1.0, 0.0, 0.0]), (false, [0.0; 3])] {
+        // Only an order that holds the fight (`never`) keeps the walk over the
+        // peek. Under any other the bot peeks as without an order.
+        for (interrupt, expected) in [
+            (Some("never"), [1.0, 0.0, 0.0]),
+            (Some("enemy_visible"), [0.0; 3]),
+            (None, [0.0; 3]),
+        ] {
             let mut bot = BotPlayer::new("bot".into());
-            bot.ordered = ordered;
+            if let Some(interrupt) = interrupt {
+                bot.ordered = true;
+                bot.orders = Orders::following("hold_area", interrupt);
+            }
             bot.planned_input.direction = [1.0, 0.0, 0.0];
             bot.fight_moves(&world, fight, &sight, here, SimTime::ZERO);
-            assert_eq!(bot.planned_input.direction, expected, "ordered: {ordered}");
+            assert_eq!(
+                bot.planned_input.direction, expected,
+                "order: {interrupt:?}"
+            );
         }
     }
 
@@ -2973,6 +2995,7 @@ mod tests {
         // Planting: the order stands still, and so does the fight.
         let mut planter = BotPlayer::new("bot".into()).with_difficulty(Difficulty::Insane);
         planter.ordered = true;
+        planter.orders = Orders::following("move_to", "never");
         planter.planned_input.direction = [0.0; 3];
         for tick in 0..60 {
             world.tick = tick;
@@ -2986,6 +3009,7 @@ mod tests {
         for tick in 0..200 {
             world.tick = tick;
             guard.ordered = true;
+            guard.orders = Orders::following("hold_area", "never");
             guard.planned_input.direction = [1.0, 0.0, 0.0];
             guard.fight_moves(&world, fight, &sight, here, SimTime::ZERO);
             strafed |= guard.planned_input.direction != [1.0, 0.0, 0.0];

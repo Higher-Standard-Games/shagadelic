@@ -477,6 +477,55 @@ impl Orders {
         best.map(|(_, point)| point)
     }
 
+    /// Whether the followed order holds the bot through a fight: only an
+    /// `interrupt: "never"` order (plant, arm, defuse) does, as TypeScript's
+    /// `BotOrders.selectMandatoryGoal` makes only those mandatory. Under any
+    /// other order a seen enemy is fought as without one: peeking from
+    /// cover, high ground and the chase, with the leash.
+    pub(in crate::games::washoi) fn holds_fight(&self) -> bool {
+        self.directive
+            .as_ref()
+            .is_some_and(|directive| directive.interrupt == Interrupt::Never)
+    }
+
+    /// Whether a point is inside the followed order's leash, or the order
+    /// has none: TypeScript's `pastLeash` for the chase.
+    pub(in crate::games::washoi) fn within_leash(&self, point: Vec3) -> bool {
+        match &self.directive {
+            Some(Directive {
+                kind: Kind::Guard,
+                target: Target::Position(center),
+                leash: Some(leash),
+                ..
+            }) => horizontal(point, *center) <= *leash,
+            _ => true,
+        }
+    }
+
+    /// Orders following one order at the origin, radius 200, leash 300, for
+    /// tests of how the bot fights under it.
+    #[cfg(test)]
+    pub(in crate::games::washoi) fn following(kind: &str, interrupt: &str) -> Self {
+        let mut orders = Self::default();
+        let directive = format!(
+            r#"[{{"id":"site","kind":"{kind}","leash":300,
+                 "target":{{"type":"position","position":{{"x":0,"y":0,"z":0}},"radius":200}},
+                 "priority":1,"expiresAtTick":50,"interrupt":"{interrupt}"}}]"#
+        );
+        orders.observe(
+            &Observation {
+                tick: 1,
+                events: vec![SnapshotEvent::AgentDirectives {
+                    entity_id: "bot".into(),
+                    directives: shagger_shared::json::parse(&directive).unwrap(),
+                }],
+                ..Observation::default()
+            },
+            "bot",
+        );
+        orders
+    }
+
     /// A guard whose fight drifted past its order's leash heads back while it
     /// keeps aiming, after TypeScript `BotOrders.applyLeash`.
     pub(in crate::games::washoi) fn leash(
@@ -967,26 +1016,7 @@ mod tests {
 
     #[test]
     fn a_guard_patrols_its_ground_and_a_leash_brings_it_back_from_a_fight() {
-        let orders_for = |kind: &str| {
-            let mut orders = Orders::default();
-            let directive = format!(
-                r#"[{{"id":"site","kind":"{kind}","leash":300,
-                     "target":{{"type":"position","position":{{"x":0,"y":0,"z":0}},"radius":200}},
-                     "priority":1,"expiresAtTick":50,"interrupt":"never"}}]"#
-            );
-            orders.observe(
-                &Observation {
-                    tick: 1,
-                    events: vec![SnapshotEvent::AgentDirectives {
-                        entity_id: "bot".into(),
-                        directives: json::parse(&directive).unwrap(),
-                    }],
-                    ..Observation::default()
-                },
-                "bot",
-            );
-            orders
-        };
+        let orders_for = |kind: &str| Orders::following(kind, "never");
         let now = SimTime::ZERO;
         let inside = Vec3::new(50.0, 0.0, 0.0);
         let mut guard = orders_for("defend");
@@ -1013,6 +1043,22 @@ mod tests {
         assert_eq!(back.buttons, FIRE | ALT_FIRE | CROUCH | FORWARD);
         assert!((back.direction[0] + 1.0).abs() < 1e-9 && back.direction[2].abs() < 1e-9);
         assert_eq!(planter.leash(Vec3::new(400.0, 0.0, 0.0), fight), fight);
+    }
+
+    #[test]
+    fn only_a_never_order_holds_the_fight_and_a_guard_chases_inside_its_leash() {
+        assert!(Orders::following("move_to", "never").holds_fight());
+        for interrupt in ["enemy_visible", "danger", "higher_priority"] {
+            assert!(!Orders::following("move_to", interrupt).holds_fight());
+        }
+        assert!(!Orders::default().holds_fight());
+        let guard = Orders::following("hold_area", "enemy_visible");
+        assert!(guard.within_leash(Vec3::new(250.0, 0.0, 0.0)));
+        assert!(!guard.within_leash(Vec3::new(400.0, 0.0, 0.0)));
+        // Only guards are leashed.
+        let walker = Orders::following("move_to", "enemy_visible");
+        assert!(walker.within_leash(Vec3::new(4000.0, 0.0, 0.0)));
+        assert!(Orders::default().within_leash(Vec3::new(4000.0, 0.0, 0.0)));
     }
 
     #[test]
