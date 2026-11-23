@@ -59,6 +59,14 @@ const basePort = Number(option("port", "8700"));
 const traces = option("traces", undefined);
 const out = option("out", undefined);
 const maps = { duel: option("duel-map", "washoi_dm2"), ffa: option("ffa-map", "washoi_dm2"), snd: option("snd-map", "washoi_snd1") };
+// A map without its bake runs bots that can't navigate, and the bench would
+// score them anyway.
+for (const mode of modes) {
+  for (const extension of ["json", "sight", "collision"]) {
+    const file = join(navigationDir, `${maps[mode]}.${extension}`);
+    if (!existsSync(file)) throw new Error(`${mode} needs ${file}; bake ${maps[mode]} into --nav first`);
+  }
+}
 
 const here = new URL(".", import.meta.url);
 const load = (path) => import(pathToFileURL(resolve(path)).href);
