@@ -80,6 +80,8 @@ const STEER_GROUND: bool = false;
 #[derive(Clone, Copy, Default)]
 struct TrickLanes {
     hop: Option<navigation::hop::HopLane>,
+    /// Why no hop lane, for traces.
+    hop_refused: Option<&'static str>,
     slide: Option<f64>,
     ledge: Option<super::super::Vec3>,
     item: Option<navigation::slide::ItemLeg>,
@@ -255,6 +257,10 @@ pub struct BotPlayer {
     liquid: LiquidEscape,
     slide: RouteSlide,
     hop: HopChain,
+    /// For traces: why the last route tricks had no hop lane, and whether a
+    /// running chain held a slide back since the last record.
+    hop_lane_refused: Option<&'static str>,
+    slide_held: bool,
     /// A proven slide off a ledge into a jump, playing (`navigation::ledge_slide`).
     ledge: LedgeJump,
     /// A ledge to fight from with a splash weapon, and the walk there.
@@ -416,6 +422,8 @@ impl BotPlayer {
             pair_costs: std::collections::HashMap::new(),
             slide: RouteSlide::default(),
             hop: HopChain::default(),
+            hop_lane_refused: None,
+            slide_held: false,
             ledge: LedgeJump::default(),
             high_ground: HighGround::default(),
             climb: Chase::default(),
@@ -775,6 +783,9 @@ impl BotPlayer {
             });
             self.fired = false;
             self.sent_keys = SentKeys::default();
+            self.hop.clear_note();
+            self.hop_lane_refused = None;
+            self.slide_held = false;
             if let Some(sink) = &mut self.trace_sink {
                 use std::io::Write as _;
                 let _ = serde_json::to_writer(&mut *sink, &record);
@@ -811,7 +822,12 @@ impl BotPlayer {
             (None, &[][..], 0)
         };
         let velocity = world.body(&self.entity_id).and_then(|body| body.velocity);
+        let (hop, hop_landing_speed) = self.hop.note();
         trace::DecisionTrace {
+            hop,
+            hop_lane: self.hop_lane_refused,
+            hop_landing_speed: hop_landing_speed.map(|speed| speed as f32),
+            slide_held: self.slide_held,
             tick: world.tick,
             state,
             orders: self
@@ -1649,15 +1665,16 @@ impl BotPlayer {
             // while it walks, none while it holds or patrols, so a trick
             // under way finishes and none starts.
             let sight = self.sight.as_deref();
-            let lanes = self
-                .orders
-                .walk()
-                .map_or_else(TrickLanes::default, |walk| TrickLanes {
-                    hop: walk.hop_lane(position, sight),
+            let lanes = self.orders.walk().map_or_else(TrickLanes::default, |walk| {
+                let hop = walk.hop_lane(position, sight);
+                TrickLanes {
+                    hop_refused: hop.as_ref().err().copied(),
+                    hop: hop.ok(),
                     slide: walk.slide_lane(position, sight),
                     ledge: walk.ledge_leg(position),
                     item: None,
-                });
+                }
+            });
             let velocity = entity.velocity;
             return self.route_tricks(world, now, position, velocity, lanes);
         }
@@ -1698,10 +1715,12 @@ impl BotPlayer {
                     self.ledge.reset();
                     return true;
                 }
+                let hop = self
+                    .route
+                    .hop_lane(navigation, position, self.sight.as_deref());
                 let lanes = TrickLanes {
-                    hop: self
-                        .route
-                        .hop_lane(navigation, position, self.sight.as_deref()),
+                    hop_refused: hop.as_ref().err().copied(),
+                    hop: hop.ok(),
                     slide: self
                         .route
                         .slide_lane(navigation, position, self.sight.as_deref()),
@@ -1772,6 +1791,7 @@ impl BotPlayer {
         }
         // A strafe-jump chain under way owns the controls
         // (`navigation::hop`).
+        self.hop_lane_refused = lanes.hop_refused;
         let hop_view = HopView {
             tick: world.tick,
             position,
@@ -1789,6 +1809,15 @@ impl BotPlayer {
         if self.hop.active()
             && let Some(controls) = self.hop.steer(&hop_view, self.planned_input)
         {
+            // For traces: on the ground at slide speed down a slide lane,
+            // the chain held a slide back.
+            if lanes.slide.is_some()
+                && velocity.is_some_and(|v| {
+                    v.grounded && !v.is_sliding && v.linear.x.hypot(v.linear.z) >= 375.0
+                })
+            {
+                self.slide_held = true;
+            }
             self.slide.reset();
             self.planned_input = controls;
             return true;

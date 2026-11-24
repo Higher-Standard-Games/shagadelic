@@ -122,17 +122,17 @@ impl ObjectiveWalk {
     /// strafe jump takes any walk an order makes (`routeStrafeLane` in
     /// ITEM_RUN). Deviation: none within 800 of the walk's end, the distance
     /// TypeScript keeps from an item, so a hop doesn't carry the bot past a
-    /// spot to plant, defuse, or hold.
+    /// spot to plant, defuse, or hold. Without one, why not, for traces.
     pub(in crate::games::washoi) fn hop_lane(
         &self,
         position: Vec3,
         sight: Option<&Sight>,
-    ) -> Option<hop::HopLane> {
+    ) -> Result<hop::HopLane, &'static str> {
         const END_MIN_REMAINING: f64 = 800.0;
         if self.remaining(position) < END_MIN_REMAINING {
-            return None;
+            return Err("end_near");
         }
-        hop_lane_along(&self.route, self.next, position, sight?)
+        hop_lane_along(&self.route, self.next, position, sight.ok_or("no_sight")?)
     }
 
     /// The heading of the walk ahead when it is a lane to slide down, as
@@ -704,18 +704,20 @@ impl Route {
 
 /// The open stretch to strafe-jump down, `BotTraversal.routeStrafeLane` on a
 /// straight lane: 480 units of run, 640 of reach, 96 wide, held to 260 past
-/// the run.
+/// the run. Without one, why not, for traces.
 fn hop_lane_along(
     route: &Route,
     next: usize,
     position: Vec3,
     sight: &Sight,
-) -> Option<hop::HopLane> {
+) -> Result<hop::HopLane, &'static str> {
     const RUN: f64 = 480.0;
     const EXIT_MARGIN: f64 = 260.0;
-    let yaw = route.open_lane(next, position, sight, RUN, 640.0, 96.0)?;
+    let yaw = route
+        .open_lane(next, position, sight, RUN, 640.0, 96.0)
+        .ok_or("lane_closed")?;
     let reach = RUN + EXIT_MARGIN;
-    Some(hop::HopLane {
+    Ok(hop::HopLane {
         yaw,
         end: [
             position.x + yaw.sin() * reach,
@@ -1006,10 +1008,7 @@ mod tests {
         assert!(walk.ledge_leg(start).is_none());
         // Within 800 of the end no chain starts, within 520 no slide, and
         // without a sight neither is offered.
-        assert!(
-            walk.hop_lane(Vec3::new(0.0, 24.0, 1100.0), Some(&sight))
-                .is_none()
-        );
+        assert!(walk.hop_lane(Vec3::new(0.0, 24.0, 1100.0), Some(&sight)) == Err("end_near"));
         assert!(
             walk.slide_lane(Vec3::new(0.0, 24.0, 1100.0), Some(&sight))
                 .is_some()
@@ -1018,7 +1017,7 @@ mod tests {
             walk.slide_lane(Vec3::new(0.0, 24.0, 1400.0), Some(&sight))
                 .is_none()
         );
-        assert!(walk.hop_lane(start, None).is_none());
+        assert!(walk.hop_lane(start, None) == Err("no_sight"));
     }
 
     #[test]

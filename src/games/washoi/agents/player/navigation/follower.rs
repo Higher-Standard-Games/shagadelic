@@ -213,29 +213,32 @@ impl RouteFollower {
     }
 
     /// An open stretch to strafe-jump down, after TypeScript
-    /// `BotTraversal.routeStrafeLane` on a straight lane: 480 units of run,
-    /// 640 of reach, 96 wide, held to 260 past the run. The last walk to a
-    /// pickup needs 800 units left, so the bot can stop at the item.
+    /// `BotTraversal.routeStrafeLane` (`super::hop_lane_along`). The last
+    /// walk to a pickup needs 800 units left, so the bot can stop at the
+    /// item. Without one, why not, for traces.
     pub(in crate::games::washoi) fn hop_lane(
         &self,
         navigation: &WashoiNavigation,
         position: Vec3,
         sight: Option<&Sight>,
-    ) -> Option<crate::games::washoi::agents::player::navigation::hop::HopLane> {
+    ) -> Result<crate::games::washoi::agents::player::navigation::hop::HopLane, &'static str> {
         const ITEM_MIN_REMAINING: f64 = 800.0;
-        let active = self.active.as_ref()?;
-        if self.exact || active.traversal.is_some() {
-            return None;
+        let active = self.active.as_ref().ok_or("no_route")?;
+        if self.exact {
+            return Err("exact");
+        }
+        if active.traversal.is_some() {
+            return Err("traversal");
         }
         let route = active.route.get(navigation);
-        let last = route.waypoints.len().checked_sub(1)?;
+        let last = route.waypoints.len().checked_sub(1).ok_or("no_route")?;
         if route.pickup.is_some()
             && active.next == last
             && horizontal_distance(position, route.waypoints[last]) < ITEM_MIN_REMAINING
         {
-            return None;
+            return Err("item_near");
         }
-        super::hop_lane_along(route, active.next, position, sight?)
+        super::hop_lane_along(route, active.next, position, sight.ok_or("no_sight")?)
     }
 
     /// `BotTraversal.laneOpen` from the next waypoint (`Route::open_lane`).

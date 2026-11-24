@@ -103,4 +103,25 @@ pub struct DecisionTrace {
     /// Where the followed gametype order points, while one is followed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub order_target: Option<[f64; 3]>,
+    /// The strafe-jump chain since the last record (`navigation::hop`): the
+    /// first gate that refused a start (`cooldown`, `skill`, `fighting`,
+    /// `airborne`, `sliding`, `no_wish`, `keys`, `slow`, `no_lane`,
+    /// `heading`, `ally`), a start (`start_straight`), a
+    /// landing (`land_straight`, `land_no_lane`, `land_short`),
+    /// or an end (`end_long`, `end_takeoff`, `end_ground`, `end_slow`,
+    /// `end_off_line`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hop: Option<&'static str>,
+    /// Why the route's tricks had no hop lane: `no_route`, `exact`,
+    /// `traversal`, `item_near`, `end_near`, `no_sight`, or `lane_closed`
+    /// when no straight lane is open.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hop_lane: Option<&'static str>,
+    /// Horizontal speed at the landing `hop` records.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hop_landing_speed: Option<f32>,
+    /// A running chain held back a slide: on the ground at slide speed with
+    /// a slide lane open.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub slide_held: bool,
 }

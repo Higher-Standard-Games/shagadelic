@@ -135,6 +135,10 @@ pub(in crate::games::washoi) struct HopChain {
     running: Option<Hop>,
     cooldown_until: u32,
     next_side: f64,
+    /// For traces: why the last decision's chain didn't start, or how a
+    /// running one started, landed, or ended, and the speed at a landing.
+    note: Option<&'static str>,
+    landing_speed: Option<f64>,
 }
 
 impl HopChain {
@@ -153,6 +157,18 @@ impl HopChain {
         self.running = None;
     }
 
+    /// The note for traces since the last record (see `HopChain::note`),
+    /// and the speed at the landing it records, if it landed.
+    pub(in crate::games::washoi) fn note(&self) -> (Option<&'static str>, Option<f64>) {
+        (self.note, self.landing_speed)
+    }
+
+    /// Clears the note once a trace has recorded it.
+    pub(in crate::games::washoi) fn clear_note(&mut self) {
+        self.note = None;
+        self.landing_speed = None;
+    }
+
     /// The exact controls for this decision while a chain runs, or None to
     /// leave the walk's `input` alone. A chain starts from a walk that runs
     /// forward down an open lane at walking pace or faster.
@@ -163,11 +179,22 @@ impl HopChain {
     ) -> Option<PlayerInput> {
         let velocity = view.velocity.unwrap_or_default();
         if self.running.is_none() {
-            self.running = self.start(view, velocity, input);
-            self.running?;
+            match self.start(view, velocity, input) {
+                Ok(hop) => self.running = Some(hop),
+                Err(gate) => {
+                    self.note = Some(gate);
+                    return None;
+                }
+            }
         }
         let mut hop = self.running?;
-        let (wanted, done) = tick(&mut hop, view, velocity);
+        let (wanted, done, note) = tick(&mut hop, view, velocity);
+        if let Some(note) = note {
+            self.note = Some(note);
+            if note.starts_with("land") {
+                self.landing_speed = Some(horizontal_speed(velocity));
+            }
+        }
         let controls = turn_view(&mut hop, view, wanted);
         self.running = (!done).then_some(hop);
         Some(PlayerInput {
@@ -176,27 +203,44 @@ impl HopChain {
         })
     }
 
-    fn start(&mut self, view: &HopView<'_>, velocity: Velocity, input: PlayerInput) -> Option<Hop> {
+    /// A chain from this decision, or the first gate that refused one.
+    fn start(
+        &mut self,
+        view: &HopView<'_>,
+        velocity: Velocity,
+        input: PlayerInput,
+    ) -> Result<Hop, &'static str> {
         let speed = horizontal_speed(velocity);
         let [x, _, z] = input.direction;
-        if view.tick < self.cooldown_until
-            || view.skill < MIN_SKILL
-            || view.fighting
-            || !velocity.grounded
-            || velocity.is_sliding
-            || (x == 0.0 && z == 0.0)
-            || input.buttons & (BACK | LEFT | RIGHT | CROUCH | FIRE | ALT_FIRE | JUMP) != 0
-            || speed < MIN_ENTRY_SPEED
-        {
-            return None;
+        let refused = if view.tick < self.cooldown_until {
+            Some("cooldown")
+        } else if view.skill < MIN_SKILL {
+            Some("skill")
+        } else if view.fighting {
+            Some("fighting")
+        } else if !velocity.grounded {
+            Some("airborne")
+        } else if velocity.is_sliding {
+            Some("sliding")
+        } else if x == 0.0 && z == 0.0 {
+            Some("no_wish")
+        } else if input.buttons & (BACK | LEFT | RIGHT | CROUCH | FIRE | ALT_FIRE | JUMP) != 0 {
+            Some("keys")
+        } else if speed < MIN_ENTRY_SPEED {
+            Some("slow")
+        } else {
+            None
+        };
+        if let Some(gate) = refused {
+            return Err(gate);
         }
-        let lane = view.lane?;
+        let lane = view.lane.ok_or("no_lane")?;
         // Already running along it, `ROUTE_STRAFE_MAX_VELOCITY_ERROR_RADIANS`.
         if normalize(heading(velocity, lane.yaw) - lane.yaw).abs() > FRAC_PI_4 {
-            return None;
+            return Err("heading");
         }
         if ally_in_lane(view.allies, view.position, lane.yaw) {
-            return None;
+            return Err("ally");
         }
         let fallback = if self.next_side == 0.0 {
             1.0
@@ -225,59 +269,72 @@ impl HopChain {
         hop.side = side_away_from_wall(view, velocity_yaw, side);
         self.next_side = -fallback;
         self.cooldown_until = view.tick + RETRY_TICKS;
-        Some(hop)
+        self.note = Some("start_straight");
+        Ok(hop)
     }
 }
 
-/// One decision of the chain: the controls, and whether it ended.
-fn tick(hop: &mut Hop, view: &HopView<'_>, velocity: Velocity) -> (PlayerInput, bool) {
+/// One decision of the chain: the controls, whether it ended, and a note for
+/// traces when it lands or ends.
+fn tick(
+    hop: &mut Hop,
+    view: &HopView<'_>,
+    velocity: Velocity,
+) -> (PlayerInput, bool, Option<&'static str>) {
     let elapsed = view.tick.saturating_sub(hop.started);
     if elapsed >= MAX_TICKS {
-        return (forward(hop, false), true);
+        return (forward(hop, false), true, Some("end_long"));
     }
     if hop.phase == Phase::Takeoff {
         if !velocity.grounded {
             hop.phase = Phase::Air;
-            return (strafe(hop, view, velocity, false), false);
+            return (strafe(hop, view, velocity, false), false, None);
         }
         if elapsed >= TAKEOFF_CONFIRM_TICKS {
-            return (forward(hop, false), true);
+            return (forward(hop, false), true, Some("end_takeoff"));
         }
-        return (forward(hop, true), false);
+        return (forward(hop, true), false, None);
     }
     if velocity.grounded {
         let landed = *hop.landed.get_or_insert(view.tick);
         // Jump held through the landing hops straight off it. Still down
         // after a few ticks, the ground there wouldn't let it.
         if view.tick.saturating_sub(landed) >= LANDED_GROUND_TICKS {
-            return (forward(hop, false), true);
+            return (forward(hop, false), true, Some("end_ground"));
         }
         if view.tick == landed {
             let room = horizontal_speed(velocity) * hop_seconds() + CHAIN_MARGIN;
-            let Some(lane) = view.lane.filter(|lane| {
-                (lane.end[0] - view.position.x).hypot(lane.end[2] - view.position.z) >= room
-            }) else {
-                return (forward(hop, false), true);
+            let Some(lane) = view.lane else {
+                return (forward(hop, false), true, Some("land_no_lane"));
             };
+            if (lane.end[0] - view.position.x).hypot(lane.end[2] - view.position.z) < room {
+                return (forward(hop, false), true, Some("land_short"));
+            }
             take_lane(hop, view, velocity, lane);
+            return (
+                strafe(hop, view, velocity, false),
+                false,
+                Some("land_straight"),
+            );
         }
-        return (strafe(hop, view, velocity, false), false);
+        return (strafe(hop, view, velocity, false), false, None);
     }
     hop.landed = None;
     let speed = horizontal_speed(velocity);
     if speed < MIN_CONTROL_SPEED || speed < hop.start_speed * 0.65 {
-        return (forward(hop, false), true);
+        return (forward(hop, false), true, Some("end_slow"));
     }
     let (sin, cos) = hop.route_yaw.sin_cos();
     let cross_track =
         ((view.position.x - hop.start.x) * cos - (view.position.z - hop.start.z) * sin).abs();
     if cross_track > hop.max_cross_track {
-        return (forward(hop, false), true);
+        return (forward(hop, false), true, Some("end_off_line"));
     }
     let to_end = (hop.route_end[0] - view.position.x).hypot(hop.route_end[2] - view.position.z);
     (
         strafe(hop, view, velocity, to_end <= ENDPOINT_EXIT_DISTANCE),
         false,
+        None,
     )
 }
 
@@ -684,6 +741,31 @@ mod tests {
             .unwrap();
         assert_eq!(down.buttons, FORWARD | SPRINT);
         assert!(!chain.active());
+    }
+
+    #[test]
+    fn notes_why_a_chain_did_not_start_and_how_it_started_and_landed() {
+        let mut chain = HopChain::default();
+        assert!(
+            chain
+                .steer(&view(0, 0.0, moving(200.0, true), Some(LANE)), walk())
+                .is_none()
+        );
+        assert_eq!(chain.note(), (Some("slow"), None));
+        chain.clear_note();
+        assert!(
+            chain
+                .steer(&view(0, 0.0, moving(400.0, true), None), walk())
+                .is_none()
+        );
+        assert_eq!(chain.note().0, Some("no_lane"));
+        chain.steer(&view(0, 0.0, moving(400.0, true), Some(LANE)), walk());
+        assert_eq!(chain.note().0, Some("start_straight"));
+        chain.clear_note();
+        // Off the ground, then down again with the lane still open.
+        chain.steer(&view(4, 20.0, moving(420.0, false), Some(LANE)), walk());
+        chain.steer(&view(80, 300.0, moving(450.0, true), Some(LANE)), walk());
+        assert_eq!(chain.note(), (Some("land_straight"), Some(450.0)));
     }
 
     #[test]
