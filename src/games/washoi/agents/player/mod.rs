@@ -204,6 +204,9 @@ pub struct BotPlayer {
     planned_input: PlayerInput,
     learned: Option<Arc<LearnedRoutes>>,
     traversal: Traversal,
+    /// The learned route the traversal under way plays, to block its takeoff
+    /// if it fails.
+    takeoff: Option<String>,
     linked_takeoffs: bool,
     vitals: OwnVitals,
     difficulty: Difficulty,
@@ -357,6 +360,7 @@ impl BotPlayer {
             orders: Orders::default(),
             learned: None,
             traversal: Traversal::default(),
+            takeoff: None,
             linked_takeoffs: false,
             vitals: OwnVitals::default(),
             difficulty: Difficulty::default(),
@@ -1597,6 +1601,7 @@ impl BotPlayer {
             self.route.detach();
             self.orders = Orders::default();
             self.traversal = Traversal::default();
+            self.takeoff = None;
             self.hop.reset();
             self.ledge.reset();
             self.slide.reset();
@@ -1723,6 +1728,25 @@ impl BotPlayer {
                         fighting: self.engagement.is_some() || self.chasing.is_some(),
                     },
                 );
+                // Once a landed recording's walk on is under way, the life
+                // may take another, as TypeScript plays a learned edge
+                // wherever a path crosses one (`BotTraversal`, `getLearnedRoute`).
+                // A failed one keeps the bot off its takeoff for the retry
+                // delay, as TypeScript cools a failed step down
+                // (`BotNavigator.cooldownStep`).
+                match self.traversal.landing_result() {
+                    Some(true) if self.route.routed() => {
+                        self.traversal = Traversal::default();
+                        self.takeoff = None;
+                    }
+                    Some(false) => {
+                        if let Some(id) = self.takeoff.take() {
+                            self.route.block_takeoff(&id, now);
+                        }
+                        self.traversal = Traversal::default();
+                    }
+                    _ => {}
+                }
                 if self.route.exact() {
                     self.slide.reset();
                     self.hop.reset();
@@ -1764,6 +1788,7 @@ impl BotPlayer {
                         .traversal
                         .begin_approach(library, id, position, now, rollouts, &walkable)
                 {
+                    self.takeoff = Some(id.to_owned());
                     self.route.detach();
                     self.planned_input = PlayerInput::default();
                     return true;

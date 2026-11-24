@@ -91,6 +91,9 @@ pub(in crate::games::washoi) struct RouteFollower {
     last_position: Option<Vec3>,
     blocked: Vec<(Leg, SimTime)>,
     pickup_unavailable: BTreeMap<usize, SimTime>,
+    /// Learned routes whose takeoff failed, by recording ID, until the retry
+    /// delay is out, as a failed traversal blocks its leg.
+    blocked_takeoffs: Vec<(String, SimTime)>,
     /// The pickup the goal arbiter chose, when it chose one.
     goal: Option<usize>,
     replan_at: Option<SimTime>,
@@ -110,6 +113,16 @@ impl RouteFollower {
         self.replan_at = None;
         self.anchor = None;
         self.exact = false;
+    }
+
+    /// Keep off the learned route `id` for the retry delay, after its
+    /// recording failed, as a failed traversal blocks its leg.
+    pub(in crate::games::washoi) fn block_takeoff(&mut self, id: &str, now: SimTime) {
+        if self.blocked_takeoffs.len() == MAX_BLOCKS {
+            self.blocked_takeoffs.remove(0);
+        }
+        self.blocked_takeoffs
+            .push((id.to_owned(), now + RETRY_DELAY));
     }
 
     /// Give up the leg under way, as when the bot is blocked on it, so the
@@ -289,6 +302,11 @@ impl RouteFollower {
         ))
     }
 
+    /// A route is under way.
+    pub(in crate::games::washoi) fn routed(&self) -> bool {
+        self.active.is_some()
+    }
+
     pub(in crate::games::washoi) fn traversing(&self) -> bool {
         self.active
             .as_ref()
@@ -367,6 +385,7 @@ impl RouteFollower {
         self.exact = false;
         let traversing = self.traversing();
         self.blocked.retain(|(_, until)| now < *until);
+        self.blocked_takeoffs.retain(|(_, until)| now < *until);
         self.pickup_unavailable.retain(|_, until| now < *until);
         let previous = self.last_position.replace(position);
         let observed_exit = previous.is_some_and(|before| {
@@ -400,8 +419,15 @@ impl RouteFollower {
                         || pickup.benefits(vitals)
                             && !self.pickup_unavailable.contains_key(&pickup.id)
                 });
+                let takeoff_open = route.learned_route.as_deref().is_none_or(|id| {
+                    !self
+                        .blocked_takeoffs
+                        .iter()
+                        .any(|(blocked, _)| blocked == id)
+                });
                 chosen
                     && available
+                    && takeoff_open
                     && (0..route.waypoints.len())
                         .all(|next| !self.blocked.iter().any(|(leg, _)| *leg == route.leg(next)))
             };
@@ -913,6 +939,27 @@ mod tests {
                 .steer(&graph, start, observe(now, false, None))
                 .direction,
             [0.0, 0.0, 1.0]
+        );
+        // A failed recording keeps the follower off its takeoff for the
+        // retry delay, then offers it again.
+        follower = RouteFollower::default();
+        follower.block_takeoff("jump", now);
+        assert_eq!(
+            follower
+                .steer(&graph, start, observe(now, true, None))
+                .direction,
+            [0.0, 0.0, 1.0]
+        );
+        follower = RouteFollower {
+            blocked_takeoffs: follower.blocked_takeoffs,
+            ..RouteFollower::default()
+        };
+        let later = now + RETRY_DELAY;
+        assert_eq!(
+            follower
+                .steer(&graph, start, observe(later, true, None))
+                .direction,
+            [1.0, 0.0, 0.0]
         );
         let landing = Vec3::new(200.0, 0.0, 200.0);
         let slot = |follower: &RouteFollower| {
