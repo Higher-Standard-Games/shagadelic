@@ -29,6 +29,11 @@ const START_HEIGHT: f64 = 8.0;
 const APPROACH_RADIUS: f64 = 96.0;
 const APPROACH_HEIGHT: f64 = 24.0;
 const STILL_SPEED: f64 = 20.0;
+/// Once on the mark, the bot stands still before judging it unless pushed
+/// this far off (`SETTLE_RADIUS` in SHAG's
+/// `src/games/fps/bot/sequences/LearnedRouteSequence.ts`). Its other-floor
+/// check at 32 needs no port: APPROACH_HEIGHT fails the approach first.
+const SETTLE_RADIUS: f64 = 24.0;
 // SHAG's InputButtons in src/engine/network/components/InputComponent.ts.
 const FORWARD: u16 = 1 << 0;
 const CROUCH: u16 = 1 << 5;
@@ -362,6 +367,15 @@ impl Traversal {
             return Some(input);
         }
         let speed = velocity_xz(velocity.linear);
+        // As `LearnedRouteSequence.tick` settles: a bot that came onto the
+        // mark stands up and stops anywhere within SETTLE_RADIUS before
+        // judging it again, as judging it while still moving sent the bot
+        // back and forth across it.
+        let still = speed <= STILL_SPEED && !velocity.is_crouching;
+        if *settling && distance <= SETTLE_RADIUS && !still {
+            return Some(input);
+        }
+        *settling = false;
         if distance <= START_RADIUS && height <= START_HEIGHT {
             if ready_to_play(velocity) {
                 self.start(index, now);
@@ -370,10 +384,6 @@ impl Traversal {
             }
             return Some(input);
         }
-        if *settling && speed > STILL_SPEED {
-            return Some(input);
-        }
-        *settling = false;
         if distance <= START_RADIUS {
             return Some(input);
         }
@@ -723,6 +733,58 @@ mod tests {
         entity.velocity.as_mut().unwrap().is_crouching = false;
         approaching.approach(&library, &entity, start, None);
         assert_eq!(approaching.drive(&library, start).unwrap().len(), 1);
+    }
+
+    /// `LearnedRouteSequence`'s settle: a bot that came onto the mark and
+    /// overshot stops and stands up anywhere within 24 before it creeps
+    /// back.
+    #[test]
+    fn settles_within_the_settle_radius_before_creeping_back() {
+        let route = r#"{"version":1,"map":"test","routes":[{
+            "id":"demo@1","start":{"x":0,"y":0,"z":0},"landing":{"x":100,"y":0,"z":0},
+            "yaw":0,"ticks":1,"script":[[1,1,0,0,0,1]]
+        }]}"#;
+        let library: LearnedRoutes = serde_json::from_str(route).unwrap();
+        let start = SimTime::ZERO;
+        let body = |x: f64, y: f64, speed: f64, crouching: bool| Body {
+            position: Some(Vec3::new(x, y, 0.0)),
+            velocity: Some(Velocity {
+                grounded: true,
+                is_crouching: crouching,
+                linear: Vec3::new(speed, 0.0, 0.0),
+                ..Velocity::default()
+            }),
+        };
+        let mut traversal = Traversal::default();
+        assert!(traversal.begin_approach(
+            &library,
+            "demo@1",
+            Vec3::new(4.0, 0.0, 0.0),
+            start,
+            None,
+            &|_, _| false
+        ));
+        // On the mark at creep speed: settle.
+        let on = traversal
+            .approach(&library, &body(4.0, 0.0, 60.0, true), start, None)
+            .unwrap();
+        assert_eq!(on.buttons, 0);
+        // Coasted 14 past it, slowing and still crouched: keep settling.
+        let past = traversal
+            .approach(&library, &body(14.0, 0.0, 30.0, true), start, None)
+            .unwrap();
+        assert_eq!(past.buttons, 0);
+        // Still but crouched: stand up first.
+        let crouched = traversal
+            .approach(&library, &body(14.0, 0.0, 0.0, true), start, None)
+            .unwrap();
+        assert_eq!(crouched.buttons, 0);
+        // Standing still off the mark: creep back.
+        let back = traversal
+            .approach(&library, &body(14.0, 0.0, 0.0, false), start, None)
+            .unwrap();
+        assert_eq!(back.buttons, FORWARD | CROUCH);
+        assert_eq!(back.direction, [-1.0, 0.0, 0.0]);
     }
 
     #[test]
