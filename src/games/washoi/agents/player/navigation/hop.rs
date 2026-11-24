@@ -15,10 +15,13 @@
 //!
 //! Deviations: only straight lanes, not chains bent along a held route line,
 //! and the walk to each landing's next lane comes from the route follower or
-//! the order's walk. An ally in the lane ahead stops a chain from starting, as
-//! `routeStrafeLane`'s `allyBlocksRoute` does, measured along the lane's
-//! heading for 600 units rather than to the route step's end. A chain is
-//! planned once per decision, so its keys hold for the decision's input ticks.
+//! the order's walk. Each landing takes the next lane only past the gates a
+//! start has, speed, heading and allies, as `routeStrafeNext` asks
+//! `routeStrafeLane` again. An ally in the lane ahead stops a chain from
+//! starting, as `routeStrafeLane`'s `allyBlocksRoute` does, measured along the
+//! lane's heading for 600 units rather than to the route step's end. A chain
+//! is planned once per decision, so its keys hold for the decision's input
+//! ticks.
 
 use std::f64::consts::{FRAC_1_SQRT_2, FRAC_PI_2, FRAC_PI_4, PI};
 
@@ -226,8 +229,6 @@ impl HopChain {
             Some("no_wish")
         } else if input.buttons & (BACK | LEFT | RIGHT | CROUCH | FIRE | ALT_FIRE | JUMP) != 0 {
             Some("keys")
-        } else if speed < MIN_ENTRY_SPEED {
-            Some("slow")
         } else {
             None
         };
@@ -235,13 +236,7 @@ impl HopChain {
             return Err(gate);
         }
         let lane = view.lane.ok_or("no_lane")?;
-        // Already running along it, `ROUTE_STRAFE_MAX_VELOCITY_ERROR_RADIANS`.
-        if normalize(heading(velocity, lane.yaw) - lane.yaw).abs() > FRAC_PI_4 {
-            return Err("heading");
-        }
-        if ally_in_lane(view.allies, view.position, lane.yaw) {
-            return Err("ally");
-        }
+        lane_takes(view, velocity, &lane)?;
         let fallback = if self.next_side == 0.0 {
             1.0
         } else {
@@ -310,6 +305,16 @@ fn tick(
             if (lane.end[0] - view.position.x).hypot(lane.end[2] - view.position.z) < room {
                 return (forward(hop, false), true, Some("land_short"));
             }
+            // TypeScript asks `routeStrafeLane` again on each landing, with
+            // every gate a start has.
+            if let Err(gate) = lane_takes(view, velocity, &lane) {
+                let note = match gate {
+                    "slow" => "land_slow",
+                    "heading" => "land_heading",
+                    _ => "land_ally",
+                };
+                return (forward(hop, false), true, Some(note));
+            }
             take_lane(hop, view, velocity, lane);
             return (
                 strafe(hop, view, velocity, false),
@@ -336,6 +341,23 @@ fn tick(
         false,
         None,
     )
+}
+
+/// Whether a chain may take `lane` from here, at a start or a landing: the
+/// rest of TypeScript `BotTraversal.routeStrafeLane` once a lane is open.
+/// At running speed (`ROUTE_STRAFE_ENTRY_SPEED`), already heading along it
+/// (`ROUTE_STRAFE_MAX_VELOCITY_ERROR_RADIANS`), and no ally in the way.
+fn lane_takes(view: &HopView<'_>, velocity: Velocity, lane: &HopLane) -> Result<(), &'static str> {
+    if horizontal_speed(velocity) < MIN_ENTRY_SPEED {
+        return Err("slow");
+    }
+    if normalize(heading(velocity, lane.yaw) - lane.yaw).abs() > FRAC_PI_4 {
+        return Err("heading");
+    }
+    if ally_in_lane(view.allies, view.position, lane.yaw) {
+        return Err("ally");
+    }
+    Ok(())
 }
 
 fn take_lane(hop: &mut Hop, view: &HopView<'_>, velocity: Velocity, lane: HopLane) {
@@ -766,6 +788,46 @@ mod tests {
         chain.steer(&view(4, 20.0, moving(420.0, false), Some(LANE)), walk());
         chain.steer(&view(80, 300.0, moving(450.0, true), Some(LANE)), walk());
         assert_eq!(chain.note(), (Some("land_straight"), Some(450.0)));
+    }
+
+    #[test]
+    fn a_landing_too_slow_turned_off_or_behind_an_ally_hands_back() {
+        // Each landing asks the lane's start gates again, as TypeScript's
+        // `routeStrafeNext` does: at 450 straight on it hops on; at 280,
+        // heading 76 degrees off the lane, or with an ally ahead it ends.
+        let started = || {
+            let mut chain = HopChain::default();
+            chain.steer(&view(0, 0.0, moving(400.0, true), Some(LANE)), walk());
+            chain.steer(&view(4, 20.0, moving(420.0, false), Some(LANE)), walk());
+            chain.clear_note();
+            chain
+        };
+        let mut chain = started();
+        chain.steer(&view(80, 300.0, moving(450.0, true), Some(LANE)), walk());
+        assert_eq!(chain.note().0, Some("land_straight"));
+        assert!(chain.active());
+        let mut chain = started();
+        chain.steer(&view(80, 300.0, moving(280.0, true), Some(LANE)), walk());
+        assert_eq!(chain.note().0, Some("land_slow"));
+        assert!(!chain.active());
+        let turned = Some(Velocity {
+            linear: Vec3::new(400.0, 0.0, 100.0),
+            grounded: true,
+            ..Velocity::default()
+        });
+        let mut chain = started();
+        chain.steer(&view(80, 300.0, turned, Some(LANE)), walk());
+        assert_eq!(chain.note().0, Some("land_heading"));
+        assert!(!chain.active());
+        let ahead = [Vec3::new(0.0, 0.0, 600.0)];
+        let blocked = HopView {
+            allies: &ahead,
+            ..view(80, 300.0, moving(450.0, true), Some(LANE))
+        };
+        let mut chain = started();
+        chain.steer(&blocked, walk());
+        assert_eq!(chain.note().0, Some("land_ally"));
+        assert!(!chain.active());
     }
 
     #[test]
