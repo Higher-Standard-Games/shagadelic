@@ -328,10 +328,12 @@ impl WashoiNavigation {
         &self,
         position: Vec3,
         sight: Option<&Sight>,
+        takeoffs: bool,
     ) -> Vec<(usize, f32)> {
         self.planner.as_ref().map_or_else(Vec::new, |planner| {
             planner.pickup_costs(
                 position,
+                takeoffs,
                 |from, to| sight.is_some_and(|map| local_walk(map, from, to)),
                 |from, to| sight.is_some_and(|map| open_line(map, from, to)),
             )
@@ -416,12 +418,14 @@ impl WashoiNavigation {
         position: Vec3,
         anchor: Option<[f64; 3]>,
         sight: Option<&Sight>,
+        takeoffs: bool,
         accept: impl Fn(&Route) -> bool,
         score: impl Fn(&Route) -> f64,
     ) -> Option<Route> {
         self.planner.as_ref()?.plan(
             position,
             anchor,
+            takeoffs,
             accept,
             score,
             |from, to| sight.is_some_and(|map| local_walk(map, from, to)),
@@ -1515,7 +1519,7 @@ mod tests {
             .filter(|&entry| {
                 let [x, y, z] = nodes[entry];
                 graph
-                    .plan(Vec3::new(x, y, z), None, None, |_| true, |_| 0.0)
+                    .plan(Vec3::new(x, y, z), None, None, true, |_| true, |_| 0.0)
                     .is_none()
             })
             .collect();
@@ -1606,6 +1610,7 @@ mod tests {
             planner.plan(
                 Vec3::new(x, 0.0, 0.0),
                 None,
+                true,
                 |_| true,
                 |_| 0.0,
                 |_, _| true,
@@ -1631,8 +1636,9 @@ mod tests {
         )
         .unwrap();
         let planner = graph.planner.as_ref().unwrap();
-        let costs =
-            |x: f64, z: f64| planner.pickup_costs(Vec3::new(x, 0.0, z), |_, _| true, |_, _| false);
+        let costs = |x: f64, z: f64| {
+            planner.pickup_costs(Vec3::new(x, 0.0, z), true, |_, _| true, |_, _| false)
+        };
         // Beside node 0: its walk plus the step to it.
         let [(id, cost)] = costs(10.0, 0.0)[..] else {
             panic!("one pickup");
@@ -1651,7 +1657,8 @@ mod tests {
         assert!((cost - 400.0).abs() < 1e-3);
         assert!(costs(10.0, 900.0).is_empty());
         // Farther than any straight walk, a node in clear view still prices.
-        let far = planner.pickup_costs(Vec3::new(-600.0, 0.0, 0.0), |_, _| false, |_, _| true);
+        let far =
+            planner.pickup_costs(Vec3::new(-600.0, 0.0, 0.0), true, |_, _| false, |_, _| true);
         assert_eq!(far.len(), 1);
         assert!((far[0].1 - 800.0).abs() < 1e-3);
     }
@@ -1677,8 +1684,8 @@ mod tests {
             .unwrap()
         };
         let at = Vec3::new(0.0, 0.0, 0.0);
-        let costs = |graph: &WashoiNavigation| graph.pickup_costs(at, None);
-        let plan = |graph: &WashoiNavigation| graph.plan(at, None, None, |_| true, |_| 0.0);
+        let costs = |graph: &WashoiNavigation| graph.pickup_costs(at, None, true);
+        let plan = |graph: &WashoiNavigation| graph.plan(at, None, None, true, |_| true, |_| 0.0);
         // The walk graph alone, as without learned routes, or with others.
         let mut graph: WashoiNavigation = serde_json::from_str(bake).unwrap();
         let areas = |graph: &WashoiNavigation| graph.planner.as_ref().unwrap().area_counts();
@@ -1703,11 +1710,93 @@ mod tests {
         assert!((cost - 520.0).abs() < 1e-3, "{cost}");
         // The walk to it ends at the takeoff with the recording to play.
         let route = graph
-            .plan(at, None, None, |route| route.pickup.is_some(), |_| 0.0)
+            .plan(
+                at,
+                None,
+                None,
+                true,
+                |route| route.pickup.is_some(),
+                |_| 0.0,
+            )
             .unwrap();
         assert_eq!(route.learned_route.as_deref(), Some("jump"));
         assert_eq!(route.waypoints.last(), Some(&[100.0, 0.0, 0.0]));
         assert_eq!(route.pickup.map(|pickup| pickup.id), Some(7));
+    }
+
+    #[test]
+    fn plans_with_learned_links_masked_but_for_a_pocket_they_leave() {
+        // Pickup 7 at node 3 is a short recording "jump" (1 to 2) or a long
+        // walk past pickup 11 at node 4 from node 0. Node 5 is a pocket with pickup 9, a
+        // drop from 0, whose only way out is recording "out", from 6 to 4.
+        // Node 7 is a ledge in the pocket whose one walk leads to pickup 9.
+        let bake = r#"{"map":"test","graph":{
+            "bsp_sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            "nodes":[[0,0,0],[100,0,0],[100,0,500],[100,0,600],[1500,0,300],
+                [-2000,0,0],[-2100,0,0],[-2000,0,-300]],
+            "edges":[[0,1],[1,0],[2,3],[3,2],[0,4],[4,3],[3,0],[0,5],[5,6],[6,5],[7,5]],
+            "entries":[0],"goals":[1,3,4,5,6],
+            "learned_goals":[[1,"jump"],[6,"out"]],
+            "learned_landings":[[2,"jump"],[4,"out"]],
+            "pickup_goals":[[3,{"id":7,"kind":"armor","item":"ra"}],
+                [4,{"id":11,"kind":"armor","item":"ga"}],[5,{"id":9,"kind":"armor","item":"ya"}]]
+        }}"#;
+        let library: learned::LearnedRoutes = serde_json::from_str(
+            r#"{"version":1,"map":"test","routes":[
+                {"id":"jump","start":{"x":100,"y":0,"z":0},"landing":{"x":100,"y":0,"z":500},
+                 "yaw":0,"ticks":125,"script":[[125,1,0,0,0,0]]},
+                {"id":"out","start":{"x":-2100,"y":0,"z":0},"landing":{"x":1500,"y":0,"z":300},
+                 "yaw":0,"ticks":125,"script":[[125,1,0,0,0,0]]}
+            ]}"#,
+        )
+        .unwrap();
+        let mut graph: WashoiNavigation = serde_json::from_str(bake).unwrap();
+        graph.link_learned(&library);
+        let plan_unless = |at: Vec3, takeoffs: bool, refused: usize| {
+            graph
+                .plan(
+                    at,
+                    None,
+                    None,
+                    takeoffs,
+                    |route| route.pickup.is_some_and(|pickup| pickup.id != refused),
+                    |route| f64::from(u8::from(route.pickup.is_some_and(|pickup| pickup.id == 7))),
+                )
+                .unwrap()
+        };
+        let plan = |at: Vec3, takeoffs: bool| plan_unless(at, takeoffs, 0);
+        let cost = |at: Vec3, takeoffs: bool| {
+            graph
+                .pickup_costs(at, None, takeoffs)
+                .into_iter()
+                .find(|&(id, _)| id == 7)
+                .map(|(_, cost)| cost)
+        };
+        let open = Vec3::new(0.0, 0.0, 0.0);
+        // Free to take off: the recording is the shorter way.
+        assert_eq!(plan(open, true).learned_route.as_deref(), Some("jump"));
+        let linked = cost(open, true).unwrap();
+        assert!((linked - 520.0).abs() < 1e-3, "{linked}");
+        // Not now: the walk, planned and costed alike, never the takeoff.
+        let walk = plan(open, false);
+        assert_eq!(walk.learned_route, None);
+        assert_eq!(walk.pickup.map(|pickup| pickup.id), Some(7));
+        assert!(walk.waypoints.contains(&[1500.0, 0.0, 300.0]));
+        assert!(cost(open, false).unwrap() > 2000.0);
+        // The pocket has no walk out, so its recording stays the plan.
+        let pocket = Vec3::new(-2000.0, 0.0, 0.0);
+        let out = plan(pocket, false);
+        assert_eq!(out.learned_route.as_deref(), Some("out"));
+        assert_eq!(out.waypoints.last(), Some(&[-2100.0, 0.0, 0.0]));
+        assert!(cost(pocket, false).is_some());
+        // Standing on the pocket pickup it has no use for, as on the Red Armor
+        // with full armor, the bot still has the recording out.
+        let full = plan_unless(pocket, false, 9);
+        assert_eq!(full.learned_route.as_deref(), Some("out"));
+        // A ledge whose walks lead only to that dead end is in the pocket.
+        let ledge = Vec3::new(-2000.0, 0.0, -300.0);
+        let refused = plan_unless(ledge, false, 9);
+        assert_eq!(refused.learned_route.as_deref(), Some("out"));
     }
 
     #[test]
@@ -1763,13 +1852,21 @@ mod tests {
                 Vec3::new(0.0, 0.0, 0.0),
                 None,
                 None,
+                true,
                 |_| true,
                 |route| f64::from(u8::from(route.pickup.is_some())),
             )
             .unwrap();
         assert_eq!(planned.waypoints, [[100.0, 0.0, 0.0]]);
         // A bot left in the dead end has no walk out until it dies.
-        let inside = graph.plan(Vec3::new(0.0, 0.0, 100.0), None, None, |_| true, |_| 0.0);
+        let inside = graph.plan(
+            Vec3::new(0.0, 0.0, 100.0),
+            None,
+            None,
+            true,
+            |_| true,
+            |_| 0.0,
+        );
         assert!(inside.is_none());
 
         // Dropping one way from a small area into a larger one is fine.
@@ -1784,7 +1881,14 @@ mod tests {
         )
         .unwrap();
         let down = ledge
-            .plan(Vec3::new(0.0, 200.0, 0.0), None, None, |_| true, |_| 0.0)
+            .plan(
+                Vec3::new(0.0, 200.0, 0.0),
+                None,
+                None,
+                true,
+                |_| true,
+                |_| 0.0,
+            )
             .unwrap();
         assert_eq!(down.waypoints, [[40.0, 0.0, 0.0], [200.0, 0.0, 0.0]]);
     }
@@ -1805,7 +1909,7 @@ mod tests {
         .unwrap();
         let off = Vec3::new(260.0, 0.0, 60.0);
         let back = graph
-            .plan(off, Some([200.0, 0.0, 0.0]), None, |_| true, |_| 0.0)
+            .plan(off, Some([200.0, 0.0, 0.0]), None, true, |_| true, |_| 0.0)
             .unwrap();
         assert_eq!(
             back.waypoints,
@@ -1824,6 +1928,7 @@ mod tests {
                 Vec3::new(60.0, 0.0, 30.0),
                 Some([0.0; 3]),
                 None,
+                true,
                 |_| true,
                 |_| 0.0,
             )
@@ -1835,6 +1940,7 @@ mod tests {
                     Vec3::new(260.0, 0.0, 160.0),
                     Some([1.0; 3]),
                     None,
+                    true,
                     |_| true,
                     |_| 0.0
                 )
@@ -1894,7 +2000,7 @@ mod tests {
         .unwrap();
         let off = Vec3::new(100.0, 24.0, 0.0);
         let plan = |anchor, sight, accept: &dyn Fn(&Route) -> bool| {
-            graph.plan(off, anchor, sight, accept, |_| 0.0)
+            graph.plan(off, anchor, sight, true, accept, |_| 0.0)
         };
         // Without sight, the bot on the baked walk from 0 to 1 finishes it.
         assert_eq!(

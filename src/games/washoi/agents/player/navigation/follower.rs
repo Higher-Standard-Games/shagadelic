@@ -302,6 +302,11 @@ impl RouteFollower {
         ))
     }
 
+    /// A failed takeoff is still cooling down.
+    pub(in crate::games::washoi) fn takeoff_blocked(&self, now: SimTime) -> bool {
+        self.blocked_takeoffs.iter().any(|(_, until)| now < *until)
+    }
+
     /// A route is under way.
     pub(in crate::games::washoi) fn routed(&self) -> bool {
         self.active.is_some()
@@ -466,13 +471,15 @@ impl RouteFollower {
                     if self.replan_at.is_some_and(|at| now < at) {
                         return PlayerInput::default();
                     }
+                    // A bot that can't take off now plans with the learned
+                    // links masked, but for a pocket whose way out is one
+                    // (`Planner::walks`).
                     let planned = navigation.plan(
                         position,
                         self.anchor,
                         sight,
-                        |route: &Route| {
-                            (allow_takeoff || route.learned_route.is_none()) && unblocked(route)
-                        },
+                        allow_takeoff && self.blocked_takeoffs.is_empty(),
+                        unblocked,
                         score,
                     );
                     let Some(route) = planned else {

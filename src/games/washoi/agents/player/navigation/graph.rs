@@ -85,6 +85,44 @@ pub(in crate::games::washoi) struct Planner {
     /// The pairs whose recording the bot has, once linked
     /// (`Planner::link_learned`). Empty: the walk graph alone.
     links: LearnedLinks,
+    /// Once linked, the walk graph's own goals and areas, for a bot that
+    /// can't take off now (`Planner::walks`).
+    walk: Option<WalkOnly>,
+}
+
+/// The walk graph's own goals and areas, kept once learned links join them.
+struct WalkOnly {
+    goals: Vec<PlannedGoal>,
+    areas: Areas,
+    /// Each node whose walkable goals are all dead ends: goals that walk to
+    /// no other goal. washoi_dm2's Red Armor ledge is one, the Red Armor its
+    /// one walkable goal, left by a recording alone.
+    pocket: Vec<bool>,
+}
+
+impl WalkOnly {
+    fn new(goals: Vec<PlannedGoal>, areas: Areas, count: usize) -> Self {
+        let (all, walkable) = (&goals, &areas);
+        let reach = |start: usize| {
+            all.iter().enumerate().filter(move |(_, goal)| {
+                goal.node != start
+                    && goal.distance[start].is_finite()
+                    && walkable.allows(start, goal.node)
+            })
+        };
+        let dead_end: Vec<bool> = goals
+            .iter()
+            .map(|goal| reach(goal.node).next().is_none())
+            .collect();
+        let pocket = (0..count)
+            .map(|node| reach(node).all(|(index, _)| dead_end[index]))
+            .collect();
+        Self {
+            goals,
+            areas,
+            pocket,
+        }
+    }
 }
 
 struct PlannedGoal {
@@ -187,6 +225,11 @@ impl Planner {
     /// at the takeoff with the recording to play (`best_route`). Without a
     /// recording, a pair stays unlinked and the walks are the graph's alone.
     pub(in crate::games::washoi) fn link_learned(&mut self, ticks: impl Fn(&str) -> Option<usize>) {
+        // Start again from the walk graph's own goals and areas.
+        if let Some(walk) = self.walk.take() {
+            self.goals = walk.goals;
+            self.areas = walk.areas;
+        }
         self.links = self
             .learned_pairs
             .iter()
@@ -217,8 +260,8 @@ impl Planner {
         // out of them at the bake (`routes`), so they count as Areas::new
         // counts them there.
         let goals: Vec<usize> = self.goals.iter().map(|goal| goal.node).collect();
-        self.areas = Areas::new(components(&forward, &reverse), &goals, &vec![None; count]);
-        self.goals = self
+        let areas = Areas::new(components(&forward, &reverse), &goals, &vec![None; count]);
+        let linked = self
             .goals
             .iter()
             .map(|goal| {
@@ -233,6 +276,22 @@ impl Planner {
                 )
             })
             .collect();
+        let walk_goals = std::mem::replace(&mut self.goals, linked);
+        let walk_areas = std::mem::replace(&mut self.areas, areas);
+        self.walk = Some(WalkOnly::new(walk_goals, walk_areas, count));
+    }
+
+    /// The goals and areas a bot plans with from `start`. One that can't take
+    /// off now plans over the walk graph alone, the learned links masked,
+    /// so it never plans a walk that ends at a takeoff it won't take. In a
+    /// pocket (`WalkOnly::pocket`), whose way out is a recording, the links
+    /// stay, or a bot there would have no plan once it has what the pocket
+    /// holds.
+    fn walks(&self, start: usize, takeoffs: bool) -> (&[PlannedGoal], &Areas) {
+        match &self.walk {
+            Some(walk) if !takeoffs && !walk.pocket[start] => (&walk.goals, &walk.areas),
+            _ => (&self.goals, &self.areas),
+        }
     }
 
     /// Node positions, standing origins, in graph index order. The order is
@@ -251,16 +310,18 @@ impl Planner {
     pub(in crate::games::washoi) fn pickup_costs(
         &self,
         position: Vec3,
+        takeoffs: bool,
         local_walk: impl Fn(Vec3, Vec3) -> bool,
         open_line: impl Fn(Vec3, Vec3) -> bool,
     ) -> Vec<(usize, f32)> {
         let costs = |(start, lead): (usize, f64)| -> Vec<(usize, f32)> {
-            self.goals
+            let (goals, areas) = self.walks(start, takeoffs);
+            goals
                 .iter()
                 .filter_map(|goal| {
                     let pickup = goal.pickup?;
                     let distance = goal.distance[start];
-                    (distance.is_finite() && self.areas.allows(start, goal.node))
+                    (distance.is_finite() && areas.allows(start, goal.node))
                         .then_some((pickup.id, distance + lead as f32))
                 })
                 .collect()
@@ -585,10 +646,15 @@ impl Planner {
     /// it starts there. Otherwise the bot walks back to its anchor, or,
     /// when that walk is blocked or missing, to one of the nearest nodes
     /// `local_walk` finds a straight walk to.
+    ///
+    /// A bot that can't take off now plans with the learned links masked,
+    /// but for a pocket whose way out is one (`Planner::walks`).
+    #[allow(clippy::too_many_arguments)]
     pub(in crate::games::washoi) fn plan(
         &self,
         position: Vec3,
         anchor: Option<[f64; 3]>,
+        takeoffs: bool,
         accept: impl Fn(&Route) -> bool,
         score: impl Fn(&Route) -> f64,
         local_walk: impl Fn(Vec3, Vec3) -> bool,
@@ -601,7 +667,8 @@ impl Planner {
         // A node with no route out, as on a ledge in a pocket, is no start:
         // try the other ways onto the graph.
         if let Some(node) = self.nearest_entry(position)
-            && let Some(route) = self.best_route(position, node, Vec::new(), &accept, &score)
+            && let Some(route) =
+                self.best_route(position, node, Vec::new(), takeoffs, &accept, &score)
         {
             return Some(route);
         }
@@ -609,13 +676,13 @@ impl Planner {
             .filter(|&anchor| here(anchor, ANCHOR_RADIUS))
             .and_then(|anchor| self.resume_at(anchor));
         if let Some((start, lead)) = resumed
-            && let Some(route) = self.best_route(position, start, lead, &accept, &score)
+            && let Some(route) = self.best_route(position, start, lead, takeoffs, &accept, &score)
         {
             return Some(route);
         }
         // Partway along a walk, finish it, as an objective walk does.
         if let Some((start, lead)) = self.on_edge(position)
-            && let Some(route) = self.best_route(position, start, lead, &accept, &score)
+            && let Some(route) = self.best_route(position, start, lead, takeoffs, &accept, &score)
         {
             return Some(route);
         }
@@ -634,13 +701,27 @@ impl Planner {
             })
             .take(MAX_LOCAL_STARTS)
             .find_map(|node| {
-                self.best_route(position, node, vec![self.nodes[node]], &accept, &score)
+                self.best_route(
+                    position,
+                    node,
+                    vec![self.nodes[node]],
+                    takeoffs,
+                    &accept,
+                    &score,
+                )
             })
             .or_else(|| {
                 self.in_view(position, &open_line)
                     .take(MAX_LOCAL_STARTS)
                     .find_map(|node| {
-                        self.best_route(position, node, vec![self.nodes[node]], &accept, &score)
+                        self.best_route(
+                            position,
+                            node,
+                            vec![self.nodes[node]],
+                            takeoffs,
+                            &accept,
+                            &score,
+                        )
                     })
             })
     }
@@ -676,6 +757,7 @@ impl Planner {
         position: Vec3,
         start: usize,
         lead: Vec<[f64; 3]>,
+        takeoffs: bool,
         accept: &impl Fn(&Route) -> bool,
         score: &impl Fn(&Route) -> f64,
     ) -> Option<Route> {
@@ -684,10 +766,11 @@ impl Planner {
                 && (node[1] - position.y).abs() <= MAX_HEIGHT_DELTA
         };
         let mut best: Option<(f64, f32, Route)> = None;
-        for goal in &self.goals {
+        let (goals, areas) = self.walks(start, takeoffs);
+        for goal in goals {
             let distance = goal.distance[start];
             if goal.node == start
-                || !self.areas.allows(start, goal.node)
+                || !areas.allows(start, goal.node)
                 || !distance.is_finite()
                 || here(self.nodes[goal.node], ARRIVAL_RADIUS)
             {
@@ -899,6 +982,7 @@ impl WalkGraph {
                 areas,
                 learned_pairs,
                 links,
+                walk: None,
             },
         ))
     }

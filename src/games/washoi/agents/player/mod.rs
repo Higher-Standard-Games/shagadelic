@@ -585,6 +585,16 @@ impl BotPlayer {
         self.traversal.landing_result()
     }
 
+    /// The bot may take off on a learned link now: it has the recordings,
+    /// no traversal waits to be cleared, and no failed takeoff cools down.
+    /// Goal choice and planning both mask the links otherwise, so a goal
+    /// past one is never chosen and then refused.
+    fn takeoffs(&self, now: SimTime) -> bool {
+        self.learned.is_some()
+            && self.traversal.landing_result().is_none()
+            && !self.route.takeoff_blocked(now)
+    }
+
     fn uses_exact_movement(&self) -> bool {
         self.route.exact()
             || self.hop.active()
@@ -2483,7 +2493,9 @@ impl BotPlayer {
         let navigation = self.navigation.as_deref();
         let weights = self.weights(world);
         let costs = navigation
-            .map(|navigation| navigation.pickup_costs(position, self.sight.as_deref()))
+            .map(|navigation| {
+                navigation.pickup_costs(position, self.sight.as_deref(), self.takeoffs(now))
+            })
             .unwrap_or_default();
         self.walkable = costs.iter().map(|(id, _)| *id).collect();
         let pickups: Vec<KnownPickup> = navigation
@@ -2565,7 +2577,7 @@ impl BotPlayer {
                 .entry((from_id, to_id))
                 .or_insert_with(|| {
                     navigation?
-                        .pickup_costs(from.position, None)
+                        .pickup_costs(from.position, None, true)
                         .into_iter()
                         .find(|(id, _)| *id == to_id)
                         .map(|(_, cost)| f64::from(cost))
