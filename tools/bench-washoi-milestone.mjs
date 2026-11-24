@@ -32,7 +32,8 @@
 // the server's damage events since the last sample. With --moves and
 // --traces, every mode also writes `moves.jsonl`: each player's position,
 // velocity, grounded, crouch and slide state, and jump and crouch buttons,
-// ten times a second, for finding where each side's speed comes from.
+// ten times a second, for finding where each side's speed comes from;
+// outside S&D also each player's entity id and the server's damage events.
 //
 //   node node_modules/vite-node/vite-node.mjs <SHAGADELIC>/tools/bench-washoi-milestone.mjs -- \
 //     --exe-a <shagadelic.exe> [--exe-b <shagadelic.exe>] --nav <navigation dir> \
@@ -176,7 +177,7 @@ async function playMatch({ arm, exe, mode, index }) {
     // events, copied as snapshot building clears them.
     const combat = server.combatSystem;
     const damage = [];
-    if (mode === "snd" && traceDir && combat?.clearProcessedDamage) {
+    if ((mode === "snd" || moves) && traceDir && combat?.clearProcessedDamage) {
       const clear = combat.clearProcessedDamage.bind(combat);
       combat.clearProcessedDamage = () => {
         const tick = sim?.getState?.()?.tick ?? null;
@@ -297,6 +298,7 @@ async function playMatch({ arm, exe, mode, index }) {
           const v = m?.velocity;
           const buttons = physics?.lastInput?.get(e.id)?.buttons ?? 0;
           return {
+            id: e.id,
             player: `player_${e.ownerId}`,
             side: rust.includes(`player_${e.ownerId}`) ? "rust" : "ts",
             dead: !!e.health?.dead,
@@ -309,6 +311,8 @@ async function playMatch({ arm, exe, mode, index }) {
             crouch: (buttons & CROUCH_BUTTON) !== 0,
           };
         }),
+        // Outside S&D, whose world log carries it: the server damage since the last sample.
+        ...(mode === "snd" ? {} : { damage: damage.splice(0) }),
       }) + "\n");
     }, 100) : null;
     const limit = Date.now() + (mode === "snd" ? sndSeconds : mode === "amphi" ? amphiSeconds : seconds) * 1000;
