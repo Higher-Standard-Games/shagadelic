@@ -37,7 +37,7 @@
 //
 //   node node_modules/vite-node/vite-node.mjs <SHAGADELIC>/tools/bench-washoi-milestone.mjs -- \
 //     --exe-a <shagadelic.exe> [--exe-b <shagadelic.exe>] --nav <navigation dir> \
-//     [--learned <learned routes dir>] [--modes duel,ffa,snd,amphi] [--blocks 2] [--block 4] \
+//     [--learned <learned routes dir>] [--allow-no-maneuvers] [--modes duel,ffa,snd,amphi] [--blocks 2] [--block 4] \
 //     [--seconds 90] [--snd-seconds 240] [--difficulty hard] [--port 8700] \
 //     [--traces <dir>] [--moves] [--out <results.jsonl>]
 //
@@ -58,7 +58,7 @@ const option = (name, fallback) => {
 const arms = [["a", option("exe-a")], ["b", option("exe-b")]].filter(([, exe]) => exe);
 const navigationDir = option("nav");
 if (arms.length === 0 || !navigationDir) {
-  throw new Error("Usage: bench-washoi-milestone.mjs --exe-a <exe> [--exe-b <exe>] --nav <dir> [--learned <dir>] [--modes duel,ffa,snd,amphi] [--blocks] [--block] [--seconds] [--snd-seconds] [--difficulty] [--port] [--traces <dir>] [--moves] [--out <file>]");
+  throw new Error("Usage: bench-washoi-milestone.mjs --exe-a <exe> [--exe-b <exe>] --nav <dir> [--learned <dir>] [--allow-no-maneuvers] [--modes duel,ffa,snd,amphi] [--blocks] [--block] [--seconds] [--snd-seconds] [--difficulty] [--port] [--traces <dir>] [--moves] [--out <file>]");
 }
 const learnedRoutesDir = option("learned", undefined);
 const modes = option("modes", "duel,ffa,snd").split(",");
@@ -78,6 +78,14 @@ for (const mode of modes) {
   for (const extension of ["json", "sight", "collision"]) {
     const file = join(navigationDir, `${maps[mode]}.${extension}`);
     if (!existsSync(file)) throw new Error(`${mode} needs ${file}; bake ${maps[mode]} into --nav first`);
+  }
+  // A bake from before the baker validated jumps, pads and teleporters walks
+  // Rust bots without them, while the TypeScript bots keep theirs, and every
+  // parity reading leans against Rust. `--allow-no-maneuvers` reruns against
+  // such a bake on purpose, to compare with results taken on it.
+  const graph = JSON.parse(readFileSync(join(navigationDir, `${maps[mode]}.json`), "utf8")).graph ?? {};
+  if (!(graph.maneuvers?.length > 0) && !argv.includes("--allow-no-maneuvers")) {
+    throw new Error(`${mode}: ${maps[mode]}.json in --nav has no maneuvers; rebake it with tools/bake-washoi-walk-graph.mjs, or pass --allow-no-maneuvers`);
   }
 }
 
