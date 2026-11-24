@@ -134,6 +134,22 @@ pub struct DecisionTrace {
     /// Walk lines built since the last record.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub line_builds: u32,
+    /// Input timing, for how long a decided input takes to reach the
+    /// server's simulation: commands sent on this connection by the
+    /// decision, the sequence the snapshot says the server had run, commands
+    /// sent since the last record, and milliseconds from the snapshot's
+    /// arrival to the decision.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inputs: Option<InputTiming>,
+}
+
+/// See `DecisionTrace::inputs`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize)]
+pub struct InputTiming {
+    pub sent: u64,
+    pub acked: u32,
+    pub since: u32,
+    pub age_ms: f32,
 }
 
 fn is_zero(count: &u32) -> bool {

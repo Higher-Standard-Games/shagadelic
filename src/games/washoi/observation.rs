@@ -93,6 +93,9 @@ pub struct Observation {
     pub pickup_active: Vec<bool>,
     /// The snapshot's one-tick events, in wire order.
     pub events: Vec<SnapshotEvent>,
+    /// The sequence number of this connection's last command the server had
+    /// run when it sent the snapshot (`acked_input_seq`).
+    pub acked_input: u32,
 }
 
 impl Observation {

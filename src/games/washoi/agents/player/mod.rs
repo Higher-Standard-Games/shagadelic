@@ -232,6 +232,9 @@ pub struct BotPlayer {
     /// Commands sent since the last trace, and how many held sprint and
     /// how many held keys Washoi gives run speed (`SentKeys`).
     sent_keys: SentKeys,
+    /// Commands sent on this connection, and the count at the last trace.
+    inputs_sent: u64,
+    inputs_traced: u64,
     /// Whether the last decision had a fight, to see fights start and end.
     fighting: bool,
     unstick: Unstick,
@@ -378,6 +381,8 @@ impl BotPlayer {
             shooting: false,
             fired: false,
             sent_keys: SentKeys::default(),
+            inputs_sent: 0,
+            inputs_traced: 0,
             fighting: false,
             unstick: Unstick::default(),
             clearance: Clearance::default(),
@@ -795,6 +800,15 @@ impl BotPlayer {
             record.decide_micros = started.map_or(0, |started| {
                 u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX)
             });
+            record.inputs = Some(trace::InputTiming {
+                sent: self.inputs_sent,
+                acked: world.acked_input,
+                since: u32::try_from(self.inputs_sent - self.inputs_traced).unwrap_or(u32::MAX),
+                age_ms: self
+                    .last_snapshot
+                    .map_or(0.0, |at| (now - at).as_secs_f32() * 1000.0),
+            });
+            self.inputs_traced = self.inputs_sent;
             self.fired = false;
             self.sent_keys = SentKeys::default();
             self.hop.clear_note();
@@ -915,6 +929,7 @@ impl BotPlayer {
                 None
             },
             decide_micros: 0,
+            inputs: None,
             steered: self.steered,
             order_target: self
                 .orders
@@ -2667,6 +2682,7 @@ impl BotPlayer {
             });
         }
         commands.extend((0..count).map(|_| self.next_command()));
+        self.inputs_sent += commands.len() as u64;
         commands
     }
 

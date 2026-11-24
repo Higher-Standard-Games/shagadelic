@@ -172,6 +172,22 @@ async function playMatch({ arm, exe, navigationDir, mode, index }) {
       joins.push(async () => {
         const bot = await botServer.addBot(endpoint, { difficulty, chat: false, ...(teamed ? { team: tsTeam } : {}) });
         ts.push(bot);
+        // With --moves, the TypeScript bot's input lead at each snapshot it
+        // takes: commands sent, less one, less the snapshot's acknowledged
+        // one, as the Rust decision traces record it (`inputs`).
+        const receiver = moves && traceDir ? bot._snapshotReceiver : null;
+        if (receiver) {
+          const receive = receiver.receive.bind(receiver);
+          bot.inputLead = {};
+          receiver.receive = (data) => {
+            const snapshot = receive(data);
+            if (snapshot && Number.isFinite(snapshot.ackedInputSeq)) {
+              const lead = bot._sequence - 1 - snapshot.ackedInputSeq;
+              bot.inputLead[lead] = (bot.inputLead[lead] ?? 0) + 1;
+            }
+            return snapshot;
+          };
+        }
       });
     }
     // Alternate who joins first.
@@ -323,6 +339,8 @@ async function playMatch({ arm, exe, navigationDir, mode, index }) {
             crouching: !!m?.isCrouching,
             jump: (buttons & JUMP_BUTTON) !== 0,
             crouch: (buttons & CROUCH_BUTTON) !== 0,
+            // Commands queued on the server, not yet run: the input delay.
+            queue: e.input?.inputQueue?.length ?? null,
           };
         }),
         // Outside S&D, whose world log carries it: the server damage since the last sample.
@@ -363,6 +381,7 @@ async function playMatch({ arm, exe, navigationDir, mode, index }) {
       result.rustTeam = rustTeam;
     }
     if (traceDir) result.traceDir = traceDir;
+    if (moves && traceDir) writeFileSync(join(traceDir, "ts-input-lead.json"), JSON.stringify(ts.map((bot) => bot.inputLead ?? null)));
     return result;
   } finally {
     await supervisor.stopAll().catch(() => {});

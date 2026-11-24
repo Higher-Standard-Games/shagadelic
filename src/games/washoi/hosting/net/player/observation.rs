@@ -46,6 +46,7 @@ pub fn observe(state: &GameState<SnapshotEvent>) -> Observation {
             .collect(),
         pickup_active: state.pickup_active_mask.clone(),
         events: state.events.iter().map(entity_keys).collect(),
+        acked_input: state.acked_input_seq,
     }
 }
 
