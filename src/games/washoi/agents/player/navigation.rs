@@ -7,6 +7,7 @@ pub(in crate::games::washoi) mod learned;
 pub(in crate::games::washoi) mod ledge_slide;
 pub(in crate::games::washoi) mod liquid;
 pub(in crate::games::washoi) mod rollout;
+mod route_line;
 pub(in crate::games::washoi) mod slide;
 mod traversal;
 pub(in crate::games::washoi) mod tricks;
@@ -53,6 +54,8 @@ pub(in crate::games::washoi) struct ObjectiveWalk {
     edges: Vec<ObjectiveEdge>,
     next: usize,
     arrival: f64,
+    /// The walk's held line (`route_line`).
+    line: route_line::HeldLine,
 }
 
 struct ObjectiveEdge {
@@ -71,18 +74,35 @@ impl ObjectiveWalk {
         &mut self,
         position: Vec3,
         velocity: Option<Velocity>,
+        sight: Option<&Sight>,
     ) -> PlayerInput {
-        let mut input = WashoiNavigation::steer_with_arrival(
+        let mut input = WashoiNavigation::steer_on_line(
             &self.route,
             &mut self.next,
             position,
             velocity,
             self.arrival,
+            sight.map(|sight| (&mut self.line, sight)),
         );
+        if sight.is_none() {
+            self.line.source = Some("no_sight");
+        }
         sprint_on_long_legs(&mut input, &self.route, self.next, position, velocity);
         jump_up_to_waypoint(&mut input, &self.route, self.next, position, velocity);
-        look_along_route(&mut input, &self.route, self.next, position);
+        let line = self.line.line(self.next);
+        look_along_route(&mut input, &self.route, self.next, position, line);
         input
+    }
+
+    /// For traces: where this decision's line came from, and the lines
+    /// built since the last record.
+    pub(in crate::games::washoi) fn line_trace(&self) -> (Option<&'static str>, u32) {
+        (self.line.source, self.line.builds)
+    }
+
+    pub(in crate::games::washoi) fn clear_line_trace(&mut self) {
+        self.line.source = None;
+        self.line.builds = 0;
     }
 
     pub(in crate::games::washoi) fn blocked_edge(&self) -> Option<ObjectiveRecovery> {
@@ -341,6 +361,7 @@ impl WashoiNavigation {
             edges,
             next: 0,
             arrival,
+            line: route_line::HeldLine::default(),
         })
     }
 
@@ -430,6 +451,7 @@ impl WashoiNavigation {
             .map(|(index, _, _)| index)
     }
 
+    #[cfg(test)]
     fn steer(
         route: &Route,
         next: &mut usize,
@@ -439,12 +461,28 @@ impl WashoiNavigation {
         Self::steer_with_arrival(route, next, position, velocity, ARRIVAL_RADIUS)
     }
 
+    #[cfg(test)]
     fn steer_with_arrival(
         route: &Route,
         next: &mut usize,
         position: Vec3,
         velocity: Option<Velocity>,
         arrival: f64,
+    ) -> PlayerInput {
+        Self::steer_on_line(route, next, position, velocity, arrival, None)
+    }
+
+    /// Steer along the route, on its held line where the walk has one: the
+    /// line built with clearance through each stretch of plain walking
+    /// (`route_line`), as TypeScript's `followRouteLine` runs. Without one,
+    /// along the route's level run of waypoints (`line_ahead`).
+    fn steer_on_line(
+        route: &Route,
+        next: &mut usize,
+        position: Vec3,
+        velocity: Option<Velocity>,
+        arrival: f64,
+        mut line: Option<(&mut route_line::HeldLine, &Sight)>,
     ) -> PlayerInput {
         let waypoints = &route.waypoints;
         while let Some(&waypoint) = waypoints.get(*next) {
@@ -465,7 +503,27 @@ impl WashoiNavigation {
                 // `followRouteLine`: on a level run of the route, make for
                 // the point a little way along it, so a corner turns the
                 // walk over the run into it, as a player rounds one.
-                match line_ahead(route, *next, position) {
+                // Waypoints passed along the level run count as reached, as
+                // TypeScript's `getNextStep` passes walk waypoints; the held
+                // line, where there is one, says where to make for.
+                let run = line_ahead(route, *next, position);
+                let held = match run {
+                    Some((passed, _)) if passed > 0 => None,
+                    _ => line.as_mut().and_then(|(held, sight)| {
+                        let walked = held.walk(
+                            route,
+                            *next,
+                            position,
+                            ROUTE_LINE_AHEAD,
+                            &route_line::SightWorld(sight),
+                        );
+                        if walked.is_none() {
+                            held.source = Some("none");
+                        }
+                        walked
+                    }),
+                };
+                match held.map(|ahead| (0, ahead)).or(run) {
                     Some((passed, _)) if passed > 0 => {
                         *next += passed;
                         continue;
@@ -775,13 +833,27 @@ const ROUTE_LOOK_MIN_DISTANCE: f64 = 32.0;
 /// when reached, and is not taken more than 90 degrees off the heading.
 /// Sprinting, it stays within reach of the forward key
 /// (`look::keep_sprint`), so the look does not cost the run its speed.
-fn look_along_route(input: &mut PlayerInput, route: &Route, next: usize, position: Vec3) {
+/// On a held line the look is along that line, as `followRouteLine` looks
+/// along the line it walks, to its stretch's end.
+fn look_along_route(
+    input: &mut PlayerInput,
+    route: &Route,
+    next: usize,
+    position: Vec3,
+    line: Option<(&[[f64; 3]], usize)>,
+) {
     let [x, _, z] = input.direction;
     if x == 0.0 && z == 0.0 {
         return;
     }
     let mut from = (position.x, position.z);
-    let mut left = ROUTE_LOOK_AHEAD;
+    let mut left = if let Some((points, stretch)) = line {
+        let look = route_line::point_along(points, position, ROUTE_LOOK_AHEAD, stretch).0;
+        from = (look[0], look[2]);
+        0.0
+    } else {
+        ROUTE_LOOK_AHEAD
+    };
     for index in next..route.waypoints.len() {
         if left <= 0.0 || (index > next && route.maneuver_at(index).is_some()) {
             break;
@@ -1004,7 +1076,7 @@ mod tests {
             )
             .unwrap();
         // The order steers first, passing the node it stands on.
-        walk.steer(start, None);
+        walk.steer(start, None, None);
         let lane = walk
             .hop_lane(start, Some(&sight))
             .expect("an open lane to hop down");
@@ -1019,11 +1091,11 @@ mod tests {
         // too. On the last leg within 800 of the end no chain starts, and
         // within 520 no slide.
         let short_of_last = Vec3::new(0.0, 24.0, 1100.0);
-        walk.steer(short_of_last, None);
+        walk.steer(short_of_last, None, None);
         assert!(walk.hop_lane(short_of_last, Some(&sight)).is_ok());
         assert!(walk.slide_lane(short_of_last, Some(&sight)).is_some());
         let on_last = Vec3::new(0.0, 24.0, 1250.0);
-        walk.steer(on_last, None);
+        walk.steer(on_last, None, None);
         assert_eq!(walk.hop_lane(on_last, Some(&sight)).err(), Some("end_near"));
         assert!(
             walk.slide_lane(Vec3::new(0.0, 24.0, 1400.0), Some(&sight))
@@ -1082,7 +1154,7 @@ mod tests {
                 buttons,
                 ..PlayerInput::default()
             };
-            look_along_route(&mut input, &route, 0, at);
+            look_along_route(&mut input, &route, 0, at, None);
             input
         };
         // 100 short of the corner, the look is 150 along the next leg.
@@ -1094,20 +1166,37 @@ mod tests {
         // Sprinting, it keeps within reach of the forward key.
         let sprinting = look(Vec3::new(100.0, 0.0, 0.0), SPRINT);
         assert!((sprinting.yaw - (east - 20.0_f64.to_radians())).abs() < 1e-9);
+        // On a held line the look runs along the line instead, the same
+        // way round the same corner, and keeps within the forward key.
+        let line = [[0.0; 3], [200.0, 0.0, 0.0], [200.0, 0.0, 400.0]];
+        for (buttons, yaw) in [
+            (0, 100.0_f64.atan2(150.0)),
+            (SPRINT, east - 20.0_f64.to_radians()),
+        ] {
+            let mut input = PlayerInput {
+                direction: [1.0, 0.0, 0.0],
+                yaw: east,
+                buttons,
+                ..PlayerInput::default()
+            };
+            let at = Vec3::new(100.0, 0.0, 0.0);
+            look_along_route(&mut input, &route, 0, at, Some((&line, 0)));
+            assert!((input.yaw - yaw).abs() < 1e-9, "{buttons}");
+        }
         // Overrun past the corner, a look behind the heading is not taken.
         let mut input = PlayerInput {
             direction: [1.0, 0.0, 0.0],
             yaw: east,
             ..PlayerInput::default()
         };
-        look_along_route(&mut input, &route, 1, Vec3::new(300.0, 0.0, 100.0));
+        look_along_route(&mut input, &route, 1, Vec3::new(300.0, 0.0, 100.0), None);
         assert_eq!(input.yaw, east);
         // Standing, the view is left alone.
         let mut input = PlayerInput {
             yaw: 1.0,
             ..PlayerInput::default()
         };
-        look_along_route(&mut input, &route, 0, Vec3::new(100.0, 0.0, 0.0));
+        look_along_route(&mut input, &route, 0, Vec3::new(100.0, 0.0, 0.0), None);
         assert_eq!(input.yaw, 1.0);
     }
 
@@ -1211,19 +1300,24 @@ mod tests {
             edges: Vec::new(),
             next: 0,
             arrival: ARRIVAL_RADIUS,
+            line: route_line::HeldLine::default(),
         };
         let grounded = Some(Velocity {
             grounded: true,
             ..Velocity::default()
         });
         let start = Vec3::default();
-        assert_ne!(walk.steer(start, grounded).buttons & SPRINT, 0);
+        assert_ne!(walk.steer(start, grounded, None).buttons & SPRINT, 0);
         assert_eq!(
-            walk.steer(Vec3::new(135.0, 0.0, 0.0), grounded).buttons & SPRINT,
+            walk.steer(Vec3::new(135.0, 0.0, 0.0), grounded, None)
+                .buttons
+                & SPRINT,
             0
         );
         assert_eq!(
-            walk.steer(Vec3::new(240.0, 0.0, 0.0), grounded).buttons & SPRINT,
+            walk.steer(Vec3::new(240.0, 0.0, 0.0), grounded, None)
+                .buttons
+                & SPRINT,
             0
         );
     }

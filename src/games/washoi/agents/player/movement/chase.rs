@@ -30,6 +30,20 @@ impl Chase {
         *self = Self::default();
     }
 
+    /// For traces: where this decision's walk line came from, and the lines
+    /// built since the last record.
+    pub(in crate::games::washoi) fn line_trace(&self) -> (Option<&'static str>, u32) {
+        self.walk
+            .as_ref()
+            .map_or((None, 0), |(_, walk)| walk.line_trace())
+    }
+
+    pub(in crate::games::washoi) fn clear_line_trace(&mut self) {
+        if let Some((_, walk)) = &mut self.walk {
+            walk.clear_line_trace();
+        }
+    }
+
     /// Movement toward `target`, or none when no walk leads there.
     pub(in crate::games::washoi) fn steer(
         &mut self,
@@ -54,7 +68,7 @@ impl Chase {
                 .map(|walk| (target, walk));
         }
         let (_, walk) = self.walk.as_mut()?;
-        let input = walk.steer(position, velocity);
+        let input = walk.steer(position, velocity, Some(sight));
         if input.direction == [0.0; 3] {
             // Arrived, or the walk ran out: plan again after the retry delay.
             self.walk = None;

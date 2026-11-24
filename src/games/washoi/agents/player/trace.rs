@@ -124,4 +124,18 @@ pub struct DecisionTrace {
     /// a slide lane open.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub slide_held: bool,
+    /// Where the walk's line came from this decision (`navigation::route_line`):
+    /// the line held from before (`held`), a stretch's line joined
+    /// (`shared`), a run onto one (`run_onto`), one built from where the bot
+    /// stands (`own`), or none, walking the route's waypoints: no stretch
+    /// of plain walking ahead (`none`), or no map geometry (`no_sight`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub walk_line: Option<&'static str>,
+    /// Walk lines built since the last record.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub line_builds: u32,
+}
+
+fn is_zero(count: &u32) -> bool {
+    *count == 0
 }

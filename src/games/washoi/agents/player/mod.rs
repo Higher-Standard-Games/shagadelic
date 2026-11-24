@@ -786,6 +786,9 @@ impl BotPlayer {
             self.hop.clear_note();
             self.hop_lane_refused = None;
             self.slide_held = false;
+            self.route.clear_line_trace();
+            self.orders.clear_line_trace();
+            self.chase.clear_line_trace();
             if let Some(sink) = &mut self.trace_sink {
                 use std::io::Write as _;
                 let _ = serde_json::to_writer(&mut *sink, &record);
@@ -823,7 +826,18 @@ impl BotPlayer {
         };
         let velocity = world.body(&self.entity_id).and_then(|body| body.velocity);
         let (hop, hop_landing_speed) = self.hop.note();
+        let (walk_line, line_builds) = [
+            self.route.line_trace(),
+            self.orders.line_trace(),
+            self.chase.line_trace(),
+        ]
+        .into_iter()
+        .fold((None, 0), |(source, builds), (more, built)| {
+            (source.or(more), builds + built)
+        });
         trace::DecisionTrace {
+            walk_line,
+            line_builds,
             hop,
             hop_lane: self.hop_lane_refused,
             hop_landing_speed: hop_landing_speed.map(|speed| speed as f32),

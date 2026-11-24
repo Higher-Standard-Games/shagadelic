@@ -81,6 +81,8 @@ struct ActiveRoute {
     /// The bot saw the route's item in place from close by.
     seen_up: bool,
     traversal: Option<Traversal>,
+    /// The walk's held line (`route_line`).
+    line: super::route_line::HeldLine,
 }
 
 #[derive(Default)]
@@ -296,6 +298,21 @@ impl RouteFollower {
         self.exact
     }
 
+    /// For traces: where this decision's walk line came from, and the lines
+    /// built since the last record.
+    pub(in crate::games::washoi) fn line_trace(&self) -> (Option<&'static str>, u32) {
+        self.active
+            .as_ref()
+            .map_or((None, 0), |active| (active.line.source, active.line.builds))
+    }
+
+    pub(in crate::games::washoi) fn clear_line_trace(&mut self) {
+        if let Some(active) = &mut self.active {
+            active.line.source = None;
+            active.line.builds = 0;
+        }
+    }
+
     /// The landing of a drop the walk is about to take, after TypeScript
     /// `tryStartLedgeSlideJump`: the leg the bot walks drops more than a
     /// step, or the one after it does. A maneuver leg is not a walk.
@@ -438,6 +455,7 @@ impl RouteFollower {
                 arrived: None,
                 seen_up: false,
                 traversal: None,
+                line: super::route_line::HeldLine::default(),
             });
         }
 
@@ -448,6 +466,7 @@ impl RouteFollower {
             arrived,
             seen_up,
             traversal,
+            line,
         } = self.active.as_mut().expect("route selected");
         let route = route.get(navigation);
         let reached = *next;
@@ -463,12 +482,22 @@ impl RouteFollower {
             *next += 1;
             *traversal = None;
         }
-        let mut input = WashoiNavigation::steer(route, next, position, velocity);
+        let mut input = WashoiNavigation::steer_on_line(
+            route,
+            next,
+            position,
+            velocity,
+            super::ARRIVAL_RADIUS,
+            sight.map(|sight| (&mut *line, sight)),
+        );
+        if sight.is_none() {
+            line.source = Some("no_sight");
+        }
         // Roaming walks sprint as objective walks do. Live, the Rust bot
         // topped out near 330 u/s while the TypeScript bot ran at 380 to 430.
         sprint_on_long_legs(&mut input, route, *next, position, velocity);
         jump_up_to_waypoint(&mut input, route, *next, position, velocity);
-        look_along_route(&mut input, route, *next, position);
+        look_along_route(&mut input, route, *next, position, line.line(*next));
         if *next > reached {
             self.anchor = Some(route.waypoints[*next - 1]);
         }

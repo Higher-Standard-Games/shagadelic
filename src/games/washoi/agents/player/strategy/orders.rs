@@ -243,6 +243,18 @@ impl Orders {
         self.walk.as_ref().map(|(_, walk)| walk)
     }
 
+    /// For traces: where this decision's walk line came from, and the lines
+    /// built since the last record.
+    pub(in crate::games::washoi) fn line_trace(&self) -> (Option<&'static str>, u32) {
+        self.walk().map_or((None, 0), ObjectiveWalk::line_trace)
+    }
+
+    pub(in crate::games::washoi) fn clear_line_trace(&mut self) {
+        if let Some((_, walk)) = &mut self.walk {
+            walk.clear_line_trace();
+        }
+    }
+
     pub(in crate::games::washoi) fn input(
         &mut self,
         navigation: Option<&WashoiNavigation>,
@@ -328,7 +340,7 @@ impl Orders {
             self.retry_at = Some(now + RETRY);
         }
         let (_, walk) = self.walk.as_mut()?;
-        let input = walk.steer(position, velocity);
+        let input = walk.steer(position, velocity, sight);
         if let Some((waypoint, distance)) = walk.progress(position) {
             if self.progress.as_ref().is_none_or(|previous| {
                 previous.waypoint != waypoint || distance <= previous.distance - MIN_PROGRESS
