@@ -179,8 +179,10 @@ impl<S: GameSession> Runtime<S> {
             self.handle_event(event);
             progress.events += 1;
         }
-        progress.inputs = self.run_due(Update::Input, budget.inputs);
+        // Decide before sending, so a decision woken by this call's events
+        // goes out with this call's inputs rather than a period later.
         progress.decisions = self.run_due(Update::Decision, budget.decisions);
+        progress.inputs = self.run_due(Update::Input, budget.inputs);
         Ok(progress)
     }
 

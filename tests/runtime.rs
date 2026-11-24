@@ -138,6 +138,33 @@ fn cancelled_admission_cannot_activate_a_replacement() {
     assert_eq!(runtime.spawn("bot".into(), None), Err(SpawnError::Closing));
 }
 
+/// A snapshot that wakes a decision has that decision's input sent in the
+/// same advance, not one input period later.
+#[test]
+fn a_woken_decision_runs_before_the_inputs_due_with_it() {
+    let mut runtime = Runtime::new(FakeGame::default());
+    let bot = runtime
+        .spawn(
+            "skater".into(),
+            Some(Deadlines {
+                input: Some(Duration::ZERO),
+                decision: None,
+            }),
+        )
+        .unwrap();
+    runtime.advance(Duration::ZERO, BUDGET).unwrap();
+    runtime
+        .session_mut()
+        .events
+        .push_back(SessionEvent::WakeDecision(bot.key().clone()));
+    runtime.advance(Duration::from_millis(10), BUDGET).unwrap();
+    let kinds: Vec<_> = runtime.session_mut().actions[1..]
+        .iter()
+        .map(|(_, kind, _)| *kind)
+        .collect();
+    assert_eq!(kinds, [Update::Decision, Update::Input]);
+}
+
 #[test]
 fn budget_leaves_due_work_for_the_next_advance() {
     let mut runtime = Runtime::new(FakeGame::default());
