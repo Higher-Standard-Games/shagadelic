@@ -3171,8 +3171,12 @@ mod tests {
         assert!(bot.ordered);
         assert!(tricked && bot.hop.active());
         assert_ne!(bot.planned_input.buttons & JUMP, 0);
-        // 700 from the spot it walks on: no chain, and 400 from it no slide.
+        // 700 from the spot with a leg still to go, a chain takes off, as
+        // TypeScript keeps its 800 only on a path's last step. On the last
+        // leg, 500 from the spot: no chain, and 400 from it no slide.
         let (bot, tricked) = running(1100.0, 350.0);
+        assert!(bot.ordered && tricked && bot.hop.active());
+        let (bot, tricked) = running(1300.0, 350.0);
         assert!(bot.ordered && !tricked && !bot.hop.active());
         assert_eq!(bot.planned_input.buttons & JUMP, 0);
         let (bot, _) = running(1400.0, 400.0);

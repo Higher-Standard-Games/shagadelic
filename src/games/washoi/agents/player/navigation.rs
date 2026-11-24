@@ -120,16 +120,21 @@ impl ObjectiveWalk {
 
     /// The open stretch ahead to strafe-jump down, as TypeScript's route
     /// strafe jump takes any walk an order makes (`routeStrafeLane` in
-    /// ITEM_RUN). Deviation: none within 800 of the walk's end, the distance
-    /// TypeScript keeps from an item, so a hop doesn't carry the bot past a
-    /// spot to plant, defuse, or hold. Without one, why not, for traces.
+    /// ITEM_RUN). On the walk's last leg, none within 800 of its end, as
+    /// TypeScript keeps that from an item on its path's last step
+    /// (`ROUTE_STRAFE_ITEM_MIN_REMAINING_DISTANCE`), so a hop doesn't carry
+    /// the bot past a spot to plant, defuse, or hold. Deviation: the last leg
+    /// is the walk's last waypoint, not the last graph step, which may hold
+    /// several. Without a lane, why not, for traces.
     pub(in crate::games::washoi) fn hop_lane(
         &self,
         position: Vec3,
         sight: Option<&Sight>,
     ) -> Result<hop::HopLane, &'static str> {
-        const END_MIN_REMAINING: f64 = 800.0;
-        if self.remaining(position) < END_MIN_REMAINING {
+        const ITEM_MIN_REMAINING: f64 = 800.0;
+        if self.next + 1 >= self.route.waypoints.len()
+            && self.remaining(position) < ITEM_MIN_REMAINING
+        {
             return Err("end_near");
         }
         hop_lane_along(&self.route, self.next, position, sight.ok_or("no_sight")?)
@@ -1006,18 +1011,24 @@ mod tests {
         assert!(lane.yaw.abs() < 1e-6, "{lane:?}");
         assert!(walk.slide_lane(start, Some(&sight)).is_some());
         assert!(walk.ledge_leg(start).is_none());
-        // Within 800 of the end no chain starts, within 520 no slide, and
-        // without a sight neither is offered.
-        assert!(walk.hop_lane(Vec3::new(0.0, 24.0, 1100.0), Some(&sight)) == Err("end_near"));
-        assert!(
-            walk.slide_lane(Vec3::new(0.0, 24.0, 1100.0), Some(&sight))
-                .is_some()
-        );
+        // Without a sight neither lane is offered.
+        assert_eq!(walk.hop_lane(start, None).err(), Some("no_sight"));
+        assert!(walk.slide_lane(start, None).is_none());
+        // 700 from the end with a leg still to go, a chain may start, as
+        // TypeScript keeps its 800 only on a path's last step, and a slide
+        // too. On the last leg within 800 of the end no chain starts, and
+        // within 520 no slide.
+        let short_of_last = Vec3::new(0.0, 24.0, 1100.0);
+        walk.steer(short_of_last, None);
+        assert!(walk.hop_lane(short_of_last, Some(&sight)).is_ok());
+        assert!(walk.slide_lane(short_of_last, Some(&sight)).is_some());
+        let on_last = Vec3::new(0.0, 24.0, 1250.0);
+        walk.steer(on_last, None);
+        assert_eq!(walk.hop_lane(on_last, Some(&sight)).err(), Some("end_near"));
         assert!(
             walk.slide_lane(Vec3::new(0.0, 24.0, 1400.0), Some(&sight))
                 .is_none()
         );
-        assert!(walk.hop_lane(start, None) == Err("no_sight"));
     }
 
     #[test]
