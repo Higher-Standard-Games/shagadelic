@@ -230,7 +230,13 @@ async function linkLearned(graph, json) {
     if (!from.length || !to.length) continue;
     const takeoff = graph.nodes.push(start) - 1;
     const landing = graph.nodes.push(end) - 1;
-    for (const node of from) graph.edges.push([node, takeoff]);
+    // A takeoff stands on the walk it was approached by, as TypeScript's
+    // addLearnedRoutes jumps from an ordinary standing node: walk back
+    // where that walk is checked too, so a drop is no walk back.
+    for (const node of from) {
+      graph.edges.push([node, takeoff]);
+      if (canWalk(route.start, points[node])) graph.edges.push([takeoff, node]);
+    }
     for (const node of to) graph.edges.push([landing, node]);
     graph.goals.push(takeoff);
     takeoffs.set(takeoff, route.id);

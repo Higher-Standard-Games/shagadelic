@@ -1725,6 +1725,46 @@ mod tests {
     }
 
     #[test]
+    fn beside_a_takeoff_plans_the_walk_its_link_leads_away_from() {
+        // Takeoff 1 stands on the walk to pickup 7 at node 3, walkable both
+        // ways as the baker links it; recording "away" lands at the far
+        // node 2, whose walk back to the pickup is long.
+        let bake = r#"{"map":"test","graph":{
+            "bsp_sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            "nodes":[[0,0,0],[0,0,40],[3000,0,0],[0,0,400]],
+            "edges":[[0,1],[1,0],[0,3],[3,0],[2,0],[2,3]],"entries":[0],"goals":[1,3],
+            "learned_goals":[[1,"away"]],"learned_landings":[[2,"away"]],
+            "pickup_goals":[[3,{"id":7,"kind":"armor","item":"ra"}]]
+        }}"#;
+        let library: learned::LearnedRoutes = serde_json::from_str(
+            r#"{"version":1,"map":"test","routes":[{
+                "id":"away","start":{"x":0,"y":0,"z":40},"landing":{"x":3000,"y":0,"z":0},
+                "yaw":0,"ticks":125,"script":[[125,1,0,0,0,0]]
+            }]}"#,
+        )
+        .unwrap();
+        let mut graph: WashoiNavigation = serde_json::from_str(bake).unwrap();
+        graph.link_learned(&library);
+        let beside = Vec3::new(0.0, 0.0, 44.0);
+        let route = graph
+            .plan(
+                beside,
+                None,
+                None,
+                true,
+                |route| route.pickup.is_some(),
+                |_| 0.0,
+            )
+            .unwrap();
+        assert_eq!(route.learned_route, None);
+        assert_eq!(route.waypoints.last(), Some(&[0.0, 0.0, 400.0]));
+        let [(7, cost)] = graph.pickup_costs(beside, None, true)[..] else {
+            panic!("the pickup");
+        };
+        assert!(cost < 500.0, "{cost}");
+    }
+
+    #[test]
     fn plans_with_learned_links_masked_but_for_a_pocket_they_leave() {
         // Pickup 7 at node 3 is a short recording "jump" (1 to 2) or a long
         // walk past pickup 11 at node 4 from node 0. Node 5 is a pocket with pickup 9, a
