@@ -37,7 +37,7 @@
 //
 //   node node_modules/vite-node/vite-node.mjs <SHAGADELIC>/tools/bench-washoi-milestone.mjs -- \
 //     --exe-a <shagadelic.exe> [--exe-b <shagadelic.exe>] --nav <navigation dir> [--nav-b <dir>] \
-//     [--learned <learned routes dir>] [--allow-no-maneuvers] [--modes duel,ffa,snd,amphi] [--blocks 2] [--block 4] \
+//     [--learned <learned routes dir>] [--allow-no-maneuvers] [--modes duel,ffa,snd,amphi] [--blocks 2] [--block 4] [--first-block 0] \
 //     [--seconds 90] [--snd-seconds 240] [--difficulty hard] [--port 8700] \
 //     [--traces <dir>] [--moves] [--out <results.jsonl>]
 //
@@ -64,11 +64,14 @@ const arms = [
   ["b", option("exe-b", navigationDirB && option("exe-a")), navigationDirB ?? navigationDir],
 ].filter(([, exe]) => exe);
 if (arms.length === 0 || !navigationDir) {
-  throw new Error("Usage: bench-washoi-milestone.mjs --exe-a <exe> [--exe-b <exe>] --nav <dir> [--nav-b <dir>] [--learned <dir>] [--allow-no-maneuvers] [--modes duel,ffa,snd,amphi] [--blocks] [--block] [--seconds] [--snd-seconds] [--difficulty] [--port] [--traces <dir>] [--moves] [--out <file>]");
+  throw new Error("Usage: bench-washoi-milestone.mjs --exe-a <exe> [--exe-b <exe>] --nav <dir> [--nav-b <dir>] [--learned <dir>] [--allow-no-maneuvers] [--modes duel,ffa,snd,amphi] [--blocks] [--block] [--first-block] [--seconds] [--snd-seconds] [--difficulty] [--port] [--traces <dir>] [--moves] [--out <file>]");
 }
 const learnedRoutesDir = option("learned", undefined);
 const modes = option("modes", "duel,ffa,snd").split(",");
 const blocks = Number(option("blocks", "2"));
+// Blocks numbered from --first-block, so a run split in two continues the
+// match indices and the alternation of the first.
+const firstBlock = Number(option("first-block", "0"));
 const block = Number(option("block", "4"));
 const seconds = Number(option("seconds", "90"));
 const sndSeconds = Number(option("snd-seconds", "240"));
@@ -436,7 +439,7 @@ if (out) {
   mkdirSync(dirname(resolve(out)), { recursive: true });
   writeFileSync(out, "");
 }
-for (let b = 0; b < blocks; b++) {
+for (let b = firstBlock; b < firstBlock + blocks; b++) {
   const order = b % 2 === 0 ? arms : [...arms].reverse();
   for (const [arm, exe, navigationDir] of order) {
     for (const mode of modes) {
