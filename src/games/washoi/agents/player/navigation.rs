@@ -1681,13 +1681,21 @@ mod tests {
         let plan = |graph: &WashoiNavigation| graph.plan(at, None, None, |_| true, |_| 0.0);
         // The walk graph alone, as without learned routes, or with others.
         let mut graph: WashoiNavigation = serde_json::from_str(bake).unwrap();
+        let areas = |graph: &WashoiNavigation| graph.planner.as_ref().unwrap().area_counts();
+        let baked = areas(&graph);
         assert!(costs(&graph).is_empty());
         graph.link_learned(&library("other"));
+        assert_eq!(areas(&graph), baked);
         assert!(costs(&graph).is_empty());
         assert!(plan(&graph).is_none());
         // With the recording: 100 to the takeoff, 125 ticks at 320 u/s for
         // the link (BotNavGraph LEARNED_COST_SPEED), 100 from the landing.
         graph.link_learned(&library("jump"));
+        // One area now, its one ordinary goal the pocket pickup: the
+        // takeoff counts as no goal, as at the bake.
+        let (component, goals) = areas(&graph);
+        assert!(component.iter().all(|&area| area == component[0]));
+        assert_eq!(goals[component[0]], 1);
         let [(id, cost)] = costs(&graph)[..] else {
             panic!("the pocket pickup");
         };

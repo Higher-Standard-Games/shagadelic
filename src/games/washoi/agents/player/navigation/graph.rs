@@ -171,6 +171,13 @@ impl PartialEq for Visit {
 impl Eq for Visit {}
 
 impl Planner {
+    /// Each node's area and each area's ordinary goal count, for tests
+    /// comparing the areas across a link.
+    #[cfg(test)]
+    pub(super) fn area_counts(&self) -> (Vec<usize>, Vec<usize>) {
+        (self.areas.component.clone(), self.areas.goals.clone())
+    }
+
     /// Link each learned takeoff to its recording's landing, for the
     /// recordings `ticks` knows, as TypeScript's `BotNavGraph.addLearnedRoutes`
     /// adds a learned route as a `jump` edge costing its ticks as distance at
@@ -189,6 +196,10 @@ impl Planner {
                 Some(((*takeoff, *landing), (id.clone(), cost)))
             })
             .collect();
+        // No recording to link: keep the walk graph's own goals and areas.
+        if self.links.is_empty() {
+            return;
+        }
         let count = self.nodes.len();
         let mut forward = self.neighbors.clone();
         for &(takeoff, landing) in self.links.keys() {
@@ -202,6 +213,9 @@ impl Planner {
                 reverse[to].push(from);
             }
         }
+        // The planned goals are the ordinary ones: learned takeoffs were left
+        // out of them at the bake (`routes`), so they count as Areas::new
+        // counts them there.
         let goals: Vec<usize> = self.goals.iter().map(|goal| goal.node).collect();
         self.areas = Areas::new(components(&forward, &reverse), &goals, &vec![None; count]);
         self.goals = self
