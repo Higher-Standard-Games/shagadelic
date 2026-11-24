@@ -33,6 +33,13 @@ const STANDING_LIFT: f64 = 24.0;
 /// at standing height.
 type Corners = BTreeMap<(usize, usize), Vec<[f64; 3]>>;
 type Maneuvers = BTreeMap<(usize, usize), Maneuver>;
+/// Learned links, takeoff to landing: the recording's ID and the link's cost.
+type LearnedLinks = BTreeMap<(usize, usize), (String, f64)>;
+/// A learned link's cost is its recording's ticks as distance at this speed,
+/// TypeScript's `LEARNED_COST_SPEED` (`BotNavGraph.addLearnedRoutes`).
+const LEARNED_COST_SPEED: f64 = 320.0;
+/// Washoi's tick rate, to turn a recording's ticks into seconds.
+const TICK_RATE: f64 = 125.0;
 /// A walk edge a bot stands on: how far off it, the edge, and the rest of
 /// its walk from there.
 type EdgeMatch = (f64, (usize, usize), Vec<[f64; 3]>);
@@ -72,6 +79,12 @@ pub(in crate::games::washoi) struct Planner {
     maneuvers: Maneuvers,
     goals: Vec<PlannedGoal>,
     areas: Areas,
+    /// Each learned takeoff with the landing of the same recording, from
+    /// the bake's `learned_goals` and `learned_landings`.
+    learned_pairs: Vec<(usize, usize, String)>,
+    /// The pairs whose recording the bot has, once linked
+    /// (`Planner::link_learned`). Empty: the walk graph alone.
+    links: LearnedLinks,
 }
 
 struct PlannedGoal {
@@ -158,6 +171,56 @@ impl PartialEq for Visit {
 impl Eq for Visit {}
 
 impl Planner {
+    /// Link each learned takeoff to its recording's landing, for the
+    /// recordings `ticks` knows, as TypeScript's `BotNavGraph.addLearnedRoutes`
+    /// adds a learned route as a `jump` edge costing its ticks as distance at
+    /// `LEARNED_COST_SPEED`. Goals past a recording, such as washoi_dm2's Red
+    /// Armor, become reachable to goal choice and planning, and their area
+    /// joins the area the takeoff is in. A walk planned across a link ends
+    /// at the takeoff with the recording to play (`best_route`). Without a
+    /// recording, a pair stays unlinked and the walks are the graph's alone.
+    pub(in crate::games::washoi) fn link_learned(&mut self, ticks: impl Fn(&str) -> Option<usize>) {
+        self.links = self
+            .learned_pairs
+            .iter()
+            .filter_map(|(takeoff, landing, id)| {
+                let ticks = ticks(id)?;
+                let cost = ticks as f64 / TICK_RATE * LEARNED_COST_SPEED;
+                Some(((*takeoff, *landing), (id.clone(), cost)))
+            })
+            .collect();
+        let count = self.nodes.len();
+        let mut forward = self.neighbors.clone();
+        for &(takeoff, landing) in self.links.keys() {
+            if !forward[takeoff].contains(&landing) {
+                forward[takeoff].push(landing);
+            }
+        }
+        let mut reverse = vec![Vec::new(); count];
+        for (from, adjacent) in forward.iter().enumerate() {
+            for &to in adjacent {
+                reverse[to].push(from);
+            }
+        }
+        let goals: Vec<usize> = self.goals.iter().map(|goal| goal.node).collect();
+        self.areas = Areas::new(components(&forward, &reverse), &goals, &vec![None; count]);
+        self.goals = self
+            .goals
+            .iter()
+            .map(|goal| {
+                walks_to(
+                    &self.nodes,
+                    goal.node,
+                    &reverse,
+                    &self.corners,
+                    &self.maneuvers,
+                    &self.links,
+                    goal.pickup,
+                )
+            })
+            .collect();
+    }
+
     /// Node positions, standing origins, in graph index order. The order is
     /// stable for the life of the planner.
     /// Every pickup goal and its node's standing origin.
@@ -618,9 +681,19 @@ impl Planner {
             }
             let mut waypoints = lead.clone();
             let mut maneuvers = Vec::new();
+            let mut learned_route = None;
             let mut node = start;
             while let Some(next) = goal.toward[node] {
                 let next = usize::from(next);
+                // The walk ends at a learned takeoff; the recording flies the
+                // rest, and the landing's continuation walks on to the goal.
+                if let Some((id, _)) = self.links.get(&(node, next)) {
+                    if waypoints.is_empty() {
+                        waypoints.push(self.nodes[node]);
+                    }
+                    learned_route = Some(id.clone());
+                    break;
+                }
                 if let Some(&maneuver) = self.maneuvers.get(&(node, next)) {
                     maneuvers.push((waypoints.len(), maneuver));
                 }
@@ -631,7 +704,7 @@ impl Planner {
                 entry: lead.first().copied().unwrap_or(self.nodes[start]),
                 waypoints,
                 maneuvers,
-                learned_route: None,
+                learned_route,
                 resumed_from: None,
                 pickup: goal.pickup,
             };
@@ -775,9 +848,31 @@ impl WalkGraph {
             .collect();
         goals.sort_unstable();
         goals.dedup();
+        let links = LearnedLinks::new();
         let goals = goals
             .into_iter()
-            .map(|node| self.walks_to(node, &reverse, &corners, &maneuvers, pickups[node]))
+            .map(|node| {
+                walks_to(
+                    &self.nodes,
+                    node,
+                    &reverse,
+                    &corners,
+                    &maneuvers,
+                    &links,
+                    pickups[node],
+                )
+            })
+            .collect();
+        let learned_pairs = self
+            .learned_goals
+            .iter()
+            .filter_map(|(takeoff, id)| {
+                let (landing, _) = self
+                    .learned_landings
+                    .iter()
+                    .find(|(_, other)| other == id)?;
+                (takeoff != landing).then(|| (*takeoff, *landing, id.clone()))
+            })
             .collect();
         Ok((
             routes,
@@ -788,44 +883,10 @@ impl WalkGraph {
                 maneuvers,
                 goals,
                 areas,
+                learned_pairs,
+                links,
             },
         ))
-    }
-
-    /// Dijkstra over reversed edges, so each node learns its next hop toward `goal`.
-    fn walks_to(
-        &self,
-        goal: usize,
-        reverse: &[Vec<usize>],
-        corners: &Corners,
-        maneuvers: &Maneuvers,
-        pickup: Option<PickupGoal>,
-    ) -> PlannedGoal {
-        let mut search = Search::new(self.nodes.len(), goal);
-        while let Some(node) = search.next() {
-            for &previous in &reverse[node] {
-                search.extend(
-                    node,
-                    previous,
-                    travel_cost(&self.nodes, corners, maneuvers, previous, node),
-                );
-            }
-        }
-        PlannedGoal {
-            node: goal,
-            pickup,
-            // MAX_NODES keeps node indices within u16.
-            toward: search
-                .predecessor
-                .into_iter()
-                .map(|node| node.map(|node| node as u16))
-                .collect(),
-            distance: search
-                .distances
-                .into_iter()
-                .map(|value| value as f32)
-                .collect(),
-        }
     }
 
     fn routes_from(&self, entry: usize, walk: Walk<'_>, resumed_from: Option<&str>) -> Vec<Route> {
@@ -1005,6 +1066,44 @@ fn edge_cost(nodes: &[[f64; 3]], corners: &Corners, from: usize, to: usize) -> f
             (point, distance + edge_length(previous, point))
         });
     travel + edge_length(last, nodes[to])
+}
+
+/// Dijkstra over reversed edges, so each node learns its next hop toward
+/// `goal`. A learned link costs its recording's time (`LearnedLinks`).
+fn walks_to(
+    nodes: &[[f64; 3]],
+    goal: usize,
+    reverse: &[Vec<usize>],
+    corners: &Corners,
+    maneuvers: &Maneuvers,
+    links: &LearnedLinks,
+    pickup: Option<PickupGoal>,
+) -> PlannedGoal {
+    let mut search = Search::new(nodes.len(), goal);
+    while let Some(node) = search.next() {
+        for &previous in &reverse[node] {
+            let cost = links.get(&(previous, node)).map_or_else(
+                || travel_cost(nodes, corners, maneuvers, previous, node),
+                |&(_, cost)| cost,
+            );
+            search.extend(node, previous, cost);
+        }
+    }
+    PlannedGoal {
+        node: goal,
+        pickup,
+        // MAX_NODES keeps node indices within u16.
+        toward: search
+            .predecessor
+            .into_iter()
+            .map(|node| node.map(|node| node as u16))
+            .collect(),
+        distance: search
+            .distances
+            .into_iter()
+            .map(|value| value as f32)
+            .collect(),
+    }
 }
 
 fn travel_cost(

@@ -190,7 +190,8 @@ impl RouteFollower {
             return None;
         }
         let route = active.route.get(navigation);
-        let pickup = route.pickup?;
+        // A walk to a learned takeoff ends short of its pickup.
+        let pickup = route.pickup.filter(|_| route.learned_route.is_none())?;
         let last = route.waypoints.len().checked_sub(1)?;
         (active.next == last && route.maneuver_at(last).is_none()).then(|| {
             crate::games::washoi::agents::player::navigation::slide::ItemLeg {
@@ -439,7 +440,15 @@ impl RouteFollower {
                     if self.replan_at.is_some_and(|at| now < at) {
                         return PlayerInput::default();
                     }
-                    let planned = navigation.plan(position, self.anchor, sight, unblocked, score);
+                    let planned = navigation.plan(
+                        position,
+                        self.anchor,
+                        sight,
+                        |route: &Route| {
+                            (allow_takeoff || route.learned_route.is_none()) && unblocked(route)
+                        },
+                        score,
+                    );
                     let Some(route) = planned else {
                         self.replan_at = Some(now + REPLAN_DELAY);
                         return PlayerInput::default();
@@ -526,7 +535,10 @@ impl RouteFollower {
                 }
             };
         }
-        if let Some(pickup) = route.pickup
+        // A walk to a learned takeoff ends out of sight of its pickup: it
+        // learns nothing of it there, and one waited out declines it.
+        let at_pickup = route.pickup.filter(|_| route.learned_route.is_none());
+        if let Some(pickup) = at_pickup
             && let Some(&target) = route.waypoints.last()
             && *next + 1 >= route.waypoints.len()
             && horizontal_distance(position, target) <= PICKUP_SIGHT_RADIUS
@@ -546,9 +558,7 @@ impl RouteFollower {
             }
             // Learn availability only at the end of a route within pickup
             // range. The server's full-map mask is broader than bot knowledge.
-            let taken = route
-                .pickup
-                .filter(|pickup| pickup_active.get(pickup.id) == Some(&false));
+            let taken = at_pickup.filter(|pickup| pickup_active.get(pickup.id) == Some(&false));
             let waited = now - *arrived.get_or_insert(now) >= ARRIVAL_DWELL;
             if let Some(pickup) = taken {
                 // Seen taken, here by the bot itself: back after its respawn

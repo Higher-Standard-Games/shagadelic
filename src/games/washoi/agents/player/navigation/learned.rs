@@ -144,6 +144,14 @@ impl LearnedRoutes {
         &self.map
     }
 
+    /// The length of the recording `id`, in ticks.
+    pub(in crate::games::washoi) fn ticks(&self, id: &str) -> Option<usize> {
+        self.routes
+            .iter()
+            .find(|route| route.id == id)
+            .map(|route| route.ticks)
+    }
+
     pub(in crate::games::washoi) fn approach_target(
         &self,
         id: &str,

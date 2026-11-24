@@ -271,6 +271,19 @@ impl WashoiNavigation {
         &self.map
     }
 
+    /// Plan across the baked learned links whose recordings `library` holds
+    /// (`graph::Planner::link_learned`), so goals past them can be chosen
+    /// and walked to. Call it once the bots' learned routes are known; a
+    /// navigation without it plans over the walk graph alone.
+    pub fn link_learned(&mut self, library: &learned::LearnedRoutes) {
+        if library.map() != self.map {
+            return;
+        }
+        if let Some(planner) = &mut self.planner {
+            planner.link_learned(|id| library.ticks(id));
+        }
+    }
+
     /// The SHA-256 of the BSP the walk graph was baked from, in lowercase
     /// hex. None for authored routes.
     pub fn bsp_sha256(&self) -> Option<&str> {
@@ -1641,6 +1654,52 @@ mod tests {
         let far = planner.pickup_costs(Vec3::new(-600.0, 0.0, 0.0), |_, _| false, |_, _| true);
         assert_eq!(far.len(), 1);
         assert!((far[0].1 - 800.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn plans_across_a_learned_link_only_with_its_recording() {
+        // A pocket pickup reached only by recording "jump", from its takeoff
+        // at node 1 to its landing at node 2; the pocket drops back to 0.
+        let bake = r#"{"map":"test","graph":{
+            "bsp_sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            "nodes":[[0,0,0],[100,0,0],[100,0,500],[100,0,600]],
+            "edges":[[0,1],[1,0],[2,3],[3,2],[3,0]],"entries":[0],"goals":[1,3],
+            "learned_goals":[[1,"jump"]],"learned_landings":[[2,"jump"]],
+            "pickup_goals":[[3,{"id":7,"kind":"armor","item":"ra"}]]
+        }}"#;
+        let library = |id: &str| -> learned::LearnedRoutes {
+            serde_json::from_str(&format!(
+                r#"{{"version":1,"map":"test","routes":[{{
+                "id":"{id}","start":{{"x":100,"y":0,"z":0}},"landing":{{"x":100,"y":0,"z":500}},
+                "yaw":0,"ticks":125,"script":[[125,1,0,0,0,0]]
+            }}]}}"#
+            ))
+            .unwrap()
+        };
+        let at = Vec3::new(0.0, 0.0, 0.0);
+        let costs = |graph: &WashoiNavigation| graph.pickup_costs(at, None);
+        let plan = |graph: &WashoiNavigation| graph.plan(at, None, None, |_| true, |_| 0.0);
+        // The walk graph alone, as without learned routes, or with others.
+        let mut graph: WashoiNavigation = serde_json::from_str(bake).unwrap();
+        assert!(costs(&graph).is_empty());
+        graph.link_learned(&library("other"));
+        assert!(costs(&graph).is_empty());
+        assert!(plan(&graph).is_none());
+        // With the recording: 100 to the takeoff, 125 ticks at 320 u/s for
+        // the link (BotNavGraph LEARNED_COST_SPEED), 100 from the landing.
+        graph.link_learned(&library("jump"));
+        let [(id, cost)] = costs(&graph)[..] else {
+            panic!("the pocket pickup");
+        };
+        assert_eq!(id, 7);
+        assert!((cost - 520.0).abs() < 1e-3, "{cost}");
+        // The walk to it ends at the takeoff with the recording to play.
+        let route = graph
+            .plan(at, None, None, |route| route.pickup.is_some(), |_| 0.0)
+            .unwrap();
+        assert_eq!(route.learned_route.as_deref(), Some("jump"));
+        assert_eq!(route.waypoints.last(), Some(&[100.0, 0.0, 0.0]));
+        assert_eq!(route.pickup.map(|pickup| pickup.id), Some(7));
     }
 
     #[test]
