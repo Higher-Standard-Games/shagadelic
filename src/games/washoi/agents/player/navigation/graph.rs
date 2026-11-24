@@ -96,7 +96,8 @@ struct WalkOnly {
     areas: Areas,
     /// Each node whose walkable goals are all dead ends: goals that walk to
     /// no other goal. washoi_dm2's Red Armor ledge is one, the Red Armor its
-    /// one walkable goal, left by a recording alone.
+    /// one walkable goal, left by a recording alone. A node that walks to no
+    /// goal at all is one too, so a stranded bot keeps the links out.
     pocket: Vec<bool>,
 }
 
