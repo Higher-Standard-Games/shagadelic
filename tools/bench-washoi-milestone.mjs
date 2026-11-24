@@ -36,7 +36,7 @@
 // outside S&D also each player's entity id and the server's damage events.
 //
 //   node node_modules/vite-node/vite-node.mjs <SHAGADELIC>/tools/bench-washoi-milestone.mjs -- \
-//     --exe-a <shagadelic.exe> [--exe-b <shagadelic.exe>] --nav <navigation dir> \
+//     --exe-a <shagadelic.exe> [--exe-b <shagadelic.exe>] --nav <navigation dir> [--nav-b <dir>] \
 //     [--learned <learned routes dir>] [--allow-no-maneuvers] [--modes duel,ffa,snd,amphi] [--blocks 2] [--block 4] \
 //     [--seconds 90] [--snd-seconds 240] [--difficulty hard] [--port 8700] \
 //     [--traces <dir>] [--moves] [--out <results.jsonl>]
@@ -44,7 +44,9 @@
 // The navigation directory holds each map's baked files (<map>.json,
 // .sight, .collision, .locations.json). A block plays --block matches of
 // every mode for each arm, in an order that alternates by block; --blocks
-// blocks make the run. Ports run from --port: each match takes one for the
+// blocks make the run. --nav-b gives arm b its own navigation directory, to
+// compare bakes interleaved in one run; arm b runs --exe-a unless --exe-b is
+// given. Ports run from --port: each match takes one for the
 // server and one 50 above for the TypeScript bot server, and 20 are cycled.
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -55,10 +57,14 @@ const option = (name, fallback) => {
   const at = argv.indexOf(`--${name}`);
   return at < 0 ? fallback : argv[at + 1];
 };
-const arms = [["a", option("exe-a")], ["b", option("exe-b")]].filter(([, exe]) => exe);
 const navigationDir = option("nav");
+const navigationDirB = option("nav-b", undefined);
+const arms = [
+  ["a", option("exe-a"), navigationDir],
+  ["b", option("exe-b", navigationDirB && option("exe-a")), navigationDirB ?? navigationDir],
+].filter(([, exe]) => exe);
 if (arms.length === 0 || !navigationDir) {
-  throw new Error("Usage: bench-washoi-milestone.mjs --exe-a <exe> [--exe-b <exe>] --nav <dir> [--learned <dir>] [--allow-no-maneuvers] [--modes duel,ffa,snd,amphi] [--blocks] [--block] [--seconds] [--snd-seconds] [--difficulty] [--port] [--traces <dir>] [--moves] [--out <file>]");
+  throw new Error("Usage: bench-washoi-milestone.mjs --exe-a <exe> [--exe-b <exe>] --nav <dir> [--nav-b <dir>] [--learned <dir>] [--allow-no-maneuvers] [--modes duel,ffa,snd,amphi] [--blocks] [--block] [--seconds] [--snd-seconds] [--difficulty] [--port] [--traces <dir>] [--moves] [--out <file>]");
 }
 const learnedRoutesDir = option("learned", undefined);
 const modes = option("modes", "duel,ffa,snd").split(",");
@@ -74,7 +80,7 @@ const out = option("out", undefined);
 const maps = { duel: option("duel-map", "washoi_dm2"), ffa: option("ffa-map", "washoi_dm2"), snd: option("snd-map", "washoi_snd1"), amphi: option("amphi-map", "washoi_dm2") };
 // A map without its bake runs bots that can't navigate, and the bench would
 // score them anyway.
-for (const mode of modes) {
+for (const [, , navigationDir] of arms) for (const mode of modes) {
   for (const extension of ["json", "sight", "collision"]) {
     const file = join(navigationDir, `${maps[mode]}.${extension}`);
     if (!existsSync(file)) throw new Error(`${mode} needs ${file}; bake ${maps[mode]} into --nav first`);
@@ -85,7 +91,7 @@ for (const mode of modes) {
   // such a bake on purpose, to compare with results taken on it.
   const graph = JSON.parse(readFileSync(join(navigationDir, `${maps[mode]}.json`), "utf8")).graph ?? {};
   if (!(graph.maneuvers?.length > 0) && !argv.includes("--allow-no-maneuvers")) {
-    throw new Error(`${mode}: ${maps[mode]}.json in --nav has no maneuvers; rebake it with tools/bake-washoi-walk-graph.mjs, or pass --allow-no-maneuvers`);
+    throw new Error(`${mode}: ${maps[mode]}.json in ${navigationDir} has no maneuvers; rebake it with tools/bake-washoi-walk-graph.mjs, or pass --allow-no-maneuvers`);
   }
 }
 
@@ -116,7 +122,7 @@ for (const mode of modes) bsps[maps[mode]] ??= await loadBspCollision(maps[mode]
 let portSlot = 0;
 
 /** One match: the server, both kinds of bot, and what the mode measures. */
-async function playMatch({ arm, exe, mode, index }) {
+async function playMatch({ arm, exe, navigationDir, mode, index }) {
   const map = maps[mode];
   const bsp = bsps[map];
   const port = basePort + (portSlot++ % 20) * 2;
@@ -413,11 +419,11 @@ if (out) {
 }
 for (let b = 0; b < blocks; b++) {
   const order = b % 2 === 0 ? arms : [...arms].reverse();
-  for (const [arm, exe] of order) {
+  for (const [arm, exe, navigationDir] of order) {
     for (const mode of modes) {
       for (let m = 0; m < block; m++) {
         const index = b * block + m;
-        const result = await playMatch({ arm, exe, mode, index });
+        const result = await playMatch({ arm, exe, navigationDir, mode, index });
         results.push(result);
         print(JSON.stringify(result));
         if (out) appendFileSync(out, JSON.stringify(result) + "\n");
@@ -435,8 +441,8 @@ const interval = (xs) => {
   return `${m.toFixed(2)} ± ${((1.96 * sd) / Math.sqrt(Math.max(1, xs.length))).toFixed(2)} (95%)`;
 };
 print(`\nMilestone bench, ${difficulty}, ${blocks} blocks of ${block} per mode per arm`);
-for (const [arm, exe] of arms) {
-  print(`\nArm ${arm}: ${exe}`);
+for (const [arm, exe, navigationDir] of arms) {
+  print(`\nArm ${arm}: ${exe}, navigation ${navigationDir}`);
   const mine = results.filter((r) => r.arm === arm);
   const duel = mine.filter((r) => r.mode === "duel");
   if (duel.length) {
