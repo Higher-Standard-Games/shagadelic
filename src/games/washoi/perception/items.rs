@@ -31,9 +31,10 @@
 //! the ones the server says it is wrong about first, and fills pickups it
 //! has no entry for from the server's mask. Both read server truth, so here
 //! every spot in sight is checked each update, and a pickup without a spot
-//! is believed up. When a timed match goes live, the bot knows the rule
-//! every player does: warmup takes are void, other items are up, and the
-//! majors spawn 15 s later. TypeScript keeps its warmup beliefs. A spot beside the bot, within `SELF_TAKE_RADIUS`, is
+//! is believed up. When the server restores the items, as a match goes
+//! live or a round freezes, the bot knows the rule every player does:
+//! earlier takes are void, other items are up, and the majors spawn 15 s
+//! later. TypeScript keeps its earlier beliefs. A spot beside the bot, within `SELF_TAKE_RADIUS`, is
 //! checked whichever way it looks, as a player standing on an empty spot
 //! knows it is empty. TypeScript knows an item up only from seeing it there.
 //! Here its own return estimate passing counts too, so an item found gone
@@ -142,7 +143,8 @@ impl ItemBeliefs {
         *self = Self::default();
     }
 
-    /// A timed match went live at `tick`: the server restores every item
+    /// The server restored every item at `tick`, as a match went live or a
+    /// round froze
     /// (`PickupSystem.resetForMatch`), majors after
     /// `MAJOR_FIRST_SPAWN_TICKS`. Warmup takes and timings are void.
     pub(in crate::games::washoi) fn match_started(&mut self, tick: u32, spots: &[Spot]) {

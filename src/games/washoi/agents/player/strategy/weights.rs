@@ -154,6 +154,8 @@ pub(in crate::games::washoi) struct MatchContext {
     /// Each team's role, such as `attacker` or `defender`.
     pub(in crate::games::washoi) team_roles: Vec<(String, String)>,
     pub(in crate::games::washoi) round_state: Option<String>,
+    /// The round number, sent only by round modes (`MatchState.toSnapshot`).
+    pub(in crate::games::washoi) round: Option<u32>,
     pub(in crate::games::washoi) time_remaining: Option<f64>,
     /// The S&D bomb, when the mode has one.
     pub(in crate::games::washoi) objective: Option<Objective>,
@@ -185,6 +187,10 @@ impl MatchContext {
                 .get("roundState")
                 .and_then(Value::as_str)
                 .map(str::to_owned),
+            round: event
+                .get("round")
+                .and_then(Value::as_f64)
+                .map(|round| round as u32),
             time_remaining: event.get("timeRemaining").and_then(Value::as_f64),
             objective: event.get("objective").and_then(objective),
         }
@@ -199,6 +205,23 @@ impl MatchContext {
             .iter()
             .find(|(known, _)| known == team)
             .map(|(_, role)| role.as_str())
+    }
+
+    /// Whether the server just restored the map's items, going from the
+    /// phase `before` to this one (`GametypeController` lines 695-730,
+    /// `PickupSystem.resetForMatch` and `resetForRound`). A round mode
+    /// restores them at every round's freeze, entering the countdown, and
+    /// any other mode when it goes live. (A campaign's held opening
+    /// countdown also restores them on entering it, which the match state
+    /// doesn't show; that one is missed.)
+    pub(in crate::games::washoi) fn restores_items_after(&self, before: Option<u8>) -> bool {
+        const COUNTDOWN: u8 = 1;
+        const ACTIVE: u8 = 2;
+        if self.round.is_some() {
+            self.phase == COUNTDOWN && before.is_some_and(|phase| phase != COUNTDOWN)
+        } else {
+            self.phase == ACTIVE && matches!(before, Some(0 | COUNTDOWN))
+        }
     }
 
     /// `GAMETYPE_HABITS.keepsTerritory`: a Duel is won by holding ground and
@@ -281,6 +304,25 @@ fn profile_key(gametype: &str) -> String {
 mod tests {
     use super::*;
     use shagger_shared::json;
+
+    #[test]
+    fn items_are_restored_when_a_match_goes_live_or_a_round_freezes() {
+        let state = |text: &str| MatchContext::read(&json::parse(text).unwrap());
+        let duel = state(r#"{"gametypeName":"Duel","phase":2}"#);
+        assert!(duel.restores_items_after(Some(0)));
+        assert!(duel.restores_items_after(Some(1)));
+        assert!(!duel.restores_items_after(Some(2)), "already live");
+        assert!(!duel.restores_items_after(None), "joined live");
+        let freeze = state(r#"{"gametypeName":"Search & Destroy","phase":1,"round":2}"#);
+        assert!(freeze.restores_items_after(Some(2)));
+        assert!(freeze.restores_items_after(Some(4)));
+        assert!(!freeze.restores_items_after(Some(1)));
+        let live = state(r#"{"gametypeName":"Amphi","phase":2,"round":2}"#);
+        assert!(
+            !live.restores_items_after(Some(1)),
+            "restored at the freeze"
+        );
+    }
 
     #[test]
     fn picks_the_most_specific_profile_for_mode_role_and_round() {

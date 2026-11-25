@@ -328,7 +328,7 @@ pub struct BotPlayer {
     items: ItemBeliefs,
     item_random: Random,
     item_news: ItemNews,
-    /// A timed match went live since the last item update.
+    /// The server restored the map's items since the last item update.
     match_started: bool,
     match_context: Option<MatchContext>,
     recent_damage: Vec<u32>,
@@ -1680,11 +1680,7 @@ impl BotPlayer {
                 SnapshotEvent::MatchState(state) => {
                     let next = MatchContext::read(state);
                     let before = self.match_context.as_ref().map(|context| context.phase);
-                    // Warmup or countdown to live, outside round modes.
-                    if next.phase == 2
-                        && matches!(before, Some(0 | 1))
-                        && next.round_state.is_none()
-                    {
+                    if next.restores_items_after(before) {
                         self.match_started = true;
                     }
                     self.match_context = Some(next);
