@@ -32,7 +32,8 @@
 // the server's damage events since the last sample. With --moves and
 // --traces, every mode also writes `moves.jsonl`: each player's position,
 // velocity, grounded, crouch and slide state, jump and crouch buttons, and
-// health and armor, ten times a second, with the server's pickup mask, for
+// health and armor, ten times a second, with the server's pickup mask and
+// every item take since the last sample (`PickupSystem.consumePickup`), for
 // finding where each side's speed comes from and who took which item;
 // outside S&D also each player's entity id and the server's damage events.
 //
@@ -221,6 +222,18 @@ async function playMatch({ arm, exe, navigationDir, mode, index }) {
         clear();
       };
     }
+    // Every armor, health, powerup, and ammo take, exactly, from the server:
+    // `PickupSystem.consumePickup`. A take can come on the tick an item
+    // spawns, so the sampled mask alone never shows it up.
+    const pickupSystem = server.pickupSystem;
+    const takes = [];
+    if (moves && traceDir && pickupSystem?.consumePickup) {
+      const consume = pickupSystem.consumePickup.bind(pickupSystem);
+      pickupSystem.consumePickup = (pickup, playerId, tickNum) => {
+        takes.push({ tick: tickNum, pickup: pickup.id, entity: playerId });
+        return consume(pickup, playerId, tickNum);
+      };
+    }
     const snd = { rounds: [], plants: { rust: 0, ts: 0 }, carries: { rust: 0, ts: 0 }, carrierDeaths: { rust: 0, ts: 0 } };
     let lastResult = null;
     let carrier = null;
@@ -351,7 +364,9 @@ async function playMatch({ arm, exe, navigationDir, mode, index }) {
           };
         }),
         // The server's pickup mask by pickup id: which items are actually up.
-        mask: server.pickupSystem?.getActiveMask?.() ?? null,
+        mask: pickupSystem?.getActiveMask?.() ?? null,
+        // The server's item takes since the last sample, by player entity id.
+        takes: takes.splice(0),
         // Outside S&D, whose world log carries it: the server damage since the last sample.
         ...(mode === "snd" ? {} : { damage: damage.splice(0) }),
       }) + "\n");
