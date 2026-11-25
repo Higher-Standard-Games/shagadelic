@@ -132,6 +132,16 @@ impl Traversal {
         }
     }
 
+    /// Past the point a fight may interrupt it: jump pressed, trigger
+    /// entered, or in the air. Before that it is still the approach, which
+    /// TypeScript's sequences leave uncommitted (`commitUntilTick` at the
+    /// start tick until `commitForTicks` from takeoff in
+    /// `ValidatedJumpSequence.ts`, `TraverseJumppadSequence.ts`, and
+    /// `TraverseTeleporterSequence.ts`).
+    pub(in crate::games::washoi) fn committed(&self) -> bool {
+        self.activated.is_some() || self.airborne
+    }
+
     pub(in crate::games::washoi) fn update(
         &mut self,
         position: Vec3,

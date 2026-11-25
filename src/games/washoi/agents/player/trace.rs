@@ -141,6 +141,10 @@ pub struct DecisionTrace {
     /// arrival to the decision.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inputs: Option<InputTiming>,
+    /// This decision dropped a learned route's or maneuver's approach
+    /// for a fight or a fade.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub approach_yielded: bool,
 }
 
 /// See `DecisionTrace::inputs`.

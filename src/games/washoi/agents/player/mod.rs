@@ -237,6 +237,14 @@ pub struct BotPlayer {
     inputs_traced: u64,
     /// Whether the last decision had a fight, to see fights start and end.
     fighting: bool,
+    /// The last decision was in TypeScript's FIGHT state: engaged and not
+    /// fading. FIGHT follows no path, so no takeoff starts from it.
+    in_fight: bool,
+    /// The last decision faded (TypeScript's RETREAT), whose path may take
+    /// a link.
+    fading: bool,
+    /// This decision dropped an approach for a fight, for the trace.
+    approach_yielded: bool,
     unstick: Unstick,
     /// Keeps the feet clear of walls, corners, and ledges (`navigation::clearance`).
     clearance: Clearance,
@@ -384,6 +392,9 @@ impl BotPlayer {
             inputs_sent: 0,
             inputs_traced: 0,
             fighting: false,
+            in_fight: false,
+            fading: false,
+            approach_yielded: false,
             unstick: Unstick::default(),
             clearance: Clearance::default(),
             steered: false,
@@ -701,9 +712,19 @@ impl BotPlayer {
         // A ledge slide jump gives way too, up to its jump. Once airborne it
         // runs to the landing.
         let ledge_yields = self.ledge.active() && !self.ledge.committed();
+        // So does the approach to a learned route or a maneuver, up to its
+        // takeoff: TypeScript interrupts an uncommitted sequence on a change
+        // of state (`StateMachineBrain.ts`, `_traversal.interrupt(state,
+        // "state:...")`; `BotSequence.ts`, `BotSequenceRuntime.interrupt`).
+        let approach_yields = self.exact_view
+            && !self.ledge.active()
+            && (matches!(self.traversal, Traversal::Approaching { .. })
+                || self.route.approaching_maneuver());
+        self.approach_yielded = false;
+        let mut fading_approach = false;
         self.engagement = match (&self.sight, position) {
             (Some(sight), Some(position))
-                if (!self.exact_view || hop_yields || ledge_yields)
+                if (!self.exact_view || hop_yields || ledge_yields || approach_yields)
                     && self.respawn_at.is_none()
                     && !self.traversal.active() =>
             {
@@ -728,6 +749,24 @@ impl BotPlayer {
         if ledge_yields && self.engagement.is_some() {
             self.ledge.abort(world.tick, false);
             self.exact_view = false;
+        }
+        if approach_yields && self.engagement.is_some() {
+            // Fight or fade, the state changes and the approach is dropped,
+            // its path with it, as TypeScript clears the path on a change of
+            // state. A fade's own path may take a link again (RETREAT
+            // navigates), and one it started is no change of state.
+            if self.fading && self.should_fade(world) {
+                self.engagement = None;
+                fading_approach = true;
+            } else {
+                if matches!(self.traversal, Traversal::Approaching { .. }) {
+                    self.traversal = Traversal::default();
+                    self.takeoff = None;
+                }
+                self.route.detach();
+                self.exact_view = false;
+                self.approach_yielded = true;
+            }
         }
         self.apply_mood(world, position);
         self.position = position;
@@ -759,6 +798,8 @@ impl BotPlayer {
                 }
             }
         }
+        self.fading = self.mover == "fade" || fading_approach;
+        self.in_fight = self.engagement.is_some() && !self.fading;
         self.blade_lunge(world, position);
         let was_chasing = self.chasing.take().is_some();
         // The `forget` mistake drops an enemy as soon as it is out of sight.
@@ -930,6 +971,7 @@ impl BotPlayer {
             },
             decide_micros: 0,
             inputs: None,
+            approach_yielded: self.approach_yielded,
             steered: self.steered,
             order_target: self
                 .orders
@@ -1751,6 +1793,7 @@ impl BotPlayer {
                         timing_noise: 2.0 * self.random.next() - 1.0,
                         sight: self.sight.as_deref(),
                         fighting: self.engagement.is_some() || self.chasing.is_some(),
+                        hold_maneuvers: self.in_fight,
                     },
                 );
                 // Once a landed recording's walk on is under way, the life
@@ -1807,7 +1850,9 @@ impl BotPlayer {
                     world: world as &mut dyn CollisionWorld,
                     triggers: &self.triggers,
                 });
-                if let Some(library) = &self.learned
+                // TypeScript's FIGHT follows no path: no approach starts.
+                if !self.in_fight
+                    && let Some(library) = &self.learned
                     && let Some(id) = self.route.takeoff(navigation)
                     && self
                         .traversal
@@ -2958,6 +3003,101 @@ mod tests {
                 .into_iter()
                 .all(|input| input.buttons & FIRE == 0)
         );
+    }
+
+    /// A learned route's approach gives way to a fight, as TypeScript
+    /// interrupts an uncommitted sequence on a change of state. Its script,
+    /// once playing, runs on.
+    #[test]
+    fn a_learned_approach_yields_to_a_fight_but_its_script_does_not() {
+        use crate::games::washoi::perception::sight::tests::{cube, encode};
+        use crate::games::washoi::{PlayerView, Vec3};
+        use shagger_shared::net::game_state::Velocity;
+        let library: Arc<LearnedRoutes> = Arc::new(
+            serde_json::from_str(
+                r#"{"version":1,"map":"test","routes":[{
+                    "id":"demo@1","start":{"x":0,"y":0,"z":0},"landing":{"x":100,"y":0,"z":0},
+                    "yaw":0,"ticks":150,"script":[[150,1,0,0,0,1]]
+                }]}"#,
+            )
+            .unwrap(),
+        );
+        let sight = Arc::new(
+            Sight::parse(&encode(
+                "test",
+                &[cube([-8.0, -100.0, 2000.0], [8.0, 200.0, 3000.0])],
+                &[],
+            ))
+            .unwrap(),
+        );
+        let entry = Vec3::new(48.0, 0.0, 0.0);
+        let world_at = |bot_at: Vec3, foe: bool| {
+            let mut world = Observation::default();
+            let mut bodies = vec![("bot", bot_at)];
+            if foe {
+                bodies.push(("foe", Vec3::new(400.0, 34.0, 400.0)));
+            }
+            for (id, at) in bodies {
+                world.players.push(PlayerView {
+                    entity_id: id.into(),
+                    ..PlayerView::default()
+                });
+                let body = world.body_or_insert(id);
+                body.position = Some(at);
+                body.velocity = Some(Velocity {
+                    grounded: true,
+                    ..Velocity::default()
+                });
+            }
+            world
+        };
+        let run = |bot: &mut BotPlayer, at: Vec3| {
+            let mut yielded = false;
+            for step in 0..20u32 {
+                let now = SimTime::ZERO + INPUT_PERIOD * step;
+                let mut world = world_at(at, true);
+                world.tick = step;
+                bot.observe_at(world, now);
+                bot.decide(now);
+                bot.inputs_at(now);
+                yielded |= bot.last_trace().is_some_and(|trace| trace.approach_yielded);
+            }
+            yielded
+        };
+        let fresh = || {
+            BotPlayer::new("bot".into())
+                .with_difficulty(Difficulty::Insane)
+                .with_sight(sight.clone())
+                .with_learned_routes(library.clone())
+                .with_trace(true)
+        };
+
+        let mut approaching = fresh();
+        assert!(approaching.traversal.begin_approach(
+            &library,
+            "demo@1",
+            entry,
+            SimTime::ZERO,
+            None,
+            &|_, _| false
+        ));
+        assert!(run(&mut approaching, entry));
+        assert!(!matches!(
+            approaching.traversal,
+            Traversal::Approaching { .. }
+        ));
+        assert_eq!(approaching.last_trace().unwrap().state, "fight");
+
+        let mut playing = fresh();
+        playing.traversal.observe(
+            &library,
+            world_at(Vec3::default(), false).body("bot").unwrap(),
+            SimTime::ZERO,
+            true,
+        );
+        assert!(playing.traversal.active());
+        assert!(!run(&mut playing, Vec3::default()));
+        assert_eq!(playing.last_trace().unwrap().state, "traversal");
     }
 
     #[test]

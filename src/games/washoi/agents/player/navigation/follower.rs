@@ -45,6 +45,9 @@ pub(in crate::games::washoi) struct RouteObservation<'a> {
     pub(in crate::games::washoi) sight: Option<&'a Sight>,
     /// Fight movement crosses the walk, so slow progress is no stall.
     pub(in crate::games::washoi) fighting: bool,
+    /// In TypeScript's FIGHT state, which follows no path, so no maneuver
+    /// starts (`StateMachineBrain.ts`, `_fight.fight`).
+    pub(in crate::games::washoi) hold_maneuvers: bool,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -322,6 +325,15 @@ impl RouteFollower {
         self.exact
     }
 
+    /// A maneuver under way that has not yet taken off, so a fight may
+    /// still interrupt it.
+    pub(in crate::games::washoi) fn approaching_maneuver(&self) -> bool {
+        self.active
+            .as_ref()
+            .and_then(|route| route.traversal.as_ref())
+            .is_some_and(|traversal| !traversal.committed())
+    }
+
     /// For traces: where this decision's walk line came from, and the lines
     /// built since the last record.
     pub(in crate::games::washoi) fn line_trace(&self) -> (Option<&'static str>, u32) {
@@ -386,6 +398,7 @@ impl RouteFollower {
             timing_noise,
             sight,
             fighting,
+            hold_maneuvers,
         } = observation;
         self.exact = false;
         let traversing = self.traversing();
@@ -544,6 +557,12 @@ impl RouteFollower {
             self.anchor = Some(route.waypoints[*next - 1]);
         }
         if let Some(maneuver) = route.maneuver_at(*next) {
+            if hold_maneuvers && traversal.is_none() {
+                return PlayerInput {
+                    yaw: input.yaw,
+                    ..PlayerInput::default()
+                };
+            }
             self.exact = true;
             let state = traversal.get_or_insert_with(|| Traversal::new(maneuver, now));
             return match state.update(position, velocity, now) {
@@ -713,6 +732,47 @@ mod tests {
         assert_eq!(walk.direction, [1.0, 0.0, 0.0]);
     }
 
+    /// A bot in a fight starts no maneuver. One started is still an
+    /// approach a fight may interrupt until its jump goes out.
+    #[test]
+    fn holds_a_maneuver_in_a_fight_and_commits_it_at_the_jump() {
+        let graph: WashoiNavigation = serde_json::from_str(
+            r#"{"map":"test","graph":{
+                "bsp_sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                "nodes":[[0,24,0],[80,24,0]],
+                "edges":[], "entries":[0],"goals":[1],
+                "maneuvers":[
+                    [0,1,{"kind":"jump","takeoff":[0,24,0],"landing":[80,24,0],
+                          "yaw":1.5707963267948966,"speed":0,"radius":48,"ticks":150}]
+                ]
+            }}"#,
+        )
+        .unwrap();
+        let mut follower = RouteFollower::default();
+        let mut steer = |ms, p: [f64; 3], hold| {
+            let mut observation = observe(SimTime::ZERO + Duration::from_millis(ms), false, None);
+            observation.velocity = Some(Velocity {
+                grounded: true,
+                ..Velocity::default()
+            });
+            observation.hold_maneuvers = hold;
+            let input = follower.steer(&graph, Vec3::new(p[0], p[1], p[2]), observation);
+            (
+                input.buttons,
+                follower.exact(),
+                follower.approaching_maneuver(),
+            )
+        };
+        assert_eq!(steer(0, [0.0, 24.0, 0.0], true), (0, false, false));
+        let (_, exact, approaching) = steer(16, [0.0, 24.0, 40.0], false);
+        assert!(exact && approaching);
+        let (buttons, exact, approaching) = steer(32, [0.0, 24.0, 0.0], false);
+        assert_eq!(buttons & (1 << 4), 1 << 4);
+        assert!(exact && !approaching);
+        // Under way, a fight no longer holds it.
+        assert!(steer(48, [4.0, 40.0, 0.0], true).1);
+    }
+
     fn observe(now: SimTime, allow_takeoff: bool, landed_id: Option<&str>) -> RouteObservation<'_> {
         RouteObservation {
             now,
@@ -725,6 +785,7 @@ mod tests {
             timing_noise: 0.0,
             sight: None,
             fighting: false,
+            hold_maneuvers: false,
         }
     }
 
