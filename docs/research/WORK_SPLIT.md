@@ -106,6 +106,19 @@ Session B, movement, navigation, and team play:
 
   Those two are the next lever. snd1 needs no rebake, since the learned routes are dm2 only.
 
+  A same-setup rerun on `bench-nav-v3` (assets A/B, 9 per arm) went 1-7-1 where this one went 7-1-1. This landing rested on weaker frag evidence than its interval showed. RA control held in both runs, and the per-approach result below stands on its own.
+- [x] Learned route approach settle and input lead (session B, 2026-11-25, `74972e2` to `de1e57b`). The decision trace records `inputs`: commands sent, the server's acknowledged one (`acked_input_seq`), and those since the last decision. `age_ms` reads 0 because the hosted runtime stamps snapshots with its own poll time. Every game's runtime advance now runs due decisions before due inputs, so a decision woken by a snapshot goes out in the same advance. That brought the Rust input lead's median from 5 commands (about 4 comparable) down to 3, level with TypeScript. The learned-route approach now ports TS's settle (`LearnedRouteSequence.ts` `SETTLE_RADIUS` 24): within 24 units of the mark, a bot still moving or crouched waits instead of creeping back, which ends the RA walkway and ledge stalls. The bench gained `--first-block`, so one run's halves can cover consecutive index ranges. The A/B ran Duel on dm2, 300 s, Hard, 18 matches per arm interleaved over blocks 0 to 5 (`bench-nav-v3`, the 161 learned routes), main against the branch:
+  - Approaches, the grounded traversal time before each hop or route start: mean 0.46 s, p99 3.73 s, against 0.35 s and 1.74 s. Over 2 s: 27, against 3. Over 5.5 s, near the 6 s timeout: 3, against 0. Main's long ones sit on the RA walkway and ledge. Unbroken traversal runs over 5.5 s (19 against 11) are the wrong measure, because an RA trip chains several hops with short settles.
+  - Wins: 10-7-1, against 9-7-2. Frag gap: +1.50 ± 2.25, against +0.83 ± 1.40. Paired by index: -0.67 ± 2.37.
+  - Traversal-mover deaths: 32 of 118 Rust deaths, against 42 of 127. Every run took off in both arms, so main wasn't timing fight-time links out. Deaths within 1 s of a takeoff went from 1 to 10: 7 began airborne with no approach and most were at 1 to 28 health, with 2 YA-drop falls at 26 and 28.
+  - MH takes, Rust against TypeScript: 43-31, against 30-43. MH, RA and YA together: 156-88, against 144-107. The MH loss is spread over 11 of 18 indices. Rust deaths within 400 units of MH: 13, against 28, though time spent there held at 16%. Only 6 of the 28 had traversal in the 3 s before. They were fights, mostly while recovering understacked (13 against 2), and 5 were at 1 health. No mechanism from the settle was found. The decide-first change can't be isolated in this A/B.
+  - Fall crushes (count, health and armor lost): Rust 43 and 5,143, against 33 and 4,475. TypeScript 35 and 3,918, against 49 and 4,773.
+  - Tickrate: no "No messages". Every match had one startup behind-window. Beyond those, 10 against 13, with spikes over 150 ms in both arms, which fits machine noise but isn't clean.
+
+  Open watch items:
+  - The danger gate is the next lever. Don't start a link while engaged or at low health unless it's a retreat or the item is worth it. That covers @72078 landing into the enemy and 28->17 at low health.
+  - MH-area deaths while understacked, and whether they persist.
+
 Mark items here as they land, with the commit.
 
 ## Notes between sessions
