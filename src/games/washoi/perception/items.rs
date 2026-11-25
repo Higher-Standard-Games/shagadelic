@@ -13,8 +13,9 @@
 //!   remembered time is off by up to ± max(0.5, 7.83 − 8.33·skill) s.
 //! - A major item seen vanishing is remembered with the same error.
 //! - A major item's spot in sight is watched every decision. Found gone, it
-//!   was taken midway between when the bot last saw it there and now, or
-//!   half a respawn ago. Other items' spots in sight are checked too.
+//!   was taken midway between now and the latest the bot knows it up, and
+//!   no earlier than a respawn ago. Other items' spots in sight are
+//!   checked too.
 //!
 //! The planner's return times come from these beliefs, as
 //! `goals/ItemGoalSource.ts` `respawnTickOf` (lines 41-83) feeds
@@ -28,7 +29,10 @@
 //! the ones the server says it is wrong about first, and fills pickups it
 //! has no entry for from the server's mask. Both read server truth, so here
 //! every spot in sight is checked each update, and a pickup without a spot
-//! is believed up. Without a sight file, as TypeScript without a map, the
+//! is believed up. TypeScript knows an item up only from seeing it there.
+//! Here its own return estimate passing counts too, so an item found gone
+//! soon after the bot believed it back is dated after that return. Without
+//! a sight file, as TypeScript without a map, the
 //! bot keeps the server's mask.
 
 use std::collections::BTreeMap;
@@ -107,8 +111,9 @@ pub(in crate::games::washoi) struct ItemBeliefs {
     /// Items believed down, by ID: the remembered taken tick, with this
     /// bot's error in it.
     down: BTreeMap<usize, i64>,
-    /// When each major item was last seen on its spot.
-    seen_up: BTreeMap<usize, u32>,
+    /// The latest tick each major item is known up: last seen on its spot,
+    /// or back by the bot's own return estimate.
+    up_since: BTreeMap<usize, i64>,
     /// The server's mask at the last update, to see items vanish.
     before: Vec<bool>,
     mask: Vec<bool>,
@@ -229,7 +234,7 @@ impl ItemBeliefs {
             if up_on_server(spot.id) {
                 self.down.remove(&spot.id);
                 if spot.major {
-                    self.seen_up.insert(spot.id, tick);
+                    self.up_since.insert(spot.id, i64::from(tick));
                 }
             } else if !self.down.contains_key(&spot.id) {
                 self.found_gone(spot, tick, error_ticks, random, &mut news);
@@ -274,8 +279,13 @@ impl ItemBeliefs {
         let Some(&taken) = self.down.get(&spot.id) else {
             return true;
         };
-        if i64::from(tick) >= taken + i64::from(spot.respawn_ticks) {
+        let back = taken + i64::from(spot.respawn_ticks);
+        if i64::from(tick) >= back {
             self.down.remove(&spot.id);
+            if spot.major {
+                let since = self.up_since.entry(spot.id).or_insert(back);
+                *since = (*since).max(back);
+            }
             return true;
         }
         false
@@ -301,8 +311,9 @@ impl ItemBeliefs {
         self.exact(spot, taken + off.round() as i64, learned);
     }
 
-    /// Found gone: taken since the bot last saw it there, or some time in
-    /// the last respawn period.
+    /// Found gone: taken midway between now and the latest the bot knows it
+    /// up, last seen there or back by its own estimate, and no earlier than
+    /// a respawn period ago.
     fn found_gone(
         &mut self,
         spot: &Spot,
@@ -313,12 +324,11 @@ impl ItemBeliefs {
     ) {
         let respawn = i64::from(spot.respawn_ticks);
         let now = i64::from(tick);
-        let taken = match self.seen_up.get(&spot.id) {
-            Some(&seen) if i64::from(seen) >= now - respawn => {
-                ((i64::from(seen) + now) as f64 / 2.0).round() as i64
-            }
-            _ => now - (respawn as f64 / 2.0).round() as i64,
-        };
+        let since = self
+            .up_since
+            .get(&spot.id)
+            .map_or(now - respawn, |&since| since.max(now - respawn));
+        let taken = ((since + now) as f64 / 2.0).round() as i64;
         self.remember(spot, taken, error_ticks, random, Learned::Found);
         if spot.major
             && let Ok(taken) = u32::try_from(taken)
@@ -562,6 +572,21 @@ mod tests {
         bot.yaw = FRAC_PI_2;
         let news = bot.see(&world(9000, [false, true], vec![]));
         assert_eq!(news.found_gone, [(0, 9000 - 3750)]);
+    }
+
+    #[test]
+    fn a_spot_found_empty_after_its_believed_return_dates_the_take_after_it() {
+        let mut bot = Bot::new(5, 1.0);
+        bot.see(&world(100, [true, true], vec![]));
+        bot.see(&world(110, [false, true], vec![picked("bot", 0)]));
+        // Believed back at 7,610, and taken unseen after.
+        bot.see(&world(7610, [true, true], vec![]));
+        assert_eq!(bot.items.up(0), Some(true));
+        bot.see(&world(8000, [false, true], vec![]));
+        bot.yaw = FRAC_PI_2;
+        let news = bot.see(&world(9000, [false, true], vec![]));
+        // Midway between the return and now, not half a respawn back.
+        assert_eq!(news.found_gone, [(0, (7610 + 9000) / 2)]);
     }
 
     #[test]
