@@ -14,8 +14,7 @@
 //! - A major item seen vanishing is remembered with the same error.
 //! - A major item's spot in sight is watched every decision. Found gone, it
 //!   was taken midway between when the bot last saw it there and now, or
-//!   half a respawn ago. Four other spots are checked in turn, the ones the
-//!   bot is wrong about first.
+//!   half a respawn ago. Other items' spots in sight are checked too.
 //!
 //! The planner's return times come from these beliefs, as
 //! `goals/ItemGoalSource.ts` `respawnTickOf` (lines 41-83) feeds
@@ -25,8 +24,12 @@
 //! Departures: the spot is the pickup's baked goal node, at standing height,
 //! where TypeScript looks 24 units under the item's origin. Beliefs update
 //! on each decision, with every event since the last, where TypeScript
-//! updates on each snapshot. Without a sight file, as TypeScript without a
-//! map, the bot keeps the server's mask.
+//! updates on each snapshot. TypeScript checks four other spots a snapshot,
+//! the ones the server says it is wrong about first, and fills pickups it
+//! has no entry for from the server's mask. Both read server truth, so here
+//! every spot in sight is checked each update, and a pickup without a spot
+//! is believed up. Without a sight file, as TypeScript without a map, the
+//! bot keeps the server's mask.
 
 use std::collections::BTreeMap;
 use std::f64::consts::PI;
@@ -41,8 +44,6 @@ const TICK_RATE: f64 = 125.0;
 /// `HEARING_RANGE.majorPickup` and `.pickup`.
 const MAJOR_PICKUP_RANGE: f64 = 2500.0;
 const PICKUP_RANGE: f64 = 900.0;
-/// `MAX_ITEM_CHECKS`: item spots checked in turn per update.
-const MAX_ITEM_CHECKS: usize = 4;
 /// `ITEM_SIGHT_RANGE`: items further than this can't be told from the spot.
 const ITEM_SIGHT_RANGE: f64 = 2000.0;
 /// `SELF_TAKE_RADIUS`: an item vanishing this close, the bot took.
@@ -96,7 +97,6 @@ pub(in crate::games::washoi) struct ItemBeliefs {
     /// Items believed down, by ID: the remembered taken tick, with this
     /// bot's error in it.
     down: BTreeMap<usize, i64>,
-    cursor: usize,
     /// When each major item was last seen on its spot.
     seen_up: BTreeMap<usize, u32>,
     /// The server's mask at the last update, to see items vanish.
@@ -210,43 +210,24 @@ impl ItemBeliefs {
             news.vanished.push(spot.id);
         }
 
-        // Major item spots in sight, every update.
+        // Every spot in sight, every update: up there, or found gone. Only a
+        // major item's sighting dates a later find.
         for (index, spot) in spots.iter().enumerate() {
-            if !spot.major || !sees(index) {
-                continue;
-            }
-            if up_on_server(spot.id) {
-                self.down.remove(&spot.id);
-                self.seen_up.insert(spot.id, tick);
-            } else if !self.down.contains_key(&spot.id) {
-                self.found_gone(spot, tick, error_ticks, random, &mut news);
-            }
-        }
-
-        // A few spots each update: the ones the bot is wrong about first.
-        let wrong: Vec<usize> = (0..spots.len())
-            .filter(|&index| up_on_server(spots[index].id) != self.believed_up(&spots[index], tick))
-            .collect();
-        let order: Vec<usize> = if wrong.is_empty() {
-            (0..spots.len()).collect()
-        } else {
-            wrong
-        };
-        for n in 0..MAX_ITEM_CHECKS.min(order.len()) {
-            let index = order[(self.cursor + n) % order.len()];
             if !sees(index) {
                 continue;
             }
-            let spot = &spots[index];
             if up_on_server(spot.id) {
                 self.down.remove(&spot.id);
+                if spot.major {
+                    self.seen_up.insert(spot.id, tick);
+                }
             } else if !self.down.contains_key(&spot.id) {
                 self.found_gone(spot, tick, error_ticks, random, &mut news);
             }
         }
-        self.cursor = (self.cursor + MAX_ITEM_CHECKS) % order.len().max(1);
 
-        let mut mask = server.to_vec();
+        // A pickup with no spot the bot knows is believed up.
+        let mut mask = vec![true; server.len()];
         for spot in spots {
             let up = self.believed_up(spot, tick);
             if let Some(slot) = mask.get_mut(spot.id) {
@@ -564,6 +545,21 @@ mod tests {
         bot.yaw = FRAC_PI_2;
         let news = bot.see(&world(9000, [false, true], vec![]));
         assert_eq!(news.found_gone, [(0, 9000 - 3750)]);
+    }
+
+    #[test]
+    fn any_item_in_sight_is_checked_and_one_without_a_spot_is_believed_up() {
+        let mut bot = Bot::new(5, 1.0);
+        // Facing the shells, not the mega.
+        bot.yaw = 0.0;
+        let mut shells_gone = world(100, [true, false], vec![]);
+        // A third pickup the bot has no spot for, down on the server.
+        shells_gone.server_pickup_mask.push(false);
+        let news = bot.see(&shells_gone);
+        assert!(news.found_gone.is_empty(), "news is of major items");
+        assert_eq!(bot.items.mask(), [true, false, true]);
+        let back = f64::from(bot.items.returns_tick(&SHELLS).unwrap());
+        assert!((back - (100.0 - 938.0 + 1875.0)).abs() <= 0.5 * TICK_RATE + 0.5);
     }
 
     #[test]
