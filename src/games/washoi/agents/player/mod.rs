@@ -2563,7 +2563,6 @@ impl BotPlayer {
                 view_yaw,
                 sight: self.sight.as_deref(),
                 skill: self.difficulty.item_timing_skill(),
-                major_hearing: self.difficulty.major_pickup_hearing(),
             },
             world,
             &spots,
