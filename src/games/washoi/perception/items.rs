@@ -88,8 +88,18 @@ pub(in crate::games::washoi) struct ItemTruth {
     /// Major items believed down while the server has them up.
     pub(in crate::games::washoi) wrong_down: Vec<usize>,
     /// For each major item back since the last update that the bot had a
-    /// return time for: the believed return minus the real one, in ticks.
-    pub(in crate::games::washoi) return_errors: Vec<(usize, i64)>,
+    /// return time for: the believed return minus the real one, in ticks,
+    /// and how the bot learned of the take.
+    pub(in crate::games::washoi) return_errors: Vec<(usize, i64, Learned)>,
+}
+
+/// How the bot learned of a take, for the trace alone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::games::washoi) enum Learned {
+    Own = 0,
+    Heard = 1,
+    Seen = 2,
+    Found = 3,
 }
 
 #[derive(Default)]
@@ -103,7 +113,7 @@ pub(in crate::games::washoi) struct ItemBeliefs {
     before: Vec<bool>,
     mask: Vec<bool>,
     /// Diagnostics: the believed return of each major item, by ID.
-    expected: BTreeMap<usize, i64>,
+    expected: BTreeMap<usize, (i64, Learned)>,
     truth: ItemTruth,
 }
 
@@ -140,11 +150,11 @@ impl ItemBeliefs {
             // Back, or up all along: a return time from before is spent.
             let expected = self.expected.remove(&spot.id);
             if before.get(spot.id) == Some(&false)
-                && let Some(expected) = expected
+                && let Some((expected, learned)) = expected
             {
                 self.truth
                     .return_errors
-                    .push((spot.id, expected - i64::from(tick)));
+                    .push((spot.id, expected - i64::from(tick), learned));
             }
         }
         let Some(sight) = senses
@@ -188,9 +198,9 @@ impl ItemBeliefs {
                 PICKUP_RANGE
             };
             if entity_id == senses.own {
-                self.exact(spot, i64::from(tick));
+                self.exact(spot, i64::from(tick), Learned::Own);
             } else if distance(me, spot.at) <= range && random.next() < skill {
-                self.remember(spot, i64::from(tick), error_ticks, random);
+                self.remember(spot, i64::from(tick), error_ticks, random, Learned::Heard);
             }
         }
 
@@ -200,13 +210,13 @@ impl ItemBeliefs {
                 continue;
             }
             if distance(me, spot.at) <= SELF_TAKE_RADIUS {
-                self.exact(spot, i64::from(tick));
+                self.exact(spot, i64::from(tick), Learned::Own);
                 continue;
             }
             if !spot.major || !sees(index) {
                 continue;
             }
-            self.remember(spot, i64::from(tick), error_ticks, random);
+            self.remember(spot, i64::from(tick), error_ticks, random, Learned::Seen);
             news.vanished.push(spot.id);
         }
 
@@ -271,17 +281,24 @@ impl ItemBeliefs {
         false
     }
 
-    fn exact(&mut self, spot: &Spot, taken: i64) {
+    fn exact(&mut self, spot: &Spot, taken: i64, learned: Learned) {
         self.down.insert(spot.id, taken);
         if spot.major {
             self.expected
-                .insert(spot.id, taken + i64::from(spot.respawn_ticks));
+                .insert(spot.id, (taken + i64::from(spot.respawn_ticks), learned));
         }
     }
 
-    fn remember(&mut self, spot: &Spot, taken: i64, error_ticks: f64, random: &mut Random) {
+    fn remember(
+        &mut self,
+        spot: &Spot,
+        taken: i64,
+        error_ticks: f64,
+        random: &mut Random,
+        learned: Learned,
+    ) {
         let off = (random.next() * 2.0 - 1.0) * error_ticks;
-        self.exact(spot, taken + off.round() as i64);
+        self.exact(spot, taken + off.round() as i64, learned);
     }
 
     /// Found gone: taken since the bot last saw it there, or some time in
@@ -302,7 +319,7 @@ impl ItemBeliefs {
             }
             _ => now - (respawn as f64 / 2.0).round() as i64,
         };
-        self.remember(spot, taken, error_ticks, random);
+        self.remember(spot, taken, error_ticks, random, Learned::Found);
         if spot.major
             && let Ok(taken) = u32::try_from(taken)
         {
@@ -568,7 +585,10 @@ mod tests {
         bot.see(&world(100, [true, true], vec![]));
         bot.see(&world(110, [false, true], vec![picked("bot", 0)]));
         bot.see(&world(7700, [true, true], vec![]));
-        assert_eq!(bot.items.truth().return_errors, [(0, 7610 - 7700)]);
+        assert_eq!(
+            bot.items.truth().return_errors,
+            [(0, 7610 - 7700, Learned::Own)]
+        );
         bot.see(&world(7710, [true, true], vec![]));
         assert!(bot.items.truth().return_errors.is_empty());
     }

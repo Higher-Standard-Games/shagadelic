@@ -152,9 +152,10 @@ pub struct DecisionTrace {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub items_wrong_down: Vec<usize>,
     /// Major pickups back since the last decision that the bot had a return
-    /// time for: `[id, believed minus real return in ticks]`.
+    /// time for: `[id, believed minus real return in ticks, learned]`, where
+    /// learned is 0 for its own take, 1 heard, 2 seen, and 3 found gone.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub item_return_errors: Vec<[i64; 2]>,
+    pub item_return_errors: Vec<[i64; 3]>,
 }
 
 /// See `DecisionTrace::inputs`.

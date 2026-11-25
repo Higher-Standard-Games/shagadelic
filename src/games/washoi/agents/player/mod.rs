@@ -990,7 +990,7 @@ impl BotPlayer {
                 .truth()
                 .return_errors
                 .iter()
-                .map(|&(id, error)| [id as i64, error])
+                .map(|&(id, error, learned)| [id as i64, error, learned as i64])
                 .collect(),
             steered: self.steered,
             order_target: self
