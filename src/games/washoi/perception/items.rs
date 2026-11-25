@@ -11,6 +11,8 @@
 //! - A pickup heard within `HEARING_RANGE.majorPickup` (2,500 units, 900
 //!   for other items) is noted with probability `itemTimingSkill`, and the
 //!   remembered time is off by up to ± max(0.5, 7.83 − 8.33·skill) s.
+//!   Major pickups are noted at `major_hearing` instead, which departs
+//!   from TypeScript at Hard and above.
 //! - A major item seen vanishing is remembered with the same error.
 //! - A major item's spot in sight is watched every decision. Found gone, it
 //!   was taken midway between now and the latest the bot knows it up, and
@@ -75,6 +77,9 @@ pub(in crate::games::washoi) struct ItemSenses<'a> {
     pub(in crate::games::washoi) sight: Option<&'a Sight>,
     /// `itemTimingSkill`, 0 to 1.
     pub(in crate::games::washoi) skill: f64,
+    /// How often a heard major pickup is noted: `skill` in TypeScript,
+    /// higher here at Hard and above (`Difficulty::major_pickup_hearing`).
+    pub(in crate::games::washoi) major_hearing: f64,
 }
 
 /// What one update learned of others' takes, for the opponent model.
@@ -176,6 +181,7 @@ impl ItemBeliefs {
         let me = senses.position;
         let skill = senses.skill.clamp(0.0, 1.0);
         let error_ticks = (7.83 - 8.33 * skill).max(0.5) * TICK_RATE;
+        let major_hearing = senses.major_hearing.clamp(0.0, 1.0);
         let mut in_sight: Vec<Option<bool>> = vec![None; spots.len()];
         let mut sees = |index: usize| -> bool {
             *in_sight[index]
@@ -206,7 +212,9 @@ impl ItemBeliefs {
             };
             if entity_id == senses.own {
                 self.exact(spot, i64::from(tick), Learned::Own);
-            } else if distance(me, spot.at) <= range && random.next() < skill {
+            } else if distance(me, spot.at) <= range
+                && random.next() < if spot.major { major_hearing } else { skill }
+            {
                 self.remember(spot, i64::from(tick), error_ticks, random, Learned::Heard);
             }
         }
@@ -449,6 +457,7 @@ mod tests {
         position: Vec3,
         yaw: f64,
         skill: f64,
+        hearing: f64,
     }
 
     impl Bot {
@@ -460,6 +469,7 @@ mod tests {
                 position: AT,
                 yaw: BEHIND,
                 skill,
+                hearing: skill,
             }
         }
 
@@ -470,6 +480,7 @@ mod tests {
                 view_yaw: self.yaw,
                 sight: Some(&self.sight),
                 skill: self.skill,
+                major_hearing: self.hearing,
             };
             self.items.believe(senses, world, &SPOTS, &mut self.random)
         }
@@ -517,6 +528,19 @@ mod tests {
             assert!((f64::from(back) - (110.0 + 7500.0)).abs() <= error + 0.5);
         }
         assert!((240..=320).contains(&noted), "noted {noted} of 400");
+    }
+
+    #[test]
+    fn a_heard_major_take_is_noted_at_the_hearing_rate() {
+        let mut noted = 0;
+        for seed in 0..400 {
+            let mut bot = Bot::new(seed, 0.7);
+            bot.hearing = 0.95;
+            bot.see(&world(100, [true, true], vec![]));
+            bot.see(&world(110, [false, false], vec![picked("player_2", 0)]));
+            noted += usize::from(bot.items.up(0) == Some(false));
+        }
+        assert!((365..=395).contains(&noted), "noted {noted} of 400");
     }
 
     #[test]
@@ -643,6 +667,7 @@ mod tests {
             view_yaw: BEHIND,
             sight: None,
             skill: 1.0,
+            major_hearing: 1.0,
         };
         items.believe(
             blind,

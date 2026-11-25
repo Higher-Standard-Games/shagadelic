@@ -104,6 +104,18 @@ impl Difficulty {
         }
     }
 
+    /// How often a heard major pickup (armor, Mega Health, a powerup) is
+    /// noted. TypeScript uses `itemTimingSkill`, missing three in ten at
+    /// Hard. A Duel player in earshot of the Mega or an armor rarely misses
+    /// it, so Hard and above note nearly all. Still only what was heard.
+    pub(in crate::games::washoi) fn major_pickup_hearing(self) -> f64 {
+        match self {
+            Self::Easy | Self::Medium => self.item_timing_skill(),
+            Self::Hard => 0.95,
+            Self::Insane => 1.0,
+        }
+    }
+
     pub(in crate::games::washoi) fn resource_awareness(self) -> f64 {
         let match_sense = match self {
             Self::Easy => 0.0,
