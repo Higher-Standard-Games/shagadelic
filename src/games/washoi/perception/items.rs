@@ -15,9 +15,8 @@
 //!   from TypeScript at Hard and above.
 //! - A major item seen vanishing is remembered with the same error.
 //! - A major item's spot in sight is watched every decision. Found gone, it
-//!   was taken midway between now and the latest the bot knows it up, and
-//!   no earlier than a respawn ago. Other items' spots in sight are
-//!   checked too.
+//!   was taken midway between when the bot last saw it there and now, or
+//!   half a respawn ago. Other items' spots in sight are checked too.
 //!
 //! The planner's return times come from these beliefs, as
 //! `goals/ItemGoalSource.ts` `respawnTickOf` (lines 41-83) feeds
@@ -34,13 +33,10 @@
 //! is believed up. When the server restores the items, as a match goes
 //! live or a round freezes, the bot knows the rule every player does:
 //! earlier takes are void, other items are up, and the majors spawn 15 s
-//! later. TypeScript keeps its earlier beliefs. A spot beside the bot, within `SELF_TAKE_RADIUS`, is
-//! checked whichever way it looks, as a player standing on an empty spot
-//! knows it is empty. TypeScript knows an item up only from seeing it there.
-//! Here its own return estimate passing counts too, so an item found gone
-//! soon after the bot believed it back is dated after that return. Without
-//! a sight file, as TypeScript without a map, the
-//! bot keeps the server's mask.
+//! later. TypeScript keeps its earlier beliefs. A spot beside the bot,
+//! within `SELF_TAKE_RADIUS`, is checked whichever way it looks, as a
+//! player standing on an empty spot knows it is empty. Without a sight
+//! file, as TypeScript without a map, the bot keeps the server's mask.
 
 use std::collections::BTreeMap;
 use std::f64::consts::PI;
@@ -126,8 +122,7 @@ pub(in crate::games::washoi) struct ItemBeliefs {
     /// Items believed down, by ID: the remembered taken tick, with this
     /// bot's error in it.
     down: BTreeMap<usize, i64>,
-    /// The latest tick each major item is known up: last seen on its spot,
-    /// or back by the bot's own return estimate.
+    /// The latest tick each major item was seen on its spot.
     up_since: BTreeMap<usize, i64>,
     /// The server's mask at the last update, to see items vanish.
     before: Vec<bool>,
@@ -312,13 +307,8 @@ impl ItemBeliefs {
         let Some(&taken) = self.down.get(&spot.id) else {
             return true;
         };
-        let back = taken + i64::from(spot.respawn_ticks);
-        if i64::from(tick) >= back {
+        if i64::from(tick) >= taken + i64::from(spot.respawn_ticks) {
             self.down.remove(&spot.id);
-            if spot.major {
-                let since = self.up_since.entry(spot.id).or_insert(back);
-                *since = (*since).max(back);
-            }
             return true;
         }
         false
@@ -344,9 +334,8 @@ impl ItemBeliefs {
         self.exact(spot, taken + off.round() as i64, learned);
     }
 
-    /// Found gone: taken midway between now and the latest the bot knows it
-    /// up, last seen there or back by its own estimate, and no earlier than
-    /// a respawn period ago.
+    /// Found gone: taken midway between now and when the bot last saw it
+    /// there, and no earlier than a respawn period ago.
     fn found_gone(
         &mut self,
         spot: &Spot,
@@ -624,7 +613,7 @@ mod tests {
     }
 
     #[test]
-    fn a_spot_found_empty_after_its_believed_return_dates_the_take_after_it() {
+    fn a_believed_return_does_not_date_a_later_find() {
         let mut bot = Bot::new(5, 1.0);
         bot.see(&world(100, [true, true], vec![]));
         bot.see(&world(110, [false, true], vec![picked("bot", 0)]));
@@ -634,8 +623,9 @@ mod tests {
         bot.see(&world(8000, [false, true], vec![]));
         bot.yaw = FRAC_PI_2;
         let news = bot.see(&world(9000, [false, true], vec![]));
-        // Midway between the return and now, not half a respawn back.
-        assert_eq!(news.found_gone, [(0, (7610 + 9000) / 2)]);
+        // A late estimate would date the find late too, against an opponent
+        // who took it on its real return: half a respawn back, as never seen.
+        assert_eq!(news.found_gone, [(0, 9000 - 3750)]);
     }
 
     #[test]
