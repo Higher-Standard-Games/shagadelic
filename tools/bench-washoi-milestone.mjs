@@ -31,8 +31,9 @@
 // times a second, with each TypeScript bot's brain state and strategy and
 // the server's damage events since the last sample. With --moves and
 // --traces, every mode also writes `moves.jsonl`: each player's position,
-// velocity, grounded, crouch and slide state, and jump and crouch buttons,
-// ten times a second, for finding where each side's speed comes from;
+// velocity, grounded, crouch and slide state, jump and crouch buttons, and
+// health and armor, ten times a second, with the server's pickup mask, for
+// finding where each side's speed comes from and who took which item;
 // outside S&D also each player's entity id and the server's damage events.
 //
 //   node node_modules/vite-node/vite-node.mjs <SHAGADELIC>/tools/bench-washoi-milestone.mjs -- \
@@ -335,6 +336,9 @@ async function playMatch({ arm, exe, navigationDir, mode, index }) {
             player: `player_${e.ownerId}`,
             side: rust.includes(`player_${e.ownerId}`) ? "rust" : "ts",
             dead: !!e.health?.dead,
+            // A rise in health or armor is a pickup, whichever side took it.
+            hp: e.health?.health ?? null,
+            ar: e.health?.armor ?? null,
             at: p ? [round(p.x), round(p.y), round(p.z)] : null,
             vel: v ? [round(v.x), round(v.y), round(v.z)] : null,
             grounded: !!m?.grounded,
@@ -346,6 +350,8 @@ async function playMatch({ arm, exe, navigationDir, mode, index }) {
             queue: e.input?.inputQueue?.length ?? null,
           };
         }),
+        // The server's pickup mask by pickup id: which items are actually up.
+        mask: server.pickupSystem?.getActiveMask?.() ?? null,
         // Outside S&D, whose world log carries it: the server damage since the last sample.
         ...(mode === "snd" ? {} : { damage: damage.splice(0) }),
       }) + "\n");
