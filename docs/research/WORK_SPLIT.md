@@ -137,6 +137,35 @@ Session B, movement, navigation, and team play:
   - TypeScript also interrupts on roam state changes (CHASE, ITEM_RUN, HUNT, and RETREAT switching among themselves). Rust has no such states, and a goal change mid-approach doesn't drop the approach.
 
   Open watch item: MH control. The drop is about 1.6σ and mostly one run, but MH timing and denial is the next lever, with its own measure.
+- [x] Bots believe items from what they see and hear (session B, 2026-11-25, `95a3ff7` and `c45d0f0`). This ports `BotPerception._believeItems` (`BotPerception.ts:366-476`) into `perception/items.rs`, with return times as in `ItemGoalSource.ts:41-83`:
+  - The bot's own take is exact.
+  - A heard pickup carries 2,500 units for major items and 900 for others. It is noted with probability `itemTimingSkill`, which at Hard is 0.7, and dated within ±max(0.5, 7.83 − 8.33·skill) s.
+  - An item seen vanishing is remembered with the same error. One vanishing within 180 units is the bot's own take.
+  - A spot in sight (2,000 units, 55° cone, clear line) found empty is dated midway since it was last seen up, or else half a respawn back.
+  - Agent code reads the server's mask (`Observation::server_pickup_mask`) only through this module, and `no_agent_code_reads_the_servers_pickup_mask` guards that. Before, goal choice, the follower, the slide, and opponent credit all read the server's mask. That was omniscient, and broke the rule to decide only from what the bot could perceive.
+  - `c45d0f0` removed two remaining leaks. The four-check round-robin was ordered wrong-first by server truth, so every spot in sight is now checked each update. A pickup without a spot is believed up rather than copied from the mask.
+
+  The A/B ran Duel on dm2, 300 s, Hard, 18 per arm interleaved over two runs (`--first-block` 0 and 3), with `bench-nav-v3` and the learned routes. It compared main (`4e6ef9b`) against `95a3ff7`, so it ran without `c45d0f0`.
+  - Wins per run: 7-1-1 and 6-1-2, against 3-5-1 and 4-4-1. Frag gap: +2.22 ± 1.93 and +3.11 ± 2.03, against −1.33 ± 2.24 and −0.44 ± 2.85.
+  - Main's Duel edge over TypeScript fell by about 3.5 frags per match. The edge came partly from the omniscient mask, which wasn't fairly earned, so this lands anyway.
+  - MH takes, Rust against TypeScript: 39-34, against 36-45.
+  - Takes within 3 s of a respawn:
+
+    | Item | Rust, main | TypeScript, main | Rust, branch | TypeScript, branch |
+    |---|---|---|---|---|
+    | MH | 1 | 6 | 7 | 11 |
+    | RA | 0 | 3 | 4 | 2 |
+
+  - RA takes: 85-18, against 84-13. YA: 26-37, against 29-41.
+  - Trips to items believed up but actually down: MH 87, RA 33, YA 35, GA 9. The bot died on 18 of the MH trips, 9 of the RA trips, and 4 of the YA trips.
+  - Return error (believed minus actual): RA, YA, and GA have median 0 s and |error| p75 up to 6.6 s. MH's median is +2.9 and +10.4 s, with |error| p75 17 and 27 s.
+
+  Open watch item: MH belief, the next lever. Most wasted MH trips follow takes the bot never noticed: unheard at the 0.7 rate, or out of earshot. The dated ones are often far off, which points at found-gone dating. Planned as recorded departures, each in its own commit:
+  - Bound a found-gone take by what the bot knows: no earlier than its own return estimate or the last time it saw MH up, and no earlier than now minus a respawn.
+  - After a found-gone or wasted MH trip, believe MH down until the dated return.
+  - Raise `itemTimingSkill` for major pickups heard at Hard and above. Lower difficulties stay as TypeScript.
+
+  GA1 (`pickup:1`) is almost never Rust's goal. Its node is connected, and Rust's valuation matches TypeScript's (`ItemValue.ts` and `ItemFacts.ts` against `considerations.rs` and `strategy/items.rs`). TypeScript visits it no more often, so that is parity.
 
 Mark items here as they land, with the commit.
 
