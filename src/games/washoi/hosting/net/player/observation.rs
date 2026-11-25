@@ -44,7 +44,7 @@ pub fn observe(state: &GameState<SnapshotEvent>) -> Observation {
                 )
             })
             .collect(),
-        pickup_active: state.pickup_active_mask.clone(),
+        server_pickup_mask: state.pickup_active_mask.clone(),
         events: state.events.iter().map(entity_keys).collect(),
         acked_input: state.acked_input_seq,
     }
@@ -162,7 +162,7 @@ mod tests {
         assert_eq!(observation.body("player_1"), Some(&Body::default()));
         assert_eq!(observation.player("player_1").unwrap().team, "blue");
         assert_eq!(observation.players[0].entity_id, "player_2");
-        assert_eq!(observation.pickup_active, [true, false, true]);
+        assert_eq!(observation.server_pickup_mask, [true, false, true]);
         assert_eq!(observation.events, state.events);
     }
 

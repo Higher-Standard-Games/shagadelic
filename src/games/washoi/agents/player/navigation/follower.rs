@@ -6,8 +6,8 @@ use shagger_shared::net::game_state::{Vec3, Velocity};
 
 use crate::games::washoi::agents::player::navigation::traversal::{Outcome, Traversal};
 use crate::games::washoi::agents::player::navigation::{
-    MAX_HEIGHT_DELTA, PlayerInput, Route, WashoiNavigation, horizontal_distance,
-    jump_up_to_waypoint, look_along_route, sprint_on_long_legs,
+    PlayerInput, Route, WashoiNavigation, horizontal_distance, jump_up_to_waypoint,
+    look_along_route, sprint_on_long_legs,
 };
 use crate::games::washoi::{Difficulty, Sight, agents::player::strategy::goals::OwnVitals};
 
@@ -17,10 +17,6 @@ const MIN_PROGRESS: f64 = 8.0;
 const DISPLACEMENT: f64 = 128.0;
 const MAX_BLOCKS: usize = 16;
 const LOCAL_PICKUP_RADIUS: f64 = 24.0;
-// Close enough on the final leg to see an item vanish, as in TypeScript
-// `BotPerception.ts`, where an item that vanishes beside the bot is its own
-// take and known to the tick.
-const PICKUP_SIGHT_RADIUS: f64 = 96.0;
 // Washoi takes a beneficial item on the first tick a player overlaps it. An
 // item that stays after this wait is one the bot can't take, such as full
 // ammo or a new weapon that needs USE to swap. A bot at a plain goal also
@@ -36,11 +32,10 @@ pub(in crate::games::washoi) struct RouteObservation<'a> {
     pub(in crate::games::washoi) vitals: OwnVitals,
     pub(in crate::games::washoi) velocity: Option<Velocity>,
     pub(in crate::games::washoi) difficulty: Difficulty,
-    pub(in crate::games::washoi) pickup_active: &'a [bool],
+    /// The pickups the bot believes are up (`perception::items`).
+    pub(in crate::games::washoi) pickup_up: &'a [bool],
     pub(in crate::games::washoi) allow_takeoff: bool,
     pub(in crate::games::washoi) landed_id: Option<&'a str>,
-    /// A uniform draw in [-1, 1] that blurs a remembered take time.
-    pub(in crate::games::washoi) timing_noise: f64,
     /// The map's static collision, for walks back onto the graph.
     pub(in crate::games::washoi) sight: Option<&'a Sight>,
     /// Fight movement crosses the walk, so slow progress is no stall.
@@ -81,8 +76,6 @@ struct ActiveRoute {
     next: usize,
     progress: Option<Progress>,
     arrived: Option<SimTime>,
-    /// The bot saw the route's item in place from close by.
-    seen_up: bool,
     traversal: Option<Traversal>,
     /// The walk's held line (`route_line`).
     line: super::route_line::HeldLine,
@@ -93,7 +86,8 @@ pub(in crate::games::washoi) struct RouteFollower {
     active: Option<ActiveRoute>,
     last_position: Option<Vec3>,
     blocked: Vec<(Leg, SimTime)>,
-    pickup_unavailable: BTreeMap<usize, SimTime>,
+    /// Pickups waited out at the spot and not taken, until the hold ends.
+    declined: BTreeMap<usize, SimTime>,
     /// Learned routes whose takeoff failed, by recording ID, until the retry
     /// delay is out, as a failed traversal blocks its leg.
     blocked_takeoffs: Vec<(String, SimTime)>,
@@ -149,15 +143,10 @@ impl RouteFollower {
         self.exact = false;
     }
 
-    /// Whether the bot believes this pickup is gone for now: seen taken, or
-    /// found missing, and not yet due back.
-    pub(in crate::games::washoi) fn pickup_unavailable(&self, id: usize, now: SimTime) -> bool {
-        self.pickup_returns_at(id).is_some_and(|at| now < at)
-    }
-
-    /// When the bot expects a pickup it saw taken or missing to be back.
-    pub(in crate::games::washoi) fn pickup_returns_at(&self, id: usize) -> Option<SimTime> {
-        self.pickup_unavailable.get(&id).copied()
+    /// Whether the bot waited at this pickup and couldn't take it, such as
+    /// full ammo, and still holds off it.
+    pub(in crate::games::washoi) fn pickup_declined(&self, id: usize, now: SimTime) -> bool {
+        self.declined.get(&id).is_some_and(|until| now < *until)
     }
 
     /// Whether a leg into `point` failed recently, so walks that end there
@@ -392,10 +381,9 @@ impl RouteFollower {
             vitals,
             velocity,
             difficulty,
-            pickup_active,
+            pickup_up,
             allow_takeoff,
             landed_id,
-            timing_noise,
             sight,
             fighting,
             hold_maneuvers,
@@ -404,7 +392,7 @@ impl RouteFollower {
         let traversing = self.traversing();
         self.blocked.retain(|(_, until)| now < *until);
         self.blocked_takeoffs.retain(|(_, until)| now < *until);
-        self.pickup_unavailable.retain(|_, until| now < *until);
+        self.declined.retain(|_, until| now < *until);
         let previous = self.last_position.replace(position);
         let observed_exit = previous.is_some_and(|before| {
             self.active.as_ref().is_some_and(|active| {
@@ -435,7 +423,8 @@ impl RouteFollower {
                 let available = route.pickup.is_none_or(|pickup| {
                     goal == Some(pickup.id)
                         || pickup.benefits(vitals)
-                            && !self.pickup_unavailable.contains_key(&pickup.id)
+                            && !self.declined.contains_key(&pickup.id)
+                            && pickup_up.get(pickup.id) != Some(&false)
                 });
                 let takeoff_open = route.learned_route.as_deref().is_none_or(|id| {
                     !self
@@ -508,7 +497,6 @@ impl RouteFollower {
                 next: 0,
                 progress: None,
                 arrived: None,
-                seen_up: false,
                 traversal: None,
                 line: super::route_line::HeldLine::default(),
             });
@@ -519,7 +507,6 @@ impl RouteFollower {
             next,
             progress,
             arrived,
-            seen_up,
             traversal,
             line,
         } = self.active.as_mut().expect("route selected");
@@ -587,18 +574,9 @@ impl RouteFollower {
                 }
             };
         }
-        // A walk to a learned takeoff ends out of sight of its pickup: it
-        // learns nothing of it there, and one waited out declines it.
+        // A walk to a learned takeoff ends out of sight of its pickup, and
+        // one waited out declines it.
         let at_pickup = route.pickup.filter(|_| route.learned_route.is_none());
-        if let Some(pickup) = at_pickup
-            && let Some(&target) = route.waypoints.last()
-            && *next + 1 >= route.waypoints.len()
-            && horizontal_distance(position, target) <= PICKUP_SIGHT_RADIUS
-            && (target[1] - position.y).abs() <= MAX_HEIGHT_DELTA
-            && pickup_active.get(pickup.id) == Some(&true)
-        {
-            *seen_up = true;
-        }
         let Some(&goal) = route.waypoints.get(*next) else {
             let Some(&target) = route.waypoints.last() else {
                 return input;
@@ -608,27 +586,15 @@ impl RouteFollower {
             {
                 return input;
             }
-            // Learn availability only at the end of a route within pickup
-            // range. The server's full-map mask is broader than bot knowledge.
-            let taken = at_pickup.filter(|pickup| pickup_active.get(pickup.id) == Some(&false));
+            // Taken, or found gone, as the bot believes it: its perception
+            // dates the take and expects it back.
+            let taken = at_pickup.filter(|pickup| pickup_up.get(pickup.id) == Some(&false));
             let waited = now - *arrived.get_or_insert(now) >= ARRIVAL_DWELL;
-            if let Some(pickup) = taken {
-                // Seen taken, here by the bot itself: back after its respawn
-                // time. Found gone: taken some time in the last respawn
-                // period, so expect it halfway, give or take the difficulty's
-                // timing error.
-                let respawn = pickup.respawn();
-                let away = if *seen_up {
-                    respawn
-                } else {
-                    let error = difficulty.item_timing_error().as_secs_f64();
-                    let guess = respawn.as_secs_f64() / 2.0 + timing_noise.clamp(-1.0, 1.0) * error;
-                    Duration::from_secs_f64(guess.max(0.0))
-                };
-                self.pickup_unavailable.insert(pickup.id, now + away);
-            } else if waited && let Some(pickup) = route.pickup {
-                self.pickup_unavailable
-                    .insert(pickup.id, now + DECLINED_PICKUP);
+            if taken.is_none()
+                && waited
+                && let Some(pickup) = route.pickup
+            {
+                self.declined.insert(pickup.id, now + DECLINED_PICKUP);
             }
             if taken.is_some() || waited {
                 self.active = None;
@@ -779,10 +745,9 @@ mod tests {
             vitals: OwnVitals::default(),
             velocity: None,
             difficulty: Difficulty::default(),
-            pickup_active: &[],
+            pickup_up: &[],
             allow_takeoff,
             landed_id,
-            timing_noise: 0.0,
             sight: None,
             fighting: false,
             hold_maneuvers: false,
@@ -790,7 +755,7 @@ mod tests {
     }
 
     #[test]
-    fn low_health_prefers_recovery_and_only_notices_missing_pickups_locally() {
+    fn low_health_prefers_recovery_and_skips_pickups_believed_gone() {
         let nav: WashoiNavigation = serde_json::from_str(
             r#"{"map":"test","routes":[
             {"entry":[0,0,0],"waypoints":[[40,0,0]],"pickup":{"id":0,"kind":"health"}},
@@ -802,46 +767,36 @@ mod tests {
         let now = SimTime::ZERO;
         let origin = Vec3::default();
         let health = Vec3::new(40.0, 0.0, 0.0);
-        let mut follower = RouteFollower::default();
-        let observation = RouteObservation {
+        let hurt = RouteObservation {
             vitals: OwnVitals {
                 health: Some(10),
                 armor: Some(50),
             },
-            pickup_active: &[false, true],
+            pickup_up: &[true, true],
             ..observe(now, false, None)
         };
+        let mut follower = RouteFollower::default();
         assert_eq!(
-            follower.steer(&nav, origin, observation).direction,
+            follower.steer(&nav, origin, hurt).direction,
             [1.0, 0.0, 0.0]
         );
+        // Believed taken on arrival: the walk ends there, and the next one
+        // goes for the armor.
+        let gone = RouteObservation {
+            pickup_up: &[false, true],
+            ..hurt
+        };
+        assert_eq!(follower.steer(&nav, health, gone).direction, [0.0; 3]);
         assert_eq!(
-            follower.steer(&nav, health, observation).direction,
-            [0.0; 3]
-        );
-        assert_eq!(
-            follower.steer(&nav, health, observation).direction,
+            follower.steer(&nav, health, gone).direction,
             [0.0, 0.0, 1.0]
         );
-        // A death or learned traversal detaches the route. The missing
-        // health stays remembered until its recheck time.
+        // A death or learned traversal detaches the route. The item is still
+        // believed gone.
         follower.detach();
         assert_eq!(
-            follower.steer(&nav, origin, observation).direction,
+            follower.steer(&nav, origin, gone).direction,
             [0.0, 0.0, 1.0]
-        );
-        // Found gone, so expected back after half its 20 s respawn, here
-        // with the most a medium bot can be off: 7.83 - 8.33 * 0.4 s.
-        let mut late = RouteFollower::default();
-        let noisy = RouteObservation {
-            timing_noise: 1.0,
-            ..observation
-        };
-        late.steer(&nav, origin, noisy);
-        late.steer(&nav, health, noisy);
-        assert_eq!(
-            late.pickup_unavailable[&0],
-            now + Duration::from_secs_f64(10.0 + (7.83 - 8.33 * 0.4))
         );
 
         let mut healthy = RouteFollower::default();
@@ -850,7 +805,7 @@ mod tests {
                 health: Some(100),
                 armor: Some(0),
             },
-            ..observation
+            ..hurt
         };
         assert_eq!(
             healthy.steer(&nav, origin, observation).direction,
@@ -874,7 +829,7 @@ mod tests {
                 health: Some(10),
                 armor: Some(100),
             },
-            pickup_active: &[true, true],
+            pickup_up: &[true, true],
             ..observe(now, false, None)
         };
         let mut follower = RouteFollower::default();
@@ -891,19 +846,12 @@ mod tests {
             [0.0, 0.0, 1.0]
         );
         follower.set_goal(None);
-        assert!(!follower.pickup_unavailable(0, now));
-        assert_eq!(follower.pickup_returns_at(0), None);
+        assert!(!follower.pickup_declined(0, now));
         assert!(!follower.blocked_toward([40.0, 0.0, 0.0], now));
 
-        follower
-            .pickup_unavailable
-            .insert(0, now + Duration::from_secs(5));
-        assert!(follower.pickup_unavailable(0, now));
-        assert!(!follower.pickup_unavailable(0, now + Duration::from_secs(5)));
-        assert_eq!(
-            follower.pickup_returns_at(0),
-            Some(now + Duration::from_secs(5))
-        );
+        follower.declined.insert(0, now + Duration::from_secs(5));
+        assert!(follower.pickup_declined(0, now));
+        assert!(!follower.pickup_declined(0, now + Duration::from_secs(5)));
         follower.blocked.push((
             Leg {
                 from: [0.0; 3],
@@ -951,7 +899,7 @@ mod tests {
                 health: Some(100),
                 armor: Some(0),
             },
-            pickup_active: &[true, true],
+            pickup_up: &[true, true],
             ..observe(now, false, None)
         };
         let mut follower = RouteFollower::default();

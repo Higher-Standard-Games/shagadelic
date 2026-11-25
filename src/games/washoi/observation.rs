@@ -87,10 +87,12 @@ pub struct Observation {
     /// Every entity with a body, in snapshot order: players, projectiles
     /// (`proj_` IDs), and anything else the server sends.
     pub bodies: Vec<(String, Body)>,
-    /// Active state of every map pickup, indexed by the stable pickup ID of
-    /// the map's pickup table (`PickupTable.ts` BSP order), the IDs the baked
-    /// navigation's pickup goals use. Empty when the snapshot has no mask.
-    pub pickup_active: Vec<bool>,
+    /// The server's truth about every map pickup, active or not, indexed by
+    /// the stable pickup ID of the map's pickup table (`PickupTable.ts` BSP
+    /// order), the IDs the baked navigation's pickup goals use. Empty when
+    /// the snapshot has no mask. A player knows far less, so bot decisions
+    /// read only what `perception::items` believes from it.
+    pub server_pickup_mask: Vec<bool>,
     /// The snapshot's one-tick events, in wire order.
     pub events: Vec<SnapshotEvent>,
     /// The sequence number of this connection's last command the server had

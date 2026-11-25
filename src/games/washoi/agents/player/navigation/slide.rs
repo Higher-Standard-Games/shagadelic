@@ -112,7 +112,8 @@ pub(in crate::games::washoi) struct SlideView<'a> {
     pub(in crate::games::washoi) lane: Option<f64>,
     /// The pickup the walk is on its last leg to (`RouteFollower::item_leg`).
     pub(in crate::games::washoi) item: Option<ItemLeg>,
-    pub(in crate::games::washoi) pickup_active: &'a [bool],
+    /// The pickups the bot believes are up (`perception::items`).
+    pub(in crate::games::washoi) pickup_up: &'a [bool],
     /// Living teammates, who must not stand in an item slide's lane.
     pub(in crate::games::washoi) allies: &'a [Vec3],
     /// `strafeJumpSkill`, which decides the jump cancel.
@@ -136,7 +137,7 @@ impl RouteSlide {
     /// is already moving.
     fn start_item(&self, view: &SlideView<'_>, velocity: Velocity, speed: f64) -> Option<ItemRun> {
         let leg = view.item?;
-        if view.pickup_active.get(leg.pickup) != Some(&true) || velocity.is_sliding {
+        if view.pickup_up.get(leg.pickup) != Some(&true) || velocity.is_sliding {
             return None;
         }
         let [x, y, z] = leg.position;
@@ -175,7 +176,7 @@ impl RouteSlide {
     fn step_item(run: &mut ItemRun, view: &SlideView<'_>, velocity: Velocity) -> Option<bool> {
         let distance = (run.target[0] - view.position.x).hypot(run.target[2] - view.position.z);
         run.nearest = run.nearest.min(distance);
-        if view.pickup_active.get(run.pickup) != Some(&true)
+        if view.pickup_up.get(run.pickup) != Some(&true)
             || view.tick.saturating_sub(run.started) >= ITEM_MAX_TICKS
             || (run.nearest <= ITEM_CONFIRM_DISTANCE && distance > run.nearest + ITEM_MISSED_GROWTH)
         {
@@ -352,7 +353,7 @@ mod tests {
             velocity,
             lane,
             item: None,
-            pickup_active: &[],
+            pickup_up: &[],
             allies: &[],
             strafe_jump_skill: skill,
             fighting: false,
@@ -368,7 +369,7 @@ mod tests {
         let at = |tick, z: f64, sliding, active: &'static [bool]| SlideView {
             position: Vec3::new(0.0, 0.0, z),
             item: Some(leg),
-            pickup_active: active,
+            pickup_up: active,
             ..view(tick, moving(420.0, true, sliding), None, 0.0)
         };
         let mut slide = RouteSlide::default();

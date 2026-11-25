@@ -92,16 +92,16 @@ impl Difficulty {
         }
     }
 
-    /// How far off a remembered take time may be, from `itemTimingSkill`
-    /// as `BotPerception._believeItems` scales it.
-    pub(in crate::games::washoi) fn item_timing_error(self) -> std::time::Duration {
-        let skill: f64 = match self {
+    /// `itemTimingSkill` (`BotConfig.ts`): how often a heard pickup is
+    /// noted, and how far off a remembered take time may be
+    /// (`perception::items`).
+    pub(in crate::games::washoi) fn item_timing_skill(self) -> f64 {
+        match self {
             Self::Easy => 0.1,
             Self::Medium => 0.4,
             Self::Hard => 0.7,
             Self::Insane => 0.9,
-        };
-        std::time::Duration::from_secs_f64((7.83 - 8.33 * skill).max(0.5))
+        }
     }
 
     pub(in crate::games::washoi) fn resource_awareness(self) -> f64 {

@@ -6,13 +6,15 @@
 //! No event names who takes armor or health, for a person's client either.
 //! A major pickup is heard across 2,500 units and the event names the
 //! picker. An item seen vanishing is credited to the enemy standing at it,
-//! or in a Duel to the one opponent.
+//! or in a Duel to the one opponent, and in a Duel one found gone to the
+//! opponent too (`creditTake` in `BotPerception.ts`). What was seen comes
+//! from `perception::items`.
 
 use std::collections::HashMap;
 
 use crate::games::washoi::{
-    Observation, Sight, Vec3, agents::player::strategy::goals::PickupGoal,
-    hosting::net::protocol::SnapshotEvent,
+    Observation, Vec3, agents::player::strategy::goals::PickupGoal,
+    hosting::net::protocol::SnapshotEvent, perception::items::ItemNews,
 };
 
 const TICK_RATE: u32 = 125;
@@ -20,14 +22,11 @@ const TICK_RATE: u32 = 125;
 const MAJOR_PICKUP_RANGE: f64 = 2500.0;
 /// `TAKER_RADIUS`: an enemy this close to an item seen vanishing took it.
 const TAKER_RADIUS: f64 = 200.0;
-/// `SELF_TAKE_RADIUS`: one vanishing this close, the bot took itself.
-const SELF_TAKE_RADIUS: f64 = 180.0;
 /// `HABIT_WINDOW_SECONDS`.
 const HABIT_WINDOW_TICKS: u32 = 180 * TICK_RATE;
 /// `MAJOR_ITEM_MEMORY_TICKS` in `BotMood.ts`: an enemy carries a major item
 /// for 30 seconds after taking it, unless it dies.
 const ARMED_TICKS: u32 = 30 * TICK_RATE;
-const EYE_HEIGHT: f64 = 32.0;
 
 #[derive(Debug, Clone, PartialEq)]
 struct Take {
@@ -41,8 +40,6 @@ pub(in crate::games::washoi) struct Opponents {
     takes: Vec<Take>,
     /// The last take credited to each enemy until it dies, for the mood.
     armed: HashMap<String, u32>,
-    /// The pickup mask of the last snapshot, to see items vanish.
-    last_mask: Vec<bool>,
 }
 
 /// What the bot knows of the scene for one snapshot.
@@ -54,7 +51,6 @@ pub(in crate::games::washoi) struct Scene<'a> {
     /// Opponents on the scoreboard, by entity.
     pub(in crate::games::washoi) opponents: &'a [&'a str],
     pub(in crate::games::washoi) pickups: &'a [(PickupGoal, [f64; 3])],
-    pub(in crate::games::washoi) sight: Option<&'a Sight>,
 }
 
 impl Opponents {
@@ -64,6 +60,7 @@ impl Opponents {
         &mut self,
         world: &Observation,
         scene: &Scene,
+        items: &ItemNews,
     ) -> Vec<(String, usize)> {
         let tick = world.tick;
         let before = self.takes.len();
@@ -101,46 +98,36 @@ impl Opponents {
                 _ => {}
             }
         }
-        // Items seen vanishing.
-        if let Some(me) = scene.position {
-            let lone = match scene.opponents {
-                [one] => Some(*one),
-                _ => None,
+        // Items seen vanishing, credited to the enemy at the spot or the one
+        // opponent, and, with one opponent, items found gone.
+        let lone = match scene.opponents {
+            [one] => Some(*one),
+            _ => None,
+        };
+        for &id in &items.vanished {
+            let Some((_, at)) = major(id) else {
+                continue;
             };
-            let vanished: Vec<usize> = self
-                .last_mask
+            let at = Vec3::new(at[0], at[1], at[2]);
+            let taker = world
+                .bodies
                 .iter()
-                .zip(&world.pickup_active)
-                .enumerate()
-                .filter(|(_, (before, now))| **before && !**now)
-                .map(|(id, _)| id)
-                .collect();
-            for id in vanished {
-                let Some((_, at)) = major(id) else {
-                    continue;
-                };
-                let at = Vec3::new(at[0], at[1], at[2]);
-                if distance(me, at) <= SELF_TAKE_RADIUS || !in_sight(scene.sight, me, at) {
-                    continue;
-                }
-                let taker = world
-                    .bodies
-                    .iter()
-                    .filter(|(entity, _)| scene.opponents.contains(&entity.as_str()))
-                    .filter_map(|(entity, body)| {
-                        Some((entity.as_str(), distance(body.position?, at)))
-                    })
-                    .filter(|(_, d)| *d <= TAKER_RADIUS)
-                    .min_by(|a, b| a.1.total_cmp(&b.1))
-                    .map(|(entity, _)| entity)
-                    .or(lone);
-                if let Some(taker) = taker {
-                    self.credit(taker, id, tick);
-                }
+                .filter(|(entity, _)| scene.opponents.contains(&entity.as_str()))
+                .filter_map(|(entity, body)| Some((entity.as_str(), distance(body.position?, at))))
+                .filter(|(_, d)| *d <= TAKER_RADIUS)
+                .min_by(|a, b| a.1.total_cmp(&b.1))
+                .map(|(entity, _)| entity)
+                .or(lone);
+            if let Some(taker) = taker {
+                self.credit(taker, id, tick);
             }
         }
-        if !world.pickup_active.is_empty() {
-            self.last_mask.clone_from(&world.pickup_active);
+        if let Some(lone) = lone {
+            for &(id, taken) in &items.found_gone {
+                if major(id).is_some() {
+                    self.credit(lone, id, taken);
+                }
+            }
         }
         let credited = self.takes[before..]
             .iter()
@@ -201,17 +188,6 @@ impl Opponents {
     }
 }
 
-/// The bot sees the item's spot from its eye, without the static map in
-/// the way. Without a sight file, nothing is seen.
-fn in_sight(sight: Option<&Sight>, me: Vec3, at: Vec3) -> bool {
-    sight.is_some_and(|sight| {
-        sight.clear(
-            [me.x, me.y + EYE_HEIGHT, me.z],
-            [at.x, at.y + EYE_HEIGHT, at.z],
-        )
-    })
-}
-
 fn distance(a: Vec3, b: Vec3) -> f64 {
     ((a.x - b.x).powi(2) + (a.y - b.y).powi(2) + (a.z - b.z).powi(2)).sqrt()
 }
@@ -262,19 +238,19 @@ mod tests {
             allies: &["mate"],
             opponents: &["foe"],
             pickups: &pickups,
-            sight: None,
         };
+        let none = ItemNews::default();
         let mut opponents = Opponents::default();
-        opponents.observe(&heard(100, "foe", 0), &scene);
+        opponents.observe(&heard(100, "foe", 0), &scene, &none);
         // Ammo is not a major item, and allies and the bot are not credited.
-        opponents.observe(&heard(110, "foe", 1), &scene);
-        opponents.observe(&heard(120, "mate", 0), &scene);
-        opponents.observe(&heard(130, "bot", 0), &scene);
+        opponents.observe(&heard(110, "foe", 1), &scene, &none);
+        opponents.observe(&heard(120, "mate", 0), &scene, &none);
+        opponents.observe(&heard(130, "bot", 0), &scene, &none);
         assert!(opponents.contested().is_empty());
         assert!(opponents.armed_enemy(200));
-        opponents.observe(&heard(4000, "foe", 0), &scene);
+        opponents.observe(&heard(4000, "foe", 0), &scene, &none);
         assert_eq!(opponents.contested().get(&0), Some(&0.5));
-        opponents.observe(&heard(8000, "foe", 0), &scene);
+        opponents.observe(&heard(8000, "foe", 0), &scene, &none);
         assert_eq!(opponents.contested().get(&0), Some(&1.0));
         // Death disarms; three minutes on the habit is forgotten.
         let mut death = Observation {
@@ -298,43 +274,29 @@ mod tests {
             kill_weapon: None,
             hit_location: None,
         });
-        opponents.observe(&death, &scene);
+        opponents.observe(&death, &scene, &none);
         assert!(!opponents.armed_enemy(8101));
         let later = Observation {
             tick: 8000 + HABIT_WINDOW_TICKS + 1,
             ..Observation::default()
         };
-        opponents.observe(&later, &scene);
+        opponents.observe(&later, &scene, &none);
         assert!(opponents.contested().is_empty());
     }
 
     #[test]
-    fn credits_an_item_seen_vanishing_to_the_enemy_beside_it() {
+    fn credits_an_item_seen_vanishing_to_the_enemy_beside_it_or_found_gone_to_the_one_opponent() {
         let pickups = pickups();
-        let sight = Sight::parse(&crate::games::washoi::perception::sight::tests::encode(
-            "test",
-            &[],
-            &[],
-        ))
-        .unwrap();
         let scene = Scene {
             own: "bot",
             position: Some(Vec3::new(0.0, 0.0, 0.0)),
             allies: &[],
             opponents: &["foe", "other"],
             pickups: &pickups,
-            sight: Some(&sight),
         };
         let mut opponents = Opponents::default();
-        let up = Observation {
-            tick: 10,
-            pickup_active: vec![true, true],
-            ..Observation::default()
-        };
-        opponents.observe(&up, &scene);
         let mut gone = Observation {
             tick: 11,
-            pickup_active: vec![false, true],
             ..Observation::default()
         };
         gone.bodies.push((
@@ -344,9 +306,29 @@ mod tests {
                 velocity: None,
             },
         ));
-        opponents.observe(&gone, &scene);
+        let seen = ItemNews {
+            vanished: vec![0],
+            found_gone: vec![(0, 5)],
+        };
+        opponents.observe(&gone, &scene, &seen);
         assert!(opponents.armed_enemy(12));
-        assert_eq!(opponents.takes.len(), 1);
+        assert_eq!(opponents.takes.len(), 1, "found gone needs one opponent");
         assert_eq!(opponents.takes[0].by, "foe");
+
+        let duel = Scene {
+            opponents: &["foe"],
+            ..scene
+        };
+        let mut opponents = Opponents::default();
+        let found = ItemNews {
+            vanished: Vec::new(),
+            found_gone: vec![(0, 5), (1, 5)],
+        };
+        opponents.observe(&gone, &duel, &found);
+        assert_eq!(opponents.takes.len(), 1, "ammo is no major item");
+        assert_eq!(
+            (opponents.takes[0].by.as_str(), opponents.takes[0].tick),
+            ("foe", 5)
+        );
     }
 }

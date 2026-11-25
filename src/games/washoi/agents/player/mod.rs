@@ -13,6 +13,7 @@ pub mod trace;
 use std::{collections::VecDeque, sync::Arc, time::Duration};
 
 use crate::games::washoi::perception::collision::BotCollision;
+use crate::games::washoi::perception::items::{ItemBeliefs, ItemNews, ItemSenses, Spot};
 use crate::games::washoi::{
     Controls, Observation, SimTime,
     agents::{Agent, NetworkedPlayer},
@@ -322,6 +323,11 @@ pub struct BotPlayer {
     trace_sink: Option<std::io::BufWriter<std::fs::File>>,
     lunge: Lunge,
     opponents: Opponents,
+    /// What the bot believes of the map's items (`perception::items`), and
+    /// its own draws for noticing and misremembering takes.
+    items: ItemBeliefs,
+    item_random: Random,
+    item_news: ItemNews,
     match_context: Option<MatchContext>,
     recent_damage: Vec<u32>,
     /// Pickup walks as priced from the last graph node, and where.
@@ -357,6 +363,7 @@ impl BotPlayer {
         );
         Self {
             random: Random::for_bot(&entity_id),
+            item_random: Random::for_bot(&format!("{entity_id}/items")),
             entity_id,
             latest: None,
             pending: VecDeque::new(),
@@ -432,6 +439,8 @@ impl BotPlayer {
             trace_sink: None,
             lunge: Lunge::default(),
             opponents: Opponents::default(),
+            items: ItemBeliefs::default(),
+            item_news: ItemNews::default(),
             match_context: None,
             recent_damage: Vec::new(),
             walkable: Vec::new(),
@@ -623,6 +632,7 @@ impl BotPlayer {
         self.linked_takeoffs = navigation.has_learned_links();
         self.navigation = Some(navigation);
         self.planned_input = PlayerInput::default();
+        self.items.reset();
         self
     }
 
@@ -673,6 +683,7 @@ impl BotPlayer {
         self.mover = "route";
         self.combat
             .observe(&world.events, &self.entity_id, world.tick);
+        self.read_items(world);
         self.exact_view = self.plan(world, now);
         if self.exact_view {
             self.mover = if self.ledge.active() {
@@ -972,6 +983,15 @@ impl BotPlayer {
             decide_micros: 0,
             inputs: None,
             approach_yielded: self.approach_yielded,
+            items_wrong_up: self.items.truth().wrong_up.clone(),
+            items_wrong_down: self.items.truth().wrong_down.clone(),
+            item_return_errors: self
+                .items
+                .truth()
+                .return_errors
+                .iter()
+                .map(|&(id, error)| [id as i64, error])
+                .collect(),
             steered: self.steered,
             order_target: self
                 .orders
@@ -1404,7 +1424,7 @@ impl BotPlayer {
                         navigation
                             .pickups()
                             .into_iter()
-                            .filter(|(pickup, _)| world.pickup_active.get(pickup.id) == Some(&true))
+                            .filter(|(pickup, _)| self.items.up(pickup.id) == Some(true))
                             .map(|(_, [x, _, z])| ((x - at.x).hypot(z - at.z), x - at.x, z - at.z))
                             .filter(|(distance, _, _)| *distance <= ITEM_GLANCE_RANGE)
                             .min_by(|a, b| a.0.total_cmp(&b.0))
@@ -1786,11 +1806,10 @@ impl BotPlayer {
                         vitals: self.vitals,
                         velocity: own.and_then(|entity| entity.velocity),
                         difficulty: self.difficulty,
-                        pickup_active: &world.pickup_active,
+                        pickup_up: self.items.mask(),
                         allow_takeoff: self.learned.is_some()
                             && self.traversal.landing_result().is_none(),
                         landed_id: landed,
-                        timing_noise: 2.0 * self.random.next() - 1.0,
                         sight: self.sight.as_deref(),
                         fighting: self.engagement.is_some() || self.chasing.is_some(),
                         hold_maneuvers: self.in_fight,
@@ -1976,7 +1995,7 @@ impl BotPlayer {
                 velocity,
                 lane: lanes.slide,
                 item: lanes.item,
-                pickup_active: &world.pickup_active,
+                pickup_up: self.items.mask(),
                 allies: &self.allies,
                 strafe_jump_skill: self.difficulty.strafe_jump_skill(),
                 fighting: self.engagement.is_some() || self.chasing.is_some(),
@@ -2503,6 +2522,43 @@ impl BotPlayer {
         self.strategist.weights(base)
     }
 
+    /// What the bot believes of the map's items, before anything plans on
+    /// them. Decisions read this, never the server's mask.
+    fn read_items(&mut self, world: &Observation) {
+        let Some(position) = world.body(&self.entity_id).and_then(|body| body.position) else {
+            self.items.unseen(world);
+            self.item_news = ItemNews::default();
+            return;
+        };
+        let spots: Vec<Spot> = self
+            .navigation
+            .as_deref()
+            .map(|navigation| {
+                navigation
+                    .pickups()
+                    .into_iter()
+                    .map(|(pickup, at)| spot(pickup, at))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let view_yaw = self
+            .aim
+            .current()
+            .map_or(self.planned_input.yaw, |view| view.yaw);
+        self.item_news = self.items.believe(
+            ItemSenses {
+                own: &self.entity_id,
+                position,
+                view_yaw,
+                sight: self.sight.as_deref(),
+                skill: self.difficulty.item_timing_skill(),
+            },
+            world,
+            &spots,
+            &mut self.item_random,
+        );
+    }
+
     /// Credit the major items enemies were heard or seen taking.
     fn read_opponents(&mut self, world: &Observation) {
         let pickups = self
@@ -2526,8 +2582,8 @@ impl BotPlayer {
                 allies: &allies,
                 opponents: &opponents,
                 pickups: &pickups,
-                sight: self.sight.as_deref(),
             },
+            &self.item_news,
         );
         for (entity, id) in credited {
             if let Some((pickup, _)) = pickups.iter().find(|(pickup, _)| pickup.id == id) {
@@ -2564,9 +2620,10 @@ impl BotPlayer {
                     .pickups()
                     .into_iter()
                     .map(|(pickup, at)| {
-                        let returns = self.route.pickup_returns_at(pickup.id);
-                        let gone = self.route.pickup_unavailable(pickup.id, now);
-                        let up = world.pickup_active.get(pickup.id).copied().unwrap_or(!gone);
+                        // Believed, as TypeScript's `pickupActiveMask`
+                        // after `BotPerception`: no mask is all up.
+                        let up = self.items.up(pickup.id).unwrap_or(true);
+                        let declined = self.route.pickup_declined(pickup.id, now);
                         KnownPickup {
                             candidate: Candidate::pickup(
                                 pickup,
@@ -2577,10 +2634,12 @@ impl BotPlayer {
                                     .map(|(_, cost)| *cost),
                             ),
                             up,
-                            returns_tick: returns
-                                .filter(|_| !up)
-                                .map(|at| tick + ((at - now).as_secs_f64() * 125.0).round() as u32),
-                            blocked: up && gone || self.route.blocked_toward(at, now),
+                            returns_tick: if up {
+                                None
+                            } else {
+                                self.items.returns_tick(&spot(pickup, at))
+                            },
+                            blocked: up && declined || self.route.blocked_toward(at, now),
                         }
                     })
                     .collect()
@@ -2884,6 +2943,17 @@ impl NetworkedPlayer for BotPlayer {
 
     fn chat_at(&mut self, now: SimTime) -> Vec<String> {
         BotPlayer::chat_at(self, now)
+    }
+}
+
+/// A pickup as item perception knows it.
+fn spot(pickup: strategy::goals::PickupGoal, [x, y, z]: [f64; 3]) -> Spot {
+    Spot {
+        id: pickup.id,
+        at: crate::games::washoi::Vec3::new(x, y, z),
+        major: pickup.is_major(),
+        // Ticks of 8 ms.
+        respawn_ticks: u32::try_from(pickup.respawn().as_millis() / 8).unwrap_or(u32::MAX),
     }
 }
 
@@ -3514,7 +3584,7 @@ mod tests {
                 .with_sight(sight.clone())
                 .with_hunch_recording();
             let mut world = Observation {
-                pickup_active: vec![true, true],
+                server_pickup_mask: vec![true, true],
                 ..Observation::default()
             };
             for (id, team, at) in [("bot", "red", Vec3::default()), ("foe", "blue", foe)] {
@@ -3609,7 +3679,7 @@ mod tests {
                 bot = bot.with_hunch(model, mode);
             }
             let mut world = Observation {
-                pickup_active: vec![true, true],
+                server_pickup_mask: vec![true, true],
                 ..Observation::default()
             };
             world.players.push(PlayerView {

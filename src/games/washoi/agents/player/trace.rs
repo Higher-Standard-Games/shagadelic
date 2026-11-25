@@ -145,6 +145,16 @@ pub struct DecisionTrace {
     /// for a fight or a fade.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub approach_yielded: bool,
+    /// Believed against true, for diagnosis only: major pickups the bot
+    /// believes up that the server has down, and down that it has up.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub items_wrong_up: Vec<usize>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub items_wrong_down: Vec<usize>,
+    /// Major pickups back since the last decision that the bot had a return
+    /// time for: `[id, believed minus real return in ticks]`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub item_return_errors: Vec<[i64; 2]>,
 }
 
 /// See `DecisionTrace::inputs`.

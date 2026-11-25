@@ -8,6 +8,7 @@
 
 pub(in crate::games::washoi) mod collision;
 pub(in crate::games::washoi) mod estimate;
+pub(in crate::games::washoi) mod items;
 pub(in crate::games::washoi) mod sight;
 
 use std::f64::consts::PI;
