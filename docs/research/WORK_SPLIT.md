@@ -130,7 +130,7 @@ Session B, movement, navigation, and team play:
   - Wins per run: 5-4-0 and 6-2-1, against 5-3-1 and 4-3-2. Frags 123-99, against 126-85. Paired by index: +0.94 ± 3.01.
   - Traversal runs started engaged: 30 (5 died within 1 s of takeoff), against 1 (1). All deaths within 1 s of a takeoff: 8, against 5. Rust deaths with a traversal mover in the 3 s before: 34, against 27. Rust deaths: 114, against 105.
   - Yields: 48 in about 92 minutes, 0 to 5 per match, spread over RA, YA, and the MH approaches. 7 came within 2 s of the previous one (the shortest 0.2 s), and no 10 s window had more than 3. No thrash.
-  - MH takes, Rust against TypeScript: 35-41, against 23-56. TypeScript took MH within 3 s of its respawn 7 times, against 16. Per run, though: 13-24 and 22-17, against 17-21 and 6-35, so main itself swung by 9. MH, RA, and YA together: 153-85, against 140-107. Decisions toward MH, and how many were engaged, stayed level. Only 3 of the yields had MH as the goal.
+  - MH takes, Rust against TypeScript: 35-41, against 23-56. TypeScript took MH within 3 s of its respawn 7 times, against 16. Per run, though: 13-24 and 22-17, against 17-21 and 6-35, so main itself swung by 9. MH, RA, and YA together: 153-85, against 140-107. MH (`pickup:0`) was the goal in 176 runs over 29,247 decisions, against 132 over 21,201, and no yield had MH as its goal, so the drop is in goal choice, not the gate. (This line first gave RA's numbers, `pickup:3`, as MH's.)
 
   Not ported, and known departures:
   - `in_fight` and `fading` come from the previous decision, so the gate lags one decision (about 2 ticks). TypeScript evaluates the state on the same tick, just before the traversal tick.
