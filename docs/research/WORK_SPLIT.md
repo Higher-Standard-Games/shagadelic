@@ -126,6 +126,17 @@ Session B, movement, navigation, and team play:
   Open watch items:
   - The danger gate is the next lever. Don't start a link while engaged or at low health unless it's a retreat or the item is worth it. That covers @72078 landing into the enemy and 28->17 at low health.
   - MH-area deaths while understacked, and whether they persist.
+- [x] A traversal's approach gives way to a fight (session B, 2026-11-25, `4e6ef9b`). This ports TypeScript's FIGHT, which follows no path (`StateMachineBrain.ts` `_evaluateState` and the `_traversal.interrupt` on a state change). A sequence is uncommitted until takeoff, so the interrupt only lands during the approach (`BotSequence.ts` `interrupt`; `commitForTicks` from takeoff in `ValidatedJumpSequence.ts`, `TraverseJumppadSequence.ts`, `TraverseTeleporterSequence.ts`, and `LearnedRouteSequence.ts`). In a fight, a bot starts no learned approach and holds at a baked maneuver's waypoint. An approach under way when a fight starts is dropped, and the trace marks it `approach_yielded`. Once the jump is pressed, a trigger entered, or the bot is airborne, the maneuver plays out. RETREAT (the `fade` mover) still takes links, as TypeScript's does. A fading bot whose approach meets a fight keeps the approach. The A/B ran Duel on dm2, 300 s, Hard, 18 per arm interleaved over two runs (`--first-block` 0 and 3), with `bench-nav-v3` and the 161 learned routes, main against the branch:
+  - Wins per run: 5-4-0 and 6-2-1, against 5-3-1 and 4-3-2. Frags 123-99, against 126-85. Paired by index: +0.94 ± 3.01.
+  - Traversal runs started engaged: 30 (5 died within 1 s of takeoff), against 1 (1). All deaths within 1 s of a takeoff: 8, against 5. Rust deaths with a traversal mover in the 3 s before: 34, against 27. Rust deaths: 114, against 105.
+  - Yields: 48 in about 92 minutes, 0 to 5 per match, spread over RA, YA, and the MH approaches. 7 came within 2 s of the previous one (the shortest 0.2 s), and no 10 s window had more than 3. No thrash.
+  - MH takes, Rust against TypeScript: 35-41, against 23-56. TypeScript took MH within 3 s of its respawn 7 times, against 16. Per run, though: 13-24 and 22-17, against 17-21 and 6-35, so main itself swung by 9. MH, RA, and YA together: 153-85, against 140-107. Decisions toward MH, and how many were engaged, stayed level. Only 3 of the yields had MH as the goal.
+
+  Not ported, and known departures:
+  - `in_fight` and `fading` come from the previous decision, so the gate lags one decision (about 2 ticks). TypeScript evaluates the state on the same tick, just before the traversal tick.
+  - TypeScript also interrupts on roam state changes (CHASE, ITEM_RUN, HUNT, and RETREAT switching among themselves). Rust has no such states, and a goal change mid-approach doesn't drop the approach.
+
+  Open watch item: MH control. The drop is about 1.6σ and mostly one run, but MH timing and denial is the next lever, with its own measure.
 
 Mark items here as they land, with the commit.
 
