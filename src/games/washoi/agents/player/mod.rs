@@ -328,6 +328,8 @@ pub struct BotPlayer {
     items: ItemBeliefs,
     item_random: Random,
     item_news: ItemNews,
+    /// A timed match went live since the last item update.
+    match_started: bool,
     match_context: Option<MatchContext>,
     recent_damage: Vec<u32>,
     /// Pickup walks as priced from the last graph node, and where.
@@ -441,6 +443,7 @@ impl BotPlayer {
             opponents: Opponents::default(),
             items: ItemBeliefs::default(),
             item_news: ItemNews::default(),
+            match_started: false,
             match_context: None,
             recent_damage: Vec::new(),
             walkable: Vec::new(),
@@ -1675,7 +1678,16 @@ impl BotPlayer {
                     self.respawn_at.get_or_insert(now + RESPAWN_DELAY);
                 }
                 SnapshotEvent::MatchState(state) => {
-                    self.match_context = Some(MatchContext::read(state));
+                    let next = MatchContext::read(state);
+                    let before = self.match_context.as_ref().map(|context| context.phase);
+                    // Warmup or countdown to live, outside round modes.
+                    if next.phase == 2
+                        && matches!(before, Some(0 | 1))
+                        && next.round_state.is_none()
+                    {
+                        self.match_started = true;
+                    }
+                    self.match_context = Some(next);
                 }
                 _ => {}
             }
@@ -2525,11 +2537,6 @@ impl BotPlayer {
     /// What the bot believes of the map's items, before anything plans on
     /// them. Decisions read this, never the server's mask.
     fn read_items(&mut self, world: &Observation) {
-        let Some(position) = world.body(&self.entity_id).and_then(|body| body.position) else {
-            self.items.unseen(world);
-            self.item_news = ItemNews::default();
-            return;
-        };
         let spots: Vec<Spot> = self
             .navigation
             .as_deref()
@@ -2541,6 +2548,14 @@ impl BotPlayer {
                     .collect()
             })
             .unwrap_or_default();
+        if std::mem::take(&mut self.match_started) {
+            self.items.match_started(world.tick, &spots);
+        }
+        let Some(position) = world.body(&self.entity_id).and_then(|body| body.position) else {
+            self.items.unseen(world);
+            self.item_news = ItemNews::default();
+            return;
+        };
         let view_yaw = self
             .aim
             .current()

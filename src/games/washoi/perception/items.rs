@@ -31,7 +31,9 @@
 //! the ones the server says it is wrong about first, and fills pickups it
 //! has no entry for from the server's mask. Both read server truth, so here
 //! every spot in sight is checked each update, and a pickup without a spot
-//! is believed up. A spot beside the bot, within `SELF_TAKE_RADIUS`, is
+//! is believed up. When a timed match goes live, the bot knows the rule
+//! every player does: warmup takes are void, other items are up, and the
+//! majors spawn 15 s later. TypeScript keeps its warmup beliefs. A spot beside the bot, within `SELF_TAKE_RADIUS`, is
 //! checked whichever way it looks, as a player standing on an empty spot
 //! knows it is empty. TypeScript knows an item up only from seeing it there.
 //! Here its own return estimate passing counts too, so an item found gone
@@ -58,6 +60,9 @@ const ITEM_SIGHT_RANGE: f64 = 2000.0;
 const SELF_TAKE_RADIUS: f64 = 180.0;
 const VIEW_HALF_ANGLE: f64 = 55.0 * PI / 180.0;
 const EYE_HEIGHT: f64 = 32.0;
+/// `MAJOR_ITEM_FIRST_SPAWN_SECONDS` (`shared/items/ItemRespawn.ts`): at
+/// match start, majors spawn this long after the others.
+const MAJOR_FIRST_SPAWN_TICKS: i64 = 15 * 125;
 
 /// One map pickup as the bot knows it.
 #[derive(Clone, Copy, Debug)]
@@ -111,6 +116,8 @@ pub(in crate::games::washoi) enum Learned {
     Heard = 1,
     Seen = 2,
     Found = 3,
+    /// The match-start rule.
+    Rule = 4,
 }
 
 #[derive(Default)]
@@ -133,6 +140,19 @@ impl ItemBeliefs {
     /// Forget everything, as on a new map.
     pub(in crate::games::washoi) fn reset(&mut self) {
         *self = Self::default();
+    }
+
+    /// A timed match went live at `tick`: the server restores every item
+    /// (`PickupSystem.resetForMatch`), majors after
+    /// `MAJOR_FIRST_SPAWN_TICKS`. Warmup takes and timings are void.
+    pub(in crate::games::washoi) fn match_started(&mut self, tick: u32, spots: &[Spot]) {
+        let before = std::mem::take(&mut self.before);
+        self.reset();
+        self.before = before;
+        let back = i64::from(tick) + MAJOR_FIRST_SPAWN_TICKS;
+        for spot in spots.iter().filter(|spot| spot.major) {
+            self.exact(spot, back - i64::from(spot.respawn_ticks), Learned::Rule);
+        }
     }
 
     /// A decision without the bot's own position, such as while dead: it
@@ -627,6 +647,29 @@ mod tests {
         let news = bot.see(&world(10_200, [false, true], vec![]));
         assert_eq!(news.found_gone, [(0, 10_200 - 3750)]);
         assert_eq!(bot.items.up(0), Some(false));
+    }
+
+    #[test]
+    fn at_match_start_warmup_takes_are_void_and_majors_spawn_late() {
+        let mut bot = Bot::new(1, 0.0);
+        bot.see(&world(100, [true, true], vec![]));
+        // Taken in warmup: believed back at 7,610.
+        bot.see(&world(
+            110,
+            [false, false],
+            vec![picked("bot", 0), picked("bot", 1)],
+        ));
+        bot.items.match_started(1000, &SPOTS);
+        bot.see(&world(1001, [false, true], vec![]));
+        assert_eq!(bot.items.mask(), [false, true]);
+        assert_eq!(bot.items.returns_tick(&MEGA), Some(1000 + 1875));
+        bot.see(&world(2875, [true, true], vec![]));
+        assert_eq!(bot.items.up(0), Some(true));
+        assert_eq!(
+            bot.items.truth().return_errors,
+            [(0, 0, Learned::Rule)],
+            "back on the rule's time"
+        );
     }
 
     #[test]
