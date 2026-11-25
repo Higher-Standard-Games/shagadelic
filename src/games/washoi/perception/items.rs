@@ -29,7 +29,9 @@
 //! the ones the server says it is wrong about first, and fills pickups it
 //! has no entry for from the server's mask. Both read server truth, so here
 //! every spot in sight is checked each update, and a pickup without a spot
-//! is believed up. TypeScript knows an item up only from seeing it there.
+//! is believed up. A spot beside the bot, within `SELF_TAKE_RADIUS`, is
+//! checked whichever way it looks, as a player standing on an empty spot
+//! knows it is empty. TypeScript knows an item up only from seeing it there.
 //! Here its own return estimate passing counts too, so an item found gone
 //! soon after the bot believed it back is dated after that return. Without
 //! a sight file, as TypeScript without a map, the
@@ -225,10 +227,11 @@ impl ItemBeliefs {
             news.vanished.push(spot.id);
         }
 
-        // Every spot in sight, every update: up there, or found gone. Only a
-        // major item's sighting dates a later find.
+        // Every spot in sight, or beside the bot whichever way it looks,
+        // every update: up there, or found gone. Only a major item's
+        // sighting dates a later find.
         for (index, spot) in spots.iter().enumerate() {
-            if !sees(index) {
+            if distance(me, spot.at) > SELF_TAKE_RADIUS && !sees(index) {
                 continue;
             }
             if up_on_server(spot.id) {
@@ -587,6 +590,19 @@ mod tests {
         let news = bot.see(&world(9000, [false, true], vec![]));
         // Midway between the return and now, not half a respawn back.
         assert_eq!(news.found_gone, [(0, (7610 + 9000) / 2)]);
+    }
+
+    #[test]
+    fn a_spot_beside_the_bot_is_found_empty_whichever_way_it_looks() {
+        let mut bot = Bot::new(5, 1.0);
+        bot.see(&world(10_000, [true, true], vec![]));
+        bot.see(&world(10_100, [false, true], vec![]));
+        assert_eq!(bot.items.up(0), Some(true), "taken unseen and unheard");
+        // Walked onto the spot facing away.
+        bot.position = Vec3::new(900.0, 0.0, 0.0);
+        let news = bot.see(&world(10_200, [false, true], vec![]));
+        assert_eq!(news.found_gone, [(0, 10_200 - 3750)]);
+        assert_eq!(bot.items.up(0), Some(false));
     }
 
     #[test]
