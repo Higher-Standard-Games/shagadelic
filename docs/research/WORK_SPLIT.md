@@ -169,7 +169,7 @@ Session B, movement, navigation, and team play:
 - [x] MH belief (session B, 2026-11-25, `5afceec` to `6532793` on `mh-belief`). Departures from TypeScript, each from what the bot perceives:
   - `5afceec` traces how the bot learned each take it times (own, heard, seen, found, rule) beside the return error. No behavior change.
   - `9919709`: a spot within the bot's own take radius is checked whichever way the bot looks, so standing on an empty spot finds it gone.
-  - `1dcd659`: a major pickup is heard with probability 0.95 at Hard and 1.0 at Insane (`Difficulty::major_pickup_hearing`). Easy and Medium keep `itemTimingSkill`, as TypeScript.
+  - `1dcd659`: a major pickup is heard with probability 0.95 at Hard and 1.0 at Insane (`Difficulty::major_pickup_hearing`). Easy and Medium keep `itemTimingSkill`, as TypeScript. This turned out inert. The server sends `item_pickup` for weapons and ammo only (`PickupSystem.ts:474-476`). Armor, health, Mega, and powerups show only in the mask, and `pickup_notify` is played and shown to the taker alone (`GameEvents.ts:649-651`). No major pickup was ever heard, and the traces hold no heard return.
   - `ed1d2e4` and `036b1c1`: when the items reset, beliefs from before are void and majors are due 15 s on (`PickupSystem.resetForMatch`, `ItemRespawn.ts:18`). A timed mode resets on going live, and a round mode at each round's freeze (`GametypeController.ts:695-730`). TypeScript keeps its stale beliefs (`BotPerception.reset` runs only on vision or connection). A campaign's held opening countdown also resets the items, which the match state doesn't show, so that one is missed.
   - Tried and reverted: `149464d` dated a found-gone take no earlier than the bot's own return estimate. Against an opponent who times MH, a late estimate made the next one later, and MH found-gone error rose to a +45.6 s median. `6532793` reverts it, so the last sighting up is the only bound.
 
@@ -180,6 +180,11 @@ Session B, movement, navigation, and team play:
   - Wasted trips to MH: 64, against 82. Deaths on them: 9, against 11.
   - MH return error: from a found-gone take, median +3.6 s with |error| p75 23 s. From the bot's own take or the match-start rule, it is 0. Main has a median of +6.2 s with p75 31 s over all sources.
   - Armor takes fell overall, from 125-79 to 106-78. RA went from 73-18 to 55-22, and YA rose from 29-35 to 36-38. Wasted armor trips rose: RA from 31 to 40 and YA from 22 to 42.
+
+  Why armor got worse, from the traces alone. The bot can learn of a TypeScript armor take only by seeing it vanish or finding the spot empty.
+  - Of the TypeScript RA takes, the bot held a belief by the respawn for 9 of 18 on main, but 1 of 22 on the branch. 33 of the branch's 40 wasted RA trips followed a take it never noticed, against 12 of 31 on main.
+  - YA was noticed as often: 25 of 37, against 20 of 33. Its wasted trips rose with the time spent going for it (37,170 goal decisions against 24,713), and with found-gone dating error (±7.7 s median).
+  - So this is exposure, not a wrong belief. The bot spends less time near the RA: within 800 units 41.3% of its alive time, against 47.9% on main. Near the MH it is 60.0%, against 53.7%. That gap alone looks too small for 1 of 22, so the RA sightlines are worth a look. The other commits were ruled out. `9919709` only dates a spot not already believed down. `1dcd659` is inert, as noted above. The match-start rule accounts for 2 wasted RA trips in the first 30 s, against 3 on main.
 
   Open watch item: armor. The bot now spends time on MH that went to armor, and armor matters more in Duel. Next is armor play from the human demo, as recorded departures:
   - Value armor by stack gain.
