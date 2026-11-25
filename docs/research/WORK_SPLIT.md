@@ -115,6 +115,14 @@ Session B, movement, navigation, and team play:
   - Fall crushes (count, health and armor lost): Rust 43 and 5,143, against 33 and 4,475. TypeScript 35 and 3,918, against 49 and 4,773.
   - Tickrate: no "No messages". Every match had one startup behind-window. Beyond those, 10 against 13, with spikes over 150 ms in both arms, which fits machine noise but isn't clean.
 
+  A second A/B isolated decide-first: the branch at `7ff766f` against the same with `afd9ca6` reverted (`56a2e44`, never landed), 18 per arm, same setup. With decide-first, then without:
+  - Wins 15-3-0, against 9-8-1. Frag gap +1.72 ± 1.63, against +0.17 ± 2.09. Paired by index: -1.56 ± 2.97.
+  - Rust deaths: 113, against 136. Within 400 units of MH: 18, against 26. Within 1 s of a takeoff: 5, against 10.
+  - Input lead's median: 3, against 5. Flying learned runs within 48 units of the landing: 32%, against 30%.
+  - MH takes 40-38, against 35-39.
+  
+  The decide-first arm is the same build as the first A/B's branch arm. Its MH-area deaths went from 28 to 18 and its quick takeoff deaths from 10 to 5, so the first A/B's rises were within run-to-run spread, not caused by either change.
+
   Open watch items:
   - The danger gate is the next lever. Don't start a link while engaged or at low health unless it's a retreat or the item is worth it. That covers @72078 landing into the enemy and 28->17 at low health.
   - MH-area deaths while understacked, and whether they persist.
