@@ -166,6 +166,27 @@ Session B, movement, navigation, and team play:
   - Raise `itemTimingSkill` for major pickups heard at Hard and above. Lower difficulties stay as TypeScript.
 
   GA1 (`pickup:1`) is almost never Rust's goal. Its node is connected, and Rust's valuation matches TypeScript's (`ItemValue.ts` and `ItemFacts.ts` against `considerations.rs` and `strategy/items.rs`). TypeScript visits it no more often, so that is parity.
+- [x] MH belief (session B, 2026-11-25, `5afceec` to `6532793` on `mh-belief`). Departures from TypeScript, each from what the bot perceives:
+  - `5afceec` traces how the bot learned each take it times (own, heard, seen, found, rule) beside the return error. No behavior change.
+  - `9919709`: a spot within the bot's own take radius is checked whichever way the bot looks, so standing on an empty spot finds it gone.
+  - `1dcd659`: a major pickup is heard with probability 0.95 at Hard and 1.0 at Insane (`Difficulty::major_pickup_hearing`). Easy and Medium keep `itemTimingSkill`, as TypeScript.
+  - `ed1d2e4` and `036b1c1`: when the items reset, beliefs from before are void and majors are due 15 s on (`PickupSystem.resetForMatch`, `ItemRespawn.ts:18`). A timed mode resets on going live, and a round mode at each round's freeze (`GametypeController.ts:695-730`). TypeScript keeps its stale beliefs (`BotPerception.reset` runs only on vision or connection). A campaign's held opening countdown also resets the items, which the match state doesn't show, so that one is missed.
+  - Tried and reverted: `149464d` dated a found-gone take no earlier than the bot's own return estimate. Against an opponent who times MH, a late estimate made the next one later, and MH found-gone error rose to a +45.6 s median. `6532793` reverts it, so the last sighting up is the only bound.
+
+  The A/B ran Duel on dm2, 300 s, Hard, 18 per arm interleaved over two runs (`--first-block` 0 and 3), with `bench-nav-v3` and the learned routes. It compared main (`e816b33`) against `6532793`.
+  - Frag gap per run: +1.00 ± 2.94 and +2.78 ± 2.16 for main, against +1.44 ± 2.94 and +1.11 ± 4.02 for the branch. Pooled: +1.89 ± 1.96 (12 won, 4 lost), against +1.28 ± 2.60 (10 won, 4 lost). The branch's second run holds one −13 match. Without it, the branch pools at +2.12. So frags show no difference that this sample can resolve.
+  - MH takes, Rust against TypeScript: 57-26, against 41-37 on main. Timed MH takes: 13-6, against 9-12.
+  - Decisions with MH believed down while it was up: 3,425, against 11,834. MH goals dropped on that belief: 7, against 15.
+  - Wasted trips to MH: 64, against 82. Deaths on them: 9, against 11.
+  - MH return error: from a found-gone take, median +3.6 s with |error| p75 23 s. From the bot's own take or the match-start rule, it is 0. Main has a median of +6.2 s with p75 31 s over all sources.
+  - Armor takes fell overall, from 125-79 to 106-78. RA went from 73-18 to 55-22, and YA rose from 29-35 to 36-38. Wasted armor trips rose: RA from 31 to 40 and YA from 22 to 42.
+
+  Open watch item: armor. The bot now spends time on MH that went to armor, and armor matters more in Duel. Next is armor play from the human demo, as recorded departures:
+  - Value armor by stack gain.
+  - Take both GAs when the RA or YA is contested.
+  - Deny a full stack's armor.
+  - Hold the central hub between items.
+  - Bound found-gone dating by facts only: the last sighting up, and exact returns from the bot's own take or the rule. This gets its own A/B.
 
 Mark items here as they land, with the commit.
 
