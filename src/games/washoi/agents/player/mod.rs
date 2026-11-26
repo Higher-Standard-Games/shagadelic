@@ -269,6 +269,9 @@ pub struct BotPlayer {
     trick_check_tick: u32,
     wall_jump_press: bool,
     last_jump_held: bool,
+    /// Own origin height at the last grounded decision, where the server
+    /// measures a fall from (`FPSMovementSubsystem.ts`, `lastGroundY`).
+    fall_from: Option<f64>,
     liquid: LiquidEscape,
     slide: RouteSlide,
     hop: HopChain,
@@ -414,6 +417,7 @@ impl BotPlayer {
             trick_check_tick: 0,
             wall_jump_press: false,
             last_jump_held: false,
+            fall_from: None,
             liquid: LiquidEscape::default(),
             planner: Planner::new(Difficulty::default().mistake_rate()),
             hunch: None,
@@ -849,6 +853,7 @@ impl BotPlayer {
         }
         self.keep_clear(world, position);
         self.try_tricks(world, position);
+        self.soften_landing(world, position);
         self.last_jump_held = self.planned_input.buttons & JUMP != 0;
         if self.tracing {
             let mut record = self.record(world, position);
@@ -1245,6 +1250,46 @@ impl BotPlayer {
 
     /// In slime or lava, whatever the state, the bot jumps for the nearest dry
     /// ground (`navigation::liquid`), keeping its aim and fire.
+    /// Departure: crouch for the landing of a fall that would hurt. The
+    /// server softens a landing with crouch held by `sv_falldamage_crouchsoften`
+    /// (64), from the height of the origin (`FPSMovementSubsystem.ts`,
+    /// `queueFallDamage`). A crouched hull lands with its origin 20 lower
+    /// (`CROUCH_MINS_Z` against `PLAYER_MINS_Z`, and `Slide.updateCrouch` runs
+    /// before the move), so the drop it softens is 44. That avoids a crush
+    /// for drops of 384 to 428, makes a fatal drop of 512 to 556 a crush, and
+    /// takes 34 off any ramp damage. TypeScript never crouches to land. The
+    /// bot reads only its own height and velocity. A scripted traversal,
+    /// ledge slide, hop chain, climb, wall jump, lunge, or swim keeps its own
+    /// buttons.
+    fn soften_landing(&mut self, world: &Observation, position: Option<super::super::Vec3>) {
+        let velocity = world.body(&self.entity_id).and_then(|body| body.velocity);
+        let (Some(position), Some(velocity), true) =
+            (position, velocity, self.respawn_at.is_none())
+        else {
+            self.fall_from = None;
+            return;
+        };
+        if velocity.grounded {
+            self.fall_from = Some(position.y);
+            return;
+        }
+        let scripted = self.exact_view
+            || self.traversal.active()
+            || self.ledge.active()
+            || self.hop.active()
+            || self.climb_jump.is_some()
+            || self.wall_jump_press
+            || self.lunge.active()
+            || self.mover == "liquid";
+        if !scripted
+            && self
+                .fall_from
+                .is_some_and(|from| landing_crouch(from - position.y, velocity.linear.y))
+        {
+            self.planned_input.buttons |= CROUCH;
+        }
+    }
+
     fn escape_liquid(
         &mut self,
         world: &Observation,
@@ -2969,9 +3014,30 @@ fn spot(pickup: strategy::goals::PickupGoal, [x, y, z]: [f64; 3]) -> Spot {
     }
 }
 
+/// Fallen this far below the ground left, units, a falling bot crouches for
+/// its landing. Damage starts at a drop of 256 (`sv_falldamage_min`); the
+/// rest is room for a decision's lag at the speed of such a fall (about
+/// 640 units/s at 256).
+const LANDING_CROUCH_FALLEN: f64 = 200.0;
+
+/// Whether a bot `fallen` below the ground it left, and moving up at
+/// `rising` units/s, holds crouch for its landing.
+fn landing_crouch(fallen: f64, rising: f64) -> bool {
+    rising < 0.0 && fallen >= LANDING_CROUCH_FALLEN
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_fall_that_would_hurt_crouches_for_its_landing() {
+        assert!(landing_crouch(200.0, -600.0));
+        assert!(landing_crouch(420.0, -800.0));
+        // Not yet low enough to hurt, or still going up off a pad.
+        assert!(!landing_crouch(150.0, -500.0));
+        assert!(!landing_crouch(300.0, 50.0));
+    }
 
     /// Run speed needs sprint with forward alone: a move 30 degrees off the
     /// view is a diagonal chord, and fire or crouch caps the speed too.
