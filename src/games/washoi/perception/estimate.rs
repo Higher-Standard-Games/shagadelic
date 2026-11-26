@@ -8,8 +8,11 @@
 //! it grants (`picked`, fed by `strategy::opponents` through
 //! `Combat::credit_pickup`). No one hears an armor or health take (the
 //! server sends `item_pickup` for weapons and ammo only), so credits come
-//! from an item seen vanishing or, in a Duel, found gone. Overheal decay is
-//! not modelled, so the estimate runs high after a credited Mega Health.
+//! from an item seen vanishing or, in a Duel, found gone.
+//!
+//! Departure from TypeScript: health over 100 bleeds 1 a second, as the
+//! server's overheal decay does (`PickupSystem.ts`, `decayOverheal`), so
+//! a credited Mega Health no longer reads as 200 for the rest of a life.
 
 /// `ARMOR_ABSORPTION`: armor takes this share of a hit while it lasts.
 pub(in crate::games::washoi) const ARMOR_ABSORPTION: f64 = 0.66;
@@ -18,6 +21,18 @@ const SPAWN_HEALTH: f64 = 100.0;
 const FADE_TICKS: f64 = 1875.0;
 /// `PAIN_TIER_RANGE`: the health range each pain tier stands for.
 const PAIN_TIER_RANGE: [(f64, f64); 4] = [(1.0, 20.0), (21.0, 35.0), (36.0, 60.0), (61.0, 200.0)];
+/// `HEALTH_MAX`: overheal bleeds back to it at 1 a second.
+const HEALTH_MAX: f64 = 100.0;
+const TICK_RATE: f64 = 125.0;
+
+/// Health over the maximum after the overheal decay from `since` to `tick`.
+fn decayed(health: f64, since: u32, tick: u32) -> f64 {
+    if health <= HEALTH_MAX {
+        return health;
+    }
+    let seconds = (f64::from(tick.saturating_sub(since)) / TICK_RATE).floor();
+    (health - seconds).max(HEALTH_MAX)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(in crate::games::washoi) struct Estimate {
@@ -30,11 +45,28 @@ pub(in crate::games::washoi) struct Estimate {
 struct Enemy {
     entity: String,
     health: f64,
+    /// When `health` was last set, for the overheal decay since.
+    health_at: u32,
     armor: f64,
     known: u32,
     /// When it was first known alive this life.
     spawn: u32,
     alive: bool,
+}
+
+impl Enemy {
+    /// Apply the overheal decay up to `tick`, keeping the part second.
+    fn settle(&mut self, tick: u32) {
+        let health = decayed(self.health, self.health_at, tick);
+        if health < self.health {
+            let seconds = (self.health - health) as u32;
+            self.health_at += seconds * TICK_RATE as u32;
+            self.health = health;
+        }
+        if self.health <= HEALTH_MAX {
+            self.health_at = tick;
+        }
+    }
 }
 
 #[derive(Default)]
@@ -50,6 +82,7 @@ impl Estimates {
                 self.enemies.push(Enemy {
                     entity: entity.to_owned(),
                     health: SPAWN_HEALTH,
+                    health_at: tick,
                     armor: 0.0,
                     known: tick,
                     spawn: tick,
@@ -68,6 +101,7 @@ impl Estimates {
             *enemy = Enemy {
                 entity: entity.to_owned(),
                 health: SPAWN_HEALTH,
+                health_at: tick,
                 armor: 0.0,
                 known: tick,
                 spawn: tick,
@@ -91,6 +125,7 @@ impl Estimates {
         tick: u32,
     ) {
         let enemy = self.get_or_spawn(entity, tick);
+        enemy.settle(tick);
         let absorbed = enemy.armor.min(damage * ARMOR_ABSORPTION);
         enemy.armor = (enemy.armor - absorbed).max(0.0);
         enemy.health = (enemy.health - (damage - absorbed)).max(1.0);
@@ -111,6 +146,7 @@ impl Estimates {
         grant: impl Fn(f64, f64) -> (f64, f64),
     ) {
         let enemy = self.get_or_spawn(entity, tick);
+        enemy.settle(tick);
         let (health, armor) = grant(enemy.health, enemy.armor);
         enemy.health = enemy.health.max(health);
         enemy.armor = enemy.armor.max(armor);
@@ -159,7 +195,7 @@ impl Estimates {
             .iter()
             .find(|enemy| enemy.entity == entity && enemy.alive)?;
         Some(Estimate {
-            health: enemy.health,
+            health: decayed(enemy.health, enemy.health_at, tick),
             armor: enemy.armor,
             uncertainty: (f64::from(tick.wrapping_sub(enemy.known)) / FADE_TICKS).min(1.0),
         })
@@ -219,5 +255,31 @@ mod tests {
         estimates.picked("foe", 11, |health, armor| (health - 50.0, armor));
         let estimate = estimates.of("foe", 11).unwrap();
         assert_eq!((estimate.health, estimate.armor), (100.0, 100.0));
+    }
+
+    #[test]
+    fn overheal_bleeds_a_point_a_second_and_armor_stays() {
+        let mut estimates = Estimates::default();
+        estimates.seen("foe", 0);
+        estimates.picked("foe", 1000, |health, armor| (health + 100.0, armor + 100.0));
+        let at = |estimates: &Estimates, tick| {
+            let e = estimates.of("foe", tick).unwrap();
+            (e.health, e.armor)
+        };
+        assert_eq!(at(&estimates, 1000), (200.0, 100.0));
+        assert_eq!(at(&estimates, 1000 + 30 * 125), (170.0, 100.0));
+        assert_eq!(at(&estimates, 1000 + 500 * 125), (100.0, 100.0));
+        // A hit lands on the decayed health, and the decay goes on from it.
+        estimates.hit("foe", 0.0, None, 1000 + 40 * 125 + 60);
+        assert_eq!(at(&estimates, 1000 + 40 * 125 + 60), (160.0, 100.0));
+        assert_eq!(at(&estimates, 1000 + 50 * 125), (150.0, 100.0));
+        estimates.hit("foe", 150.0, None, 1000 + 50 * 125);
+        let (health, _) = at(&estimates, 1000 + 50 * 125);
+        assert!((health - (150.0 - 150.0 * (1.0 - ARMOR_ABSORPTION))).abs() < 1e-9);
+        assert_eq!(
+            at(&estimates, 1000 + 90 * 125).0,
+            health,
+            "under 100 it stays"
+        );
     }
 }
