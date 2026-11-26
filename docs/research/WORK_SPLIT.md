@@ -199,6 +199,15 @@ Session B, movement, navigation, and team play:
   - Weight 0.75: frags +2.28 ± 1.77 (12-4) against +2.61 ± 2.05 (11-5). The MH stayed about even (52-33 against 56-32), but the armor gain went too: armor 173-124 against 178-111, RA 77-23 against 69-24, YA 64-39 against 71-32. Rust's stack 3 s before its own death rose from a p50 of 85 to 100, and TypeScript's rose from 82 to 100.
   - Main's own armor count moved from 169-134 to 178-111 between the two A/Bs, so armor take counts spread about ±20 from run to run at 18 matches. Neither weight showed a frag gain this sample resolves. The branch is kept.
 
+  Departure, `8f4203a`: a falling bot crouches for its landing. Once it has fallen 200 units below the last ground it stood on (its own origin height, as the server's `lastGroundY` measures it), it holds crouch until down. Scripted traversals, ledge slides, hop chains, climbs, wall jumps, lunges and swims keep their own buttons. TypeScript never crouches to land.
+  - The soften is 44, not the configured 64. The server takes `sv_falldamage_crouchsoften` (64) off a crouched landing's drop, measured at the origin (`FPSMovementSubsystem.ts` `queueFallDamage`, and line 1086 for the origin). `Slide.updateCrouch` runs before the move (`MovementProfile.ts`), so a crouched hull lands with mins at `CROUCH_MINS_Z` (−4) instead of `PLAYER_MINS_Z` (−24), and its origin 20 lower. A drop of 384 to 428 escapes a crush (1 hp, 0 armor, `CombatSystem.ts` `FallCrush`), 512 to 556 is a crush instead of a death, and ramp damage drops by 34.
+  - Why: on main, 37 of Rust's 41 crushes in one 18-match Duel A/B were the same 400-unit drop from the y=424 deck, mostly at about (−240, 424, 100). Crouched, it costs 78 ramp damage.
+  - A/B, Duel on dm2, 18 per arm over two runs, against main (`9ef3593`). Frags +2.06 ± 1.58 (12 won, 4 lost) against +1.17 ± 1.62 (10-6), ahead in both runs. Rust crushes 56 → 11, hp+ar lost to them 6,555 → 1,742. Fall crushes among landings from 236 or more fell from 46 of 115 to 0 of 108. Rust's share of living samples at 1 hp or less went from 8.82% to 3.17%, against TypeScript's 3.16%. Rust deaths 119 → 97, and its stack while both live rose from p25 84, p50 100 to p25 100, p50 120. No fatal falls in either arm.
+  - The trade: Rust's ramp fall damage rose from 1,289 to 3,008, the cost of taking the deck drop at 78 instead of a crush.
+  - Checks: crouch is released at the next decision after landing (held at +0.1 s in 6 of 108 landings, against 4 of 115 on main), and horizontal speed 0.5 s after landing is 315 against 306. The tucked feet did not change where falls land: the top start-to-landing cells match between arms.
+  - Open: the 11 crushes left are not falls. All sit at about (750, 56, 50), arriving from y 250-300, some with upward velocity, and each credits the opponent. Main has about as many there.
+  - Watch: Rust GA2 takes fell from 24 to 7 (TypeScript 59 to 54), with all armor 178-128 against 159-125. This is within the ±20 run-to-run spread, but is worth watching.
+
 Mark items here as they land, with the commit.
 
 ## Notes between sessions
