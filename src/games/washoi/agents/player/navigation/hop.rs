@@ -13,8 +13,9 @@
 //! sends its keys in a frame of their own, apart from the view. Washoi's
 //! 400 u/s ground cap doesn't apply in the air, so strafe keys gain speed there.
 //!
-//! Deviations: only straight lanes, not chains bent along a held route line,
-//! and the walk to each landing's next lane comes from the route follower or
+//! Deviations: where a bend or a slope closes TypeScript's straight lane,
+//! a lane bent along the walk opens (`Route::bent_lane`), as a human hops
+//! around a curve or up a ramp; the walk to each landing's next lane comes from the route follower or
 //! the order's walk. Each landing takes the next lane only past the gates a
 //! start has, speed, heading and allies, as `routeStrafeNext` asks
 //! `routeStrafeLane` again. An ally in the lane ahead stops a chain from
@@ -91,6 +92,9 @@ const MOVE_KEYS: u16 = FORWARD | BACK | LEFT | RIGHT;
 pub(in crate::games::washoi) struct HopLane {
     pub(in crate::games::washoi) yaw: f64,
     pub(in crate::games::washoi) end: [f64; 3],
+    /// A lane bent along the walk, and the test that closed the straight
+    /// one there (`lane_wide` or `lane_height`). None on a straight lane.
+    pub(in crate::games::washoi) bent: Option<&'static str>,
 }
 
 /// What a decision offers the hop chain.
@@ -264,7 +268,11 @@ impl HopChain {
         hop.side = side_away_from_wall(view, velocity_yaw, side);
         self.next_side = -fallback;
         self.cooldown_until = view.tick + RETRY_TICKS;
-        self.note = Some("start_straight");
+        self.note = Some(match lane.bent {
+            None => "start_straight",
+            Some("lane_height") => "start_bent_height",
+            Some(_) => "start_bent_wide",
+        });
         Ok(hop)
     }
 }
@@ -316,11 +324,12 @@ fn tick(
                 return (forward(hop, false), true, Some(note));
             }
             take_lane(hop, view, velocity, lane);
-            return (
-                strafe(hop, view, velocity, false),
-                false,
-                Some("land_straight"),
-            );
+            let note = match lane.bent {
+                None => "land_straight",
+                Some("lane_height") => "land_bent_height",
+                Some(_) => "land_bent_wide",
+            };
+            return (strafe(hop, view, velocity, false), false, Some(note));
         }
         return (strafe(hop, view, velocity, false), false, None);
     }
@@ -677,6 +686,7 @@ mod tests {
     const LANE: HopLane = HopLane {
         yaw: 0.0,
         end: [0.0, 0.0, 1000.0],
+        bent: None,
     };
 
     fn view(

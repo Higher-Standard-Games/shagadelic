@@ -106,8 +106,10 @@ pub struct DecisionTrace {
     /// The strafe-jump chain since the last record (`navigation::hop`): the
     /// first gate that refused a start (`cooldown`, `skill`, `fighting`,
     /// `airborne`, `sliding`, `no_wish`, `keys`, `slow`, `no_lane`,
-    /// `heading`, `ally`), a start (`start_straight`), a
-    /// landing (`land_straight`, `land_no_lane`, `land_short`),
+    /// `heading`, `ally`), a start (`start_straight`, or `start_bent_wide` or
+    /// `start_bent_height` on a lane bent along the walk), a
+    /// landing (`land_straight`, `land_bent_wide`, `land_bent_height`,
+    /// `land_no_lane`, `land_short`),
     /// or an end (`end_long`, `end_takeoff`, `end_ground`, `end_slow`,
     /// `end_off_line`).
     #[serde(default, skip_serializing_if = "Option::is_none")]

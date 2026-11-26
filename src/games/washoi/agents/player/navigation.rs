@@ -776,6 +776,71 @@ impl Route {
             .ok_or("lane_walk")
     }
 
+    /// A hop lane bent along the walk where the straight lane is closed by a
+    /// bend or a slope: the aim point one hop along the walk and the point
+    /// 740 along it, when two hops' chords down the walk are clear of walls
+    /// at a sloped chest and knee line, have ground under them within a
+    /// step of the walk's height every 32 units, turn by no more than 40
+    /// degrees from the first to the second, and no waypoint within reach
+    /// is a maneuver or a climb or drop steeper than a ramp. A
+    /// deliberate departure from TypeScript `BotTraversal.routeStrafeLane`,
+    /// which hops straight lanes only.
+    fn bent_lane(
+        &self,
+        next: usize,
+        position: Vec3,
+        sight: &Sight,
+    ) -> Option<([f64; 3], [f64; 3])> {
+        const HOP: f64 = 320.0;
+        const REACH: f64 = 640.0;
+        const END: f64 = 740.0;
+        const MAX_BEND: f64 = 0.7;
+        const RAMP_SLOPE: f64 = 0.5;
+        let start = [position.x, position.y, position.z];
+        let rest = self.waypoints.get(next..)?;
+        let mut walked = 0.0;
+        let mut a = start;
+        for (offset, &b) in rest.iter().enumerate() {
+            if walked >= REACH {
+                break;
+            }
+            let length = (b[0] - a[0]).hypot(b[2] - a[2]);
+            let rise = (b[1] - a[1]).abs();
+            if self.maneuver_at(next + offset).is_some()
+                || (rise > MAX_HEIGHT_DELTA && rise > RAMP_SLOPE * length)
+            {
+                return None;
+            }
+            walked += length;
+            a = b;
+        }
+        let along = |distance: f64| {
+            let mut left = distance;
+            let mut a = start;
+            for &b in rest {
+                let length = (b[0] - a[0]).hypot(b[2] - a[2]);
+                if length >= left {
+                    return Some(mix(a, b, left / length.max(1e-9)));
+                }
+                left -= length;
+                a = b;
+            }
+            None
+        };
+        let last = *rest.last()?;
+        let landing = along(HOP)?;
+        let second = along(REACH).unwrap_or(last);
+        let end = along(END).unwrap_or(last);
+        let yaw = |from: [f64; 3], to: [f64; 3]| (to[0] - from[0]).atan2(to[2] - from[2]);
+        let bend = (yaw(landing, second) - yaw(start, landing) + std::f64::consts::PI)
+            .rem_euclid(std::f64::consts::TAU)
+            - std::f64::consts::PI;
+        (bend.abs() <= MAX_BEND
+            && corridor_clear(sight, start, landing)
+            && corridor_clear(sight, landing, second))
+        .then_some((landing, end))
+    }
+
     /// A drop of more than a step at waypoint `next` or the one after, with
     /// no maneuver there: where a ledge slide jump may land.
     fn drop_ahead(&self, next: usize, position: Vec3) -> Option<Vec3> {
@@ -800,7 +865,18 @@ fn hop_lane_along(
 ) -> Result<hop::HopLane, &'static str> {
     const RUN: f64 = 480.0;
     const EXIT_MARGIN: f64 = 260.0;
-    let yaw = route.open_lane(next, position, sight, RUN, 640.0, 96.0)?;
+    let yaw = match route.open_lane(next, position, sight, RUN, 640.0, 96.0) {
+        Ok(yaw) => yaw,
+        Err(closed @ ("lane_wide" | "lane_height")) => {
+            let (aim, end) = route.bent_lane(next, position, sight).ok_or(closed)?;
+            return Ok(hop::HopLane {
+                yaw: (aim[0] - position.x).atan2(aim[2] - position.z),
+                end,
+                bent: Some(closed),
+            });
+        }
+        Err(closed) => return Err(closed),
+    };
     let reach = RUN + EXIT_MARGIN;
     Ok(hop::HopLane {
         yaw,
@@ -809,7 +885,57 @@ fn hop_lane_along(
             position.y,
             position.z + yaw.cos() * reach,
         ],
+        bent: None,
     })
+}
+
+fn mix(a: [f64; 3], b: [f64; 3], t: f64) -> [f64; 3] {
+    [
+        a[0] + (b[0] - a[0]) * t,
+        a[1] + (b[1] - a[1]) * t,
+        a[2] + (b[2] - a[2]) * t,
+    ]
+}
+
+/// A hop's chord from `from` to `to`, both at origin height: nothing static
+/// across it at knee and chest height above the sloped line between them,
+/// 15 units either side of its middle, and ground under it every 32 units
+/// from a step above that line down to a step below the floor there.
+fn corridor_clear(sight: &Sight, from: [f64; 3], to: [f64; 3]) -> bool {
+    // The origin rides 24 above the floor (the hull's mins), and Washoi
+    // `physics/constants.ts` STEP_HEIGHT is 18.
+    const FLOOR: f64 = 24.0;
+    const STEP_HEIGHT: f64 = 18.0;
+    let (dx, dz) = (to[0] - from[0], to[2] - from[2]);
+    let distance = dx.hypot(dz);
+    if distance < 1.0 {
+        return false;
+    }
+    let (sx, sz) = (dz / distance, -dx / distance);
+    let steps = (distance / 32.0).ceil() as u32;
+    for side in [-15.0, 0.0, 15.0] {
+        let shift =
+            |point: [f64; 3], up: f64| [point[0] + sx * side, point[1] + up, point[2] + sz * side];
+        if ![17.0, 40.0]
+            .into_iter()
+            .all(|up| sight.clear(shift(from, up), shift(to, up)))
+        {
+            return false;
+        }
+        if side != 0.0 {
+            continue;
+        }
+        for step in 0..=steps {
+            let at = mix(from, to, f64::from(step) / f64::from(steps));
+            if sight.clear(
+                [at[0], at[1] - FLOOR + STEP_HEIGHT, at[2]],
+                [at[0], at[1] - FLOOR - MAX_HEIGHT_DELTA, at[2]],
+            ) {
+                return false;
+            }
+        }
+    }
+    true
 }
 
 /// Sprint while walking, as TypeScript bots sprint whenever they move
@@ -1152,6 +1278,43 @@ mod tests {
             .unwrap();
         assert_eq!(down.route.waypoints[0], [400.0, 0.0, 0.0]);
         assert!(down.route.waypoints.iter().all(|point| point[0] > 0.0));
+    }
+
+    /// A walk that bends 30 degrees past the straight lane's width opens a
+    /// lane bent along it, aimed one hop down the walk, and none over a pit.
+    #[test]
+    fn a_bend_opens_a_bent_hop_lane_unless_its_ground_gives_out() {
+        use crate::games::washoi::perception::sight::tests::{cube, encode};
+        let route = Route {
+            entry: [0.0; 3],
+            waypoints: vec![
+                [0.0, 24.0, 300.0],
+                [100.0, 24.0, 473.0],
+                [200.0, 24.0, 646.0],
+                [400.0, 24.0, 992.0],
+            ],
+            maneuvers: Vec::new(),
+            learned_route: None,
+            resumed_from: None,
+            pickup: None,
+        };
+        let start = Vec3::new(0.0, 24.0, 0.0);
+        let floor = |slabs: &[([f32; 3], [f32; 3])]| {
+            let brushes: Vec<_> = slabs.iter().map(|&(min, max)| cube(min, max)).collect();
+            Sight::parse(&encode("bend", &brushes, &[])).unwrap()
+        };
+        let open = floor(&[([-400.0, -10.0, -400.0], [1000.0, 0.0, 2400.0])]);
+        let lane = hop_lane_along(&route, 0, start, &open).expect("a bent lane");
+        assert_eq!(lane.bent, Some("lane_wide"));
+        assert!(lane.yaw > 0.0 && lane.yaw < 0.1, "{lane:?}");
+        let pit = floor(&[
+            ([-400.0, -10.0, -400.0], [1000.0, 0.0, 380.0]),
+            ([-400.0, -10.0, 460.0], [1000.0, 0.0, 2400.0]),
+        ]);
+        assert_eq!(
+            hop_lane_along(&route, 0, start, &pit).err(),
+            Some("lane_wide")
+        );
     }
 
     /// A level corner is rounded: 40 units before it the walk already
