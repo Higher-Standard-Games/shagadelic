@@ -209,6 +209,12 @@ Session B, movement, navigation, and team play:
   - Follow-up `b6becfa`: a teleport restarts the fall. A/B against `8f4203a`, Duel on dm2, 18 per arm over two runs: frags +2.61 ± 2.02 (10-4) against +1.11 ± 1.68 (9-5), within noise. Rust crushes 7 → 4, hp+ar lost to them 1,095 → 367; ramp falls 51 → 66, the teleport falls now taken at ramp damage. Rust deaths 113 → 98. The 4 left are excluded by design: 3 where a learned script takes over just before the teleport-fall landing (a script's buttons are its own), and 1 lunge.
   - Watch: Rust GA2 takes fell from 24 to 7 (TypeScript 59 to 54), with all armor 178-128 against 159-125. This is within the ±20 run-to-run spread, but is worth watching.
 
+- [x] No ghost opponent from the join sync (session B, 2026-11-26, `8801dcb`). When a client joins, the server sends an `item_pickup` for every item already down, with picker entity 0 (`PickupSystem.getInactivePickups`, `SnapshotBuilder.ts:628-648`). Entity ids start at 1 (`WorldState.ts`). The bot keyed picker 0 as `player_0` and credited it with every major, since all are down until their first spawn. The ghost stayed in `known_enemies` all match, so a Duel saw two enemies in the goal danger's crowd term (`Danger.ts`). Each credit also set `armed` for it (`opponents.rs` `credit`), and every major was logged as an opponent take before any real one. TypeScript's `playerOf` finds no player for it. Picker 0 now comes out empty, a heard take is credited only to a scoreboard opponent, and `known_enemies` counts only estimates still on the scoreboard.
+  - A/B, Duel on dm2, 18 per arm over two runs, against main (`1343805`). Frags +2.39 ± 2.26 (11-5) against +1.06 ± 1.86 (12-5), within noise. Runs split: −0.22 against +3.56 in the first, +2.33 against +1.22 in the second. Landed as a perception fix.
+  - Danger (1 is safe) rose from mean 0.745, p50 0.81 to 0.849, p50 0.91. Enemy estimates per decision went from 2 (72%) or 1 to 1 (64%) or 0 (before the foe is met, or while it is dead). No `player_0` in either run of the branch.
+  - Armor takes 167-132 against 162-101; RA 56 → 74. TypeScript YA 44 → 30 and GA1 17 → 7. Wasted trips: RA 38 → 28, YA 29 → 18, MH 77 → 70. Rust's stack while both live, p50 104 → 109.
+  - State shares: traversal 16.8% → 20.5%, roam 58.4% → 56.4%, fight 18.7% → 17.4%. Escape 0.6% in both. Rust crushes 2 → 4, ramp falls 65 → 66. Decide p99 1,221 → 1,155 µs.
+
 Mark items here as they land, with the commit.
 
 ## Notes between sessions
