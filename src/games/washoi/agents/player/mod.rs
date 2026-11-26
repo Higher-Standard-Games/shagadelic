@@ -274,6 +274,10 @@ pub struct BotPlayer {
     fall_from: Option<f64>,
     /// Own position at the last decision, to see a teleport by.
     fall_seen: Option<super::super::Vec3>,
+    /// Falling from a teleporter's exit since the last ground: the route's
+    /// teleporter maneuver holds the exact view to its landing, but nothing
+    /// scripted is left to do, so the landing crouch still applies.
+    teleport_fall: bool,
     liquid: LiquidEscape,
     slide: RouteSlide,
     hop: HopChain,
@@ -421,6 +425,7 @@ impl BotPlayer {
             last_jump_held: false,
             fall_from: None,
             fall_seen: None,
+            teleport_fall: false,
             liquid: LiquidEscape::default(),
             planner: Planner::new(Difficulty::default().mistake_rate()),
             hunch: None,
@@ -1273,6 +1278,7 @@ impl BotPlayer {
         else {
             self.fall_from = None;
             self.fall_seen = None;
+            self.teleport_fall = false;
             return;
         };
         let teleported = self
@@ -1281,9 +1287,10 @@ impl BotPlayer {
             .is_some_and(|seen| teleported(seen, position));
         if velocity.grounded || teleported {
             self.fall_from = Some(position.y);
+            self.teleport_fall = teleported;
             return;
         }
-        let scripted = self.exact_view
+        let scripted = (self.exact_view && !self.teleport_fall)
             || self.traversal.active()
             || self.ledge.active()
             || self.hop.active()
@@ -3067,6 +3074,47 @@ mod tests {
         let at = |y: f64| crate::games::washoi::Vec3::new(752.0, y, 100.0);
         assert!(teleported(at(106.0), at(429.0)));
         assert!(!teleported(at(429.0), at(410.0)));
+    }
+
+    /// The route's teleporter maneuver holds the exact view down to the
+    /// landing, and a fall from the exit still crouches for it: on dm2 all 13
+    /// crushes in two A/Bs were that 393 drop, uncrouched.
+    #[test]
+    fn a_fall_from_a_teleporter_exit_crouches_through_the_exact_view() {
+        use crate::games::washoi::{Vec3, observation::Body};
+        use shagger_shared::net::game_state::Velocity;
+        let mut bot = BotPlayer::new("bot".into());
+        bot.entity_id = "me".into();
+        bot.respawn_at = None;
+        let step = |bot: &mut BotPlayer, y: f64, grounded: bool, rising: f64| {
+            let world = Observation {
+                bodies: vec![(
+                    "me".into(),
+                    Body {
+                        position: Some(Vec3::new(752.0, y, 100.0)),
+                        velocity: Some(Velocity {
+                            linear: Vec3::new(0.0, rising, 0.0),
+                            grounded,
+                            ..Velocity::default()
+                        }),
+                    },
+                )],
+                ..Observation::default()
+            };
+            bot.exact_view = true;
+            bot.planned_input.buttons = 0;
+            bot.soften_landing(&world, Some(Vec3::new(752.0, y, 100.0)));
+            bot.planned_input.buttons & CROUCH != 0
+        };
+        // Walking into the teleporter, then out of the exit in the air.
+        assert!(!step(&mut bot, 56.0, true, 0.0));
+        assert!(!step(&mut bot, 449.0, false, 0.0));
+        assert!(!step(&mut bot, 330.0, false, -500.0));
+        assert!(step(&mut bot, 210.0, false, -700.0));
+        // Off ground the same exact view, not from a teleporter, is scripted.
+        assert!(!step(&mut bot, 56.0, true, 0.0));
+        assert!(!step(&mut bot, -60.0, false, -500.0));
+        assert!(!step(&mut bot, -170.0, false, -700.0));
     }
 
     /// Run speed needs sprint with forward alone: a move 30 degrees off the
