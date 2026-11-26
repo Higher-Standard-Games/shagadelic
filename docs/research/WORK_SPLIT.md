@@ -215,6 +215,24 @@ Session B, movement, navigation, and team play:
   - Armor takes 167-132 against 162-101; RA 56 → 74. TypeScript YA 44 → 30 and GA1 17 → 7. Wasted trips: RA 38 → 28, YA 29 → 18, MH 77 → 70. Rust's stack while both live, p50 104 → 109.
   - State shares: traversal 16.8% → 20.5%, roam 58.4% → 56.4%, fight 18.7% → 17.4%. Escape 0.6% in both. Rust crushes 2 → 4, ramp falls 65 → 66. Decide p99 1,221 → 1,155 µs.
 
+- [x] Hop lanes bent along the walk (session B, 2026-11-26, `d4ce300` and `df51017`). This deliberately departs from TypeScript `BotTraversal.routeStrafeLane`, which hops straight lanes only. Decision traces now name the test that closed a straight lane (`2fb18fc`). In grounded roam with no lane, which was 33% of moving time, the closures were: the walk bends past the 96-wide lane within 640 (`lane_wide`) 50%, a waypoint more than 40 up or down (`lane_height`) 29%, and a blocked straight run (`lane_walk`) 12%. Where one of the first two closes the straight lane, `Route::bent_lane` opens a lane aimed 320 down the walk, if it meets four conditions:
+  - Both 320-unit chords are clear at knee and chest height along the sloped line, 15 units either side.
+  - There is ground every 32 units, from a step above the line's floor to 40 below it.
+  - The chords bend by at most 0.7 rad.
+  - Within 640 there is no maneuver and no rise or drop over 40 at a slope over 0.5, so ramps and stairs pass and ledges and pits don't.
+  - About 60 rays, run only when the straight lane closes. Decide p99 was flat (1,167 against 1,162 µs), so the lanes aren't cached.
+  - With jump held, a chain re-hops between decisions and never sees its landings. In the first A/B one flew 860 along its first chord, off the y=424 deck, and fell 400. `df51017`: on a bent lane the chain lets go of jump when its flight would come down past 576 of where it took the lane, so the landing is seen and the lane asked again from there. Straight lanes keep the held jump.
+  - A/B of `df51017`, Duel on dm2, 18 per arm over two runs, against `2fb18fc`. Frags +1.67 ± 1.62 (11-5) against +1.44 ± 2.33 (10-7), within noise; Rust deaths not by TypeScript 26 against 27.
+  - Likeness against the user's demo (`likeness.mjs`, `hopruns.mjs`, human / main / branch):
+    - share of moving time above 400: 41.0 / 24.8 / 26.8%
+    - airborne share of moving time: 39.3 / 32.1 / 40.4%, 1.1 over the human
+    - takeoffs a minute: 33.2 / 23.5 / 31.4
+    - takeoffs per hop run: 1.59 / 1.60 / 1.93
+    - Speed above 400 is still short of the human in every item area: RA 46.8 against 52.6, MH 16.0 against 25.7, GA1 34.4 against 66.8.
+  - Rust crushes 3 → 6. 13 of the 14 crushes across both bent A/Bs, in both arms, were the fall from the teleporter exit at (752, 449, 240) to (755, 56, 17). That fall is uncrouched because the route's teleporter maneuver holds the exact view, which the landing crouch treats as scripted. This was there before the change; the fix is `tele-crouch`. The other one was a route maneuver off the same deck edge after a bent chain ended.
+  - Watch: Rust's stack while both live, p50 124 → 107. Main has spread 104 to 124 across runs, so this may be noise, but item control comes first.
+  - Items: all armor 176-128 against 173-133; GA2 Rust 16 against 11 (TypeScript 56 against 58).
+
 Mark items here as they land, with the commit.
 
 ## Notes between sessions
