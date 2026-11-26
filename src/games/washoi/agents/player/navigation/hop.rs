@@ -126,6 +126,8 @@ struct Hop {
     started: u32,
     route_yaw: f64,
     route_end: [f64; 3],
+    /// Taken on a lane bent along the walk (`HopLane::bent`).
+    bent: bool,
     start: Vec3,
     start_speed: f64,
     target_speed: f64,
@@ -251,6 +253,7 @@ impl HopChain {
             started: view.tick,
             route_yaw: lane.yaw,
             route_end: lane.end,
+            bent: lane.bent.is_some(),
             start: view.position,
             start_speed: speed,
             target_speed: 360.0 + view.skill * 600.0,
@@ -345,11 +348,36 @@ fn tick(
         return (forward(hop, false), true, Some("end_off_line"));
     }
     let to_end = (hop.route_end[0] - view.position.x).hypot(hop.route_end[2] - view.position.z);
-    (
-        strafe(hop, view, velocity, to_end <= ENDPOINT_EXIT_DISTANCE),
-        false,
-        None,
-    )
+    let mut controls = strafe(hop, view, velocity, to_end <= ENDPOINT_EXIT_DISTANCE);
+    // Jump held through a landing hops on unseen, so a hop on a bent lane
+    // lets go when it would land past the stretch its lane checked: the
+    // landing is seen and the lane asked again from there.
+    if hop.bent && !lands_within(hop, view.position, velocity, BENT_CHECKED - CHAIN_MARGIN) {
+        controls.buttons &= !JUMP;
+    }
+    (controls, false, None)
+}
+
+/// How far down the walk a bent lane checks its chords
+/// (`Route::bent_lane`'s reach).
+const BENT_CHECKED: f64 = 640.0;
+
+/// Whether the hop in flight comes down, at its height of takeoff, within
+/// `span` of where it took its lane.
+fn lands_within(hop: &Hop, position: Vec3, velocity: Velocity, span: f64) -> bool {
+    let rising = velocity.linear.y;
+    let above = position.y - hop.start.y;
+    let falling = GRAVITY * FALLING_GRAVITY_MULTIPLIER;
+    let (up, peak) = if rising > 0.0 {
+        (rising / GRAVITY, above + rising * rising / (2.0 * GRAVITY))
+    } else {
+        (0.0, above)
+    };
+    // From the peak, or falling already at `-rising`.
+    let sinking = (-rising).max(0.0);
+    let down = ((sinking * sinking + 2.0 * falling * peak.max(0.0)).sqrt() - sinking) / falling;
+    let flown = (position.x - hop.start.x).hypot(position.z - hop.start.z);
+    flown + horizontal_speed(velocity) * (up + down) <= span
 }
 
 /// Whether a chain may take `lane` from here, at a start or a landing: the
@@ -372,6 +400,7 @@ fn lane_takes(view: &HopView<'_>, velocity: Velocity, lane: &HopLane) -> Result<
 fn take_lane(hop: &mut Hop, view: &HopView<'_>, velocity: Velocity, lane: HopLane) {
     hop.route_yaw = lane.yaw;
     hop.route_end = lane.end;
+    hop.bent = lane.bent.is_some();
     hop.start = view.position;
     hop.start_speed = horizontal_speed(velocity);
     let velocity_yaw = heading(velocity, lane.yaw);
@@ -773,6 +802,38 @@ mod tests {
             .unwrap();
         assert_eq!(down.buttons, FORWARD | SPRINT);
         assert!(!chain.active());
+    }
+
+    /// On a bent lane jump is let go in a flight that would come down past
+    /// the 640 its lane checked, so that landing is seen; a straight lane
+    /// holds it, as TypeScript does.
+    #[test]
+    fn a_bent_hop_lets_go_of_jump_before_landing_past_its_checked_stretch() {
+        let rising = |z: f64, up: f64| {
+            Some(Velocity {
+                linear: Vec3::new(0.0, up, z),
+                grounded: false,
+                ..Velocity::default()
+            })
+        };
+        let bent = HopLane {
+            bent: Some("lane_wide"),
+            ..LANE
+        };
+        for (lane, released) in [(bent, true), (LANE, false)] {
+            let mut chain = HopChain::default();
+            chain
+                .steer(&view(0, 0.0, moving(450.0, true), Some(lane)), walk())
+                .unwrap();
+            let early = chain
+                .steer(&view(4, 20.0, rising(450.0, 300.0), Some(lane)), walk())
+                .unwrap();
+            assert_ne!(early.buttons & JUMP, 0);
+            let late = chain
+                .steer(&view(8, 500.0, rising(450.0, 300.0), Some(lane)), walk())
+                .unwrap();
+            assert_eq!(late.buttons & JUMP == 0, released);
+        }
     }
 
     #[test]
