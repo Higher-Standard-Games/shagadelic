@@ -153,9 +153,15 @@ pub struct DecisionTrace {
     pub items_wrong_down: Vec<usize>,
     /// Major pickups back since the last decision that the bot had a return
     /// time for: `[id, believed minus real return in ticks, learned]`, where
-    /// learned is 0 for its own take, 1 heard, 2 seen, and 3 found gone.
+    /// learned is 0 for its own take, 1 heard, 2 seen, 3 found gone, and 4 the
+    /// match-start rule.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub item_return_errors: Vec<[i64; 3]>,
+    /// Each living enemy the bot has met, by entity, and what it believes of
+    /// it: `[health, armor, uncertainty]`. Diagnosis only, to compare with
+    /// the server's truth in the bench's `moves.jsonl`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub enemy_estimates: Vec<(String, [f64; 3])>,
 }
 
 /// See `DecisionTrace::inputs`.

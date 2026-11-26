@@ -995,6 +995,7 @@ impl BotPlayer {
                 .iter()
                 .map(|&(id, error, learned)| [id as i64, error, learned as i64])
                 .collect(),
+            enemy_estimates: self.combat.enemy_estimates(world.tick),
             steered: self.steered,
             order_target: self
                 .orders

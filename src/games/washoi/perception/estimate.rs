@@ -4,9 +4,12 @@
 //! server's absorption rule, and the pain sound the hit gives away clamps
 //! the health range. The estimate grows unsure while nothing new is learned.
 //!
-//! Major items an enemy was seen or heard taking also feed TypeScript's
-//! estimate. That needs pickup hearing by item and is not ported, so the
-//! estimate can run low after an unseen Mega Health.
+//! A major item credited to an enemy raises the estimate to at least what
+//! it grants (`picked`, fed by `strategy::opponents` through
+//! `Combat::credit_pickup`). No one hears an armor or health take (the
+//! server sends `item_pickup` for weapons and ammo only), so credits come
+//! from an item seen vanishing or, in a Duel, found gone. Overheal decay is
+//! not modelled, so the estimate runs high after a credited Mega Health.
 
 /// `ARMOR_ABSORPTION`: armor takes this share of a hit while it lasts.
 pub(in crate::games::washoi) const ARMOR_ABSORPTION: f64 = 0.66;
@@ -134,6 +137,15 @@ impl Estimates {
             .iter()
             .find(|enemy| enemy.entity == entity && enemy.alive)
             .map(|enemy| f64::from(tick.saturating_sub(enemy.spawn)) / 125.0)
+    }
+
+    /// Every living enemy the bot has met, and its estimate.
+    pub(in crate::games::washoi) fn all(&self, tick: u32) -> Vec<(&str, Estimate)> {
+        self.enemies
+            .iter()
+            .filter(|enemy| enemy.alive)
+            .filter_map(|enemy| Some((enemy.entity.as_str(), self.of(&enemy.entity, tick)?)))
+            .collect()
     }
 
     /// The estimate for a living enemy the bot has met.

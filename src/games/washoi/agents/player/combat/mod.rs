@@ -841,6 +841,16 @@ impl Combat {
         self.enemy_estimate(entity, tick)
     }
 
+    /// Every living enemy's raw estimate, `[health, armor, uncertainty]`,
+    /// for the trace.
+    pub(in crate::games::washoi) fn enemy_estimates(&self, tick: u32) -> Vec<(String, [f64; 3])> {
+        self.estimates
+            .all(tick)
+            .into_iter()
+            .map(|(entity, e)| (entity.to_owned(), [e.health, e.armor, e.uncertainty]))
+            .collect()
+    }
+
     /// Enemies the bot believes alive, from what it saw, heard, and hit.
     pub(in crate::games::washoi) fn known_enemies(&self) -> usize {
         self.estimates.alive()
