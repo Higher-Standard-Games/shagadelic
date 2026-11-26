@@ -70,8 +70,12 @@ impl Opponents {
                 .iter()
                 .find(|(pickup, _)| pickup.id == id && pickup.is_major())
         };
+        // A picker on the scoreboard as an opponent: an empty or unknown one
+        // is no one the bot can face.
         let enemy = |entity: &str| {
-            entity != scene.own && !scene.allies.contains(&entity) && !entity.is_empty()
+            entity != scene.own
+                && !scene.allies.contains(&entity)
+                && scene.opponents.contains(&entity)
         };
         for event in &world.events {
             match event {

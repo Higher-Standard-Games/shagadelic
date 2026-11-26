@@ -2737,6 +2737,7 @@ impl BotPlayer {
         let contested = self.opponents.contested();
         let (weapons, ammo) = self.combat.inventory();
         let allies = self.combat.allies_by_id(world, &self.entity_id);
+        let scoreboard = self.combat.scoreboard_enemies(world, &self.entity_id);
         let me = Me {
             position,
             health: self.vitals.health.unwrap_or(100),
@@ -2747,8 +2748,8 @@ impl BotPlayer {
         let situation = Situation {
             tick,
             recent_damage: &self.recent_damage,
-            known_enemies: self.combat.known_enemies(),
-            scoreboard_enemies: self.combat.scoreboard_enemies(world, &self.entity_id).len(),
+            known_enemies: self.combat.known_enemies(&scoreboard),
+            scoreboard_enemies: scoreboard.len(),
             allies: &allies,
             contested: (self.difficulty.match_sense() >= CONTEST_SENSE).then_some(&contested),
         };

@@ -116,9 +116,13 @@ impl Estimates {
         enemy.armor = enemy.armor.max(armor);
     }
 
-    /// How many enemies the bot has met and believes alive.
-    pub(in crate::games::washoi) fn alive(&self) -> usize {
-        self.enemies.iter().filter(|enemy| enemy.alive).count()
+    /// How many enemies the bot has met and believes alive, of those still
+    /// on the scoreboard.
+    pub(in crate::games::washoi) fn alive(&self, scoreboard: &[&str]) -> usize {
+        self.enemies
+            .iter()
+            .filter(|enemy| enemy.alive && scoreboard.contains(&enemy.entity.as_str()))
+            .count()
     }
 
     /// The living enemy the bot heard of last, and its estimate.
@@ -165,6 +169,15 @@ impl Estimates {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_enemies_on_the_scoreboard_count_as_alive() {
+        let mut estimates = Estimates::default();
+        estimates.seen("foe", 0);
+        estimates.seen("gone", 0);
+        assert_eq!(estimates.alive(&["foe", "gone"]), 2);
+        assert_eq!(estimates.alive(&["foe"]), 1);
+    }
 
     #[test]
     fn hits_split_by_armor_and_pain_and_respawns_reset() {

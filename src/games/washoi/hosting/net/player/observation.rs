@@ -56,8 +56,27 @@ const CLIENT_KEY_PREFIX: &str = "player_";
 /// The server names an `item_pickup` picker by its numeric entity ID, and
 /// every other event by the client entity key the snapshot's entities use.
 /// Give the picker as its key too, as `BotPerception`'s `pickerKey` does.
+///
+/// Entity IDs start at 1 (`WorldState.ts`, `nextEntityId`). The server's
+/// sync of items already down for a joining client names picker 0, "not
+/// relevant for initial state" (`PickupSystem.getInactivePickups`,
+/// `SnapshotBuilder.ts`). That is no picker, so it comes out empty, where
+/// TypeScript's `playerOf` finds no player for it.
 pub fn entity_keys(event: &SnapshotEvent) -> SnapshotEvent {
     match event {
+        SnapshotEvent::ItemPickup {
+            pickup_id,
+            weapon_id,
+            entity_id,
+            dropped_weapon_id,
+            at,
+        } if entity_id == "0" => SnapshotEvent::ItemPickup {
+            pickup_id: *pickup_id,
+            weapon_id: weapon_id.clone(),
+            entity_id: String::new(),
+            dropped_weapon_id: dropped_weapon_id.clone(),
+            at: *at,
+        },
         SnapshotEvent::ItemPickup {
             pickup_id,
             weapon_id,
@@ -189,5 +208,7 @@ mod tests {
         };
         assert_eq!(entity_keys(&pickup("7")), pickup("player_7"));
         assert_eq!(entity_keys(&pickup("player_7")), pickup("player_7"));
+        // A joining client's sync of items already down names no picker.
+        assert_eq!(entity_keys(&pickup("0")), pickup(""));
     }
 }

@@ -851,9 +851,10 @@ impl Combat {
             .collect()
     }
 
-    /// Enemies the bot believes alive, from what it saw, heard, and hit.
-    pub(in crate::games::washoi) fn known_enemies(&self) -> usize {
-        self.estimates.alive()
+    /// Enemies the bot believes alive, from what it saw, heard, and hit,
+    /// among those on the scoreboard: one who left is no threat.
+    pub(in crate::games::washoi) fn known_enemies(&self, scoreboard: &[&str]) -> usize {
+        self.estimates.alive(scoreboard)
     }
 
     /// Where the enemy last fought or heard was noticed, and when.
