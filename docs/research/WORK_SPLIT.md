@@ -233,6 +233,11 @@ Session B, movement, navigation, and team play:
   - Watch: Rust's stack while both live, p50 124 → 107. Main has spread 104 to 124 across runs, so this may be noise, but item control comes first.
   - Items: all armor 176-128 against 173-133; GA2 Rust 16 against 11 (TypeScript 56 against 58).
 
+- [x] Enemy estimate overheal decay (session A, 2026-11-27, `ab2134b`). This departs from TypeScript `MatchRead`, which keeps overheal. Health over 100 in the estimate bleeds 1 a second, as the server's does (`PickupSystem.ts`, `decayOverheal`), and armor stays. A hit or a credited take lands on the decayed health. Before this, an enemy credited with a Mega Health read 200 for the rest of its life, which held back the fade's and the arbiter's stack checks.
+  - A/B, Duel on dm2, 18 per arm over two runs, against `df51017`, together with the found-gone bound below (branch `perception-pair`). Frags +2.50 ± 2.24 (11-4) against +0.39 ± 2.27 (8-9), ahead in both runs (+1.00 against +0.78, +4.00 against 0.00) but within noise. Rust deaths 115 → 104, TypeScript deaths 121 → 147. Items held: all armor 166-138 against 175-122, RA 69-21 against 66-24, MH 54-34 against 55-33. Wasted trips: RA 37 → 31, YA 23 → 33, MH 67 → 60. Rust's stack while both live, p50 108 → 110.
+  - Landed alone, because the bound made its own target worse (below). The frag lead can't be split between the two; the decay lands because it matches the server's rule.
+- [ ] Tried, not landed: a found-gone take bounded by takes the bot knows to the tick (branch `found-bound`, `380c010`). A spot found empty dated its take no earlier than the item's return after the bot's own take or the match-start rule. In the A/B above, found-gone return error got worse: MH |error| p75 5.5 → 11.6 s, p90 17.5 → 27.4 s; RA median +2.4 → +10.3 s (n 11 and 8). When the bound binds, the opponent most often took the item on its return, so the midpoint from the bound dates it late. Next: when the bound binds, date the take at the return itself, as a Duel player assumes of a timed item.
+
 Mark items here as they land, with the commit.
 
 ## Notes between sessions
