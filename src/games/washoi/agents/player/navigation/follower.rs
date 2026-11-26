@@ -268,6 +268,7 @@ impl RouteFollower {
             .route
             .get(navigation)
             .open_lane(active.next, position, sight, run, reach, width)
+            .ok()
     }
 
     /// The waypoint the walk makes for, and whether its leg leads into a

@@ -113,8 +113,9 @@ pub struct DecisionTrace {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hop: Option<&'static str>,
     /// Why the route's tricks had no hop lane: `no_route`, `exact`,
-    /// `traversal`, `item_near`, `end_near`, `no_sight`, or `lane_closed`
-    /// when no straight lane is open.
+    /// `traversal`, `item_near`, `end_near`, `no_sight`, or, when no
+    /// straight lane is open, the test that closed it (`lane_short`,
+    /// `lane_wide`, `lane_maneuver`, `lane_height`, `lane_walk`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hop_lane: Option<&'static str>,
     /// Horizontal speed at the landing `hop` records.

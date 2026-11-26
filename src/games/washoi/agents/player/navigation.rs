@@ -174,6 +174,7 @@ impl ObjectiveWalk {
         }
         self.route
             .open_lane(self.next, position, sight?, 320.0, REACH, 64.0)
+            .ok()
     }
 
     /// A drop ahead on the walk for a ledge slide jump to land on.
@@ -721,7 +722,9 @@ impl Route {
     /// `BotTraversal.laneOpen` from waypoint `next`: the heading to it when
     /// the walk for `reach` stays within `width` of that line, widening past
     /// `run`, with no maneuver or change of floor, and `run` of it is
-    /// walkable straight.
+    /// walkable straight. Otherwise the first test that closed it, for
+    /// traces: `lane_short`, `lane_wide`, `lane_maneuver`, `lane_height`,
+    /// or `lane_walk`.
     fn open_lane(
         &self,
         next: usize,
@@ -730,12 +733,12 @@ impl Route {
         run: f64,
         reach: f64,
         width: f64,
-    ) -> Option<f64> {
-        let first = *self.waypoints.get(next)?;
+    ) -> Result<f64, &'static str> {
+        let first = *self.waypoints.get(next).ok_or("lane_short")?;
         let (dx, dz) = (first[0] - position.x, first[2] - position.z);
         let length = dx.hypot(dz);
         if length < 1.0 {
-            return None;
+            return Err("lane_short");
         }
         let (dx, dz) = (dx / length, dz / length);
         for at in next..self.waypoints.len() {
@@ -745,11 +748,14 @@ impl Route {
                 break;
             }
             let lateral = ((x - position.x) * dz - (z - position.z) * dx).abs();
-            if lateral > width + (along - run).max(0.0)
-                || self.maneuver_at(at).is_some()
-                || (y - position.y).abs() > MAX_HEIGHT_DELTA
-            {
-                return None;
+            if lateral > width + (along - run).max(0.0) {
+                return Err("lane_wide");
+            }
+            if self.maneuver_at(at).is_some() {
+                return Err("lane_maneuver");
+            }
+            if (y - position.y).abs() > MAX_HEIGHT_DELTA {
+                return Err("lane_height");
             }
         }
         let ahead = |distance: f64| {
@@ -767,6 +773,7 @@ impl Route {
                 local_walk(sight, from, ahead(run * f64::from(piece + 1) / pieces))
             })
             .then(|| dx.atan2(dz))
+            .ok_or("lane_walk")
     }
 
     /// A drop of more than a step at waypoint `next` or the one after, with
@@ -793,9 +800,7 @@ fn hop_lane_along(
 ) -> Result<hop::HopLane, &'static str> {
     const RUN: f64 = 480.0;
     const EXIT_MARGIN: f64 = 260.0;
-    let yaw = route
-        .open_lane(next, position, sight, RUN, 640.0, 96.0)
-        .ok_or("lane_closed")?;
+    let yaw = route.open_lane(next, position, sight, RUN, 640.0, 96.0)?;
     let reach = RUN + EXIT_MARGIN;
     Ok(hop::HopLane {
         yaw,
