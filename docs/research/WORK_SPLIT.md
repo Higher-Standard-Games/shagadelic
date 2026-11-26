@@ -187,11 +187,17 @@ Session B, movement, navigation, and team play:
   - What stands, from server truth (`items_wrong_up`) and Rust's own trace. RA goal share fell from 16.6% to 15.7%, MH stayed at 21.0% against 21.1%, and YA rose from 7.3% to 11.0%. Time within 800 units of the RA fell from 47.9% to 41.3%, and near the MH it rose from 53.7% to 60.0%. Rust took 15 fewer RA and 13 more YA. The other commits were ruled out as belief bugs. `9919709` only dates a spot not already believed down. `1dcd659` is inert, as noted above. The match-start rule accounts for 2 wasted RA trips in the first 30 s, against 3 on main.
 
   Open watch item: armor. The bot now spends time on MH that went to armor, and armor matters more in Duel. Next is armor play from the human demo, as recorded departures:
-  - Value armor by stack gain.
+  - Value armor by stack gain. Tried, not landed; see below.
   - Take both GAs when the RA or YA is contested.
   - Deny a full stack's armor.
   - Hold the central hub between items.
   - Bound found-gone dating by facts only: the last sighting up, and exact returns from the bot's own take or the rule. This gets its own A/B.
+
+  Tried and not landed: valuing health by stack gain, with overheal discounted (branch `stack-value`: `0c6be2e` at weight 0.5, `ff741dc` at 0.75). `raw_item_value` counts health up to 100 whole and health over 100 at `OVERHEAL_WEIGHT`, since overheal bleeds 1 a second (`PickupSystem.ts:338-343`) and armor stays. TypeScript counts overheal whole. At 100/0 in Duel this ranks RA over MH over YA. Both A/Bs ran 18 per arm against main (`9ef3593`) over two runs, with exact takes from the bench's `consumePickup` hook (`takes` in `moves.jsonl`).
+  - Weight 0.5: frags +0.83 ± 1.43 (10 won, 5 lost) against +1.56 ± 1.63 (14-4). Armor takes went from 169-134 to 182-123, and RA from 74-22 to 92-18 (timed 10 to 19). But it gave the MH away, 60-28 to 40-45, and MH goal share fell from 19.1% to 14.6%. Rust's stack 3 s before its own death rose from a p50 of 90 to 100.
+  - The 0.75 weight comes from the overheal left when it is first needed. Over 36 matches and 165 MH takes, the taker was first hurt a median 7.8 s after the take (mean 10.6 s), with 86% of the overheal left at the median and 70% on average.
+  - Weight 0.75: frags +2.28 ± 1.77 (12-4) against +2.61 ± 2.05 (11-5). The MH stayed about even (52-33 against 56-32), but the armor gain went too: armor 173-124 against 178-111, RA 77-23 against 69-24, YA 64-39 against 71-32. Rust's stack 3 s before its own death rose from a p50 of 85 to 100, and TypeScript's rose from 82 to 100.
+  - Main's own armor count moved from 169-134 to 178-111 between the two A/Bs, so armor take counts spread about ±20 from run to run at 18 matches. Neither weight showed a frag gain this sample resolves. The branch is kept.
 
 Mark items here as they land, with the commit.
 
