@@ -272,6 +272,8 @@ pub struct BotPlayer {
     /// Own origin height at the last grounded decision, where the server
     /// measures a fall from (`FPSMovementSubsystem.ts`, `lastGroundY`).
     fall_from: Option<f64>,
+    /// Own position at the last decision, to see a teleport by.
+    fall_seen: Option<super::super::Vec3>,
     liquid: LiquidEscape,
     slide: RouteSlide,
     hop: HopChain,
@@ -418,6 +420,7 @@ impl BotPlayer {
             wall_jump_press: false,
             last_jump_held: false,
             fall_from: None,
+            fall_seen: None,
             liquid: LiquidEscape::default(),
             planner: Planner::new(Difficulty::default().mistake_rate()),
             hunch: None,
@@ -1260,16 +1263,23 @@ impl BotPlayer {
     /// takes 34 off any ramp damage. TypeScript never crouches to land. The
     /// bot reads only its own height and velocity. A scripted traversal,
     /// ledge slide, hop chain, climb, wall jump, lunge, or swim keeps its own
-    /// buttons.
+    /// buttons. A teleport starts the fall again at the exit, as the server
+    /// measures it (`FPSMovementSubsystem.ts`, `result.teleported` clears
+    /// `lastGroundY`); the bot sees one as a jump in its own position.
     fn soften_landing(&mut self, world: &Observation, position: Option<super::super::Vec3>) {
         let velocity = world.body(&self.entity_id).and_then(|body| body.velocity);
         let (Some(position), Some(velocity), true) =
             (position, velocity, self.respawn_at.is_none())
         else {
             self.fall_from = None;
+            self.fall_seen = None;
             return;
         };
-        if velocity.grounded {
+        let teleported = self
+            .fall_seen
+            .replace(position)
+            .is_some_and(|seen| teleported(seen, position));
+        if velocity.grounded || teleported {
             self.fall_from = Some(position.y);
             return;
         }
@@ -3026,6 +3036,16 @@ fn landing_crouch(fallen: f64, rising: f64) -> bool {
     rising < 0.0 && fallen >= LANDING_CROUCH_FALLEN
 }
 
+/// Farther than this between decisions, units, the bot was teleported: a
+/// fall at 1,000 units/s covers 20 in a decision.
+const TELEPORT_JUMP: f64 = 160.0;
+
+/// Whether moving from `seen` to `now` in one decision was a teleport.
+fn teleported(seen: crate::games::washoi::Vec3, now: crate::games::washoi::Vec3) -> bool {
+    let (x, y, z) = (now.x - seen.x, now.y - seen.y, now.z - seen.z);
+    (x * x + y * y + z * z).sqrt() > TELEPORT_JUMP
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3037,6 +3057,15 @@ mod tests {
         // Not yet low enough to hurt, or still going up off a pad.
         assert!(!landing_crouch(150.0, -500.0));
         assert!(!landing_crouch(300.0, 50.0));
+    }
+
+    /// A teleport that leaves the bot in the air measures its fall from the
+    /// exit, as the server does: on dm2 one drops it 380 back to the floor.
+    #[test]
+    fn a_teleport_starts_the_fall_at_the_exit() {
+        let at = |y: f64| crate::games::washoi::Vec3::new(752.0, y, 100.0);
+        assert!(teleported(at(106.0), at(429.0)));
+        assert!(!teleported(at(429.0), at(410.0)));
     }
 
     /// Run speed needs sprint with forward alone: a move 30 degrees off the
