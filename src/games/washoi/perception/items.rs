@@ -81,6 +81,10 @@ pub(in crate::games::washoi) struct ItemSenses<'a> {
     pub(in crate::games::washoi) sight: Option<&'a Sight>,
     /// `itemTimingSkill`, 0 to 1.
     pub(in crate::games::washoi) skill: f64,
+    /// Major spots beside the bot whose grant its own health and armor just
+    /// showed, since the last update: it took them, even when the item came
+    /// back and went between two updates and was never seen up.
+    pub(in crate::games::washoi) took: &'a [usize],
 }
 
 /// What one update learned of others' takes, for the opponent model.
@@ -232,9 +236,16 @@ impl ItemBeliefs {
             }
         }
 
-        // Items seen being taken. One that vanishes beside the bot, it took.
+        // Items seen being taken. One that vanishes beside the bot, it took,
+        // as one it felt itself take that was never seen up.
         for (index, spot) in spots.iter().enumerate() {
-            if before.get(spot.id) != Some(&true) || server.get(spot.id) != Some(&false) {
+            if server.get(spot.id) != Some(&false) {
+                continue;
+            }
+            if before.get(spot.id) != Some(&true) {
+                if senses.took.contains(&spot.id) {
+                    self.exact(spot, i64::from(tick), Learned::Own);
+                }
                 continue;
             }
             if distance(me, spot.at) <= SELF_TAKE_RADIUS {
@@ -464,6 +475,7 @@ mod tests {
         position: Vec3,
         yaw: f64,
         skill: f64,
+        took: Vec<usize>,
     }
 
     impl Bot {
@@ -475,6 +487,7 @@ mod tests {
                 position: AT,
                 yaw: BEHIND,
                 skill,
+                took: Vec::new(),
             }
         }
 
@@ -485,6 +498,7 @@ mod tests {
                 view_yaw: self.yaw,
                 sight: Some(&self.sight),
                 skill: self.skill,
+                took: &self.took,
             };
             self.items.believe(senses, world, &SPOTS, &mut self.random)
         }
@@ -513,6 +527,30 @@ mod tests {
         bot.see(&world(100, [true, true], vec![]));
         bot.see(&world(101, [false, true], vec![]));
         assert_eq!(bot.items.returns_tick(&MEGA), Some(101 + 7500));
+    }
+
+    #[test]
+    fn an_item_felt_taken_on_its_return_between_updates_is_its_own_take() {
+        // Taken at 100 and back at 7600, it comes back and goes again between
+        // two updates: never seen up, yet the bot standing on it felt the grant.
+        let mut bot = Bot::new(1, 0.0);
+        bot.position = Vec3::new(900.0, 0.0, 0.0);
+        bot.see(&world(96, [true, true], vec![]));
+        bot.see(&world(100, [false, true], vec![]));
+        bot.see(&world(7598, [false, true], vec![]));
+        bot.took = vec![0];
+        let news = bot.see(&world(7602, [false, true], vec![]));
+        assert_eq!(bot.items.returns_tick(&MEGA), Some(7602 + 7500));
+        assert!(news.found_gone.is_empty(), "nothing for the opponent");
+        // Unfelt, the same spot is only found gone, its take guessed.
+        let mut bot = Bot::new(1, 0.0);
+        bot.position = Vec3::new(900.0, 0.0, 0.0);
+        bot.see(&world(96, [true, true], vec![]));
+        bot.see(&world(100, [false, true], vec![]));
+        bot.see(&world(7598, [false, true], vec![]));
+        bot.see(&world(7602, [false, true], vec![]));
+        let news = bot.see(&world(7606, [false, true], vec![]));
+        assert_eq!(news.found_gone.len(), 1);
     }
 
     #[test]
@@ -682,6 +720,7 @@ mod tests {
             view_yaw: BEHIND,
             sight: None,
             skill: 1.0,
+            took: &[],
         };
         items.believe(
             blind,
