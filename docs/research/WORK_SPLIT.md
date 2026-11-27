@@ -238,6 +238,14 @@ Session B, movement, navigation, and team play:
   - Landed alone, because the bound made its own target worse (below). The frag lead can't be split between the two; the decay lands because it matches the server's rule.
 - [ ] Tried, not landed: a found-gone take bounded by takes the bot knows to the tick (branch `found-bound`, `380c010`). A spot found empty dated its take no earlier than the item's return after the bot's own take or the match-start rule. In the A/B above, found-gone return error got worse: MH |error| p75 5.5 → 11.6 s, p90 17.5 → 27.4 s; RA median +2.4 → +10.3 s (n 11 and 8). When the bound binds, the opponent most often took the item on its return, so the midpoint from the bound dates it late. Next: when the bound binds, date the take at the return itself, as a Duel player assumes of a timed item.
 
+- [ ] Tried, not landed: fade when an enemy is sure to be 50 or more ahead in stack (session A, 2026-11-27, branch `stack-lead2`, `6fff0c6`). The user's demo has them never starting a fight 50 or more behind, so `should_fade` gained a check: when the bot isn't ordered, and the enemy estimate's uncertainty is 0.5 or less and its stack is 50 or more over the bot's, the bot fades.
+  - A/B, Duel on dm2, 18 per arm over two runs, against `f9f0a5b`. Frags +3.06 against +3.33, a tie (run 1 +2.22 against +5.33, run 2 +3.89 against +1.33).
+  - Fights by stack lead at the start (`fightstack.mjs`, main / branch):
+    - share of Rust's fights it starts 50+ behind: 24 → 17%
+    - Rust deaths in them: 69 → 49
+    - Rust's first-hit share 50+ behind: 54 → 42%
+  - Rust deaths in fights fell 136 → 122, but its kills fell too, 152 → 145, and its deaths 50+ ahead went 9 → 18. Fading hands the item area to a full-stack enemy, so the fade avoids bad fights without winning back the items. The demo pairs avoiding these fights with retaking the stack first (MH and armor timing), so a fade needs a destination for its lost stack.
+
 Mark items here as they land, with the commit.
 
 ## Notes between sessions
