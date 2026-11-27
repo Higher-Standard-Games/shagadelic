@@ -4,6 +4,14 @@
 //! rocket or grenade on course for the bot once it has had time to notice
 //! it. Taking high ground is not ported yet.
 //!
+//! Departing from TypeScript, which jumps in a fight only to dodge, some
+//! long strafe runs carry one hop a moment after the run starts, as a human
+//! jump-strafes, and a run long enough for it takes a second hop once the
+//! one-a-second limit allows. In the user's Duel demo the human, within 900 units of the
+//! enemy, pressed jump 27.9 times a minute and was airborne 44% of the time
+//! while moving; the Rust bot pressed 6.8 times and was airborne 32%. The
+//! caller sends the hop only when the floor under the landing is walkable.
+//!
 //! TypeScript keeps the feet clear of walls and ledges with collision sweeps
 //! (`BotVisionTracer.ts`). Here a strafe side is taken only when a static
 //! sight ray finds no wall beside the bot and a ray down finds floor there.
@@ -25,6 +33,15 @@ const STRAFE_CLEARANCE: f64 = 48.0;
 const ORIGIN_HEIGHT: f64 = 24.0;
 const FLOOR_DEPTH: f64 = 40.0;
 /// A projectile first seen this close to the bot is its own.
+/// A run this long or longer may carry a hop, this many ticks in, once
+/// the turn back has some speed behind it, for `HOP_CHANCE` times the
+/// dodge skill. A hop not taken by `HOP_WINDOW` ticks later is dropped, and
+/// another comes a second after one when the run has `HOP_MIN_RUN_TICKS`
+/// left past it. A run that starts with a stop or doubles back carries none.
+const HOP_MIN_RUN_TICKS: u32 = 45;
+const HOP_DELAY_TICKS: u32 = 20;
+const HOP_WINDOW_TICKS: u32 = 20;
+const HOP_CHANCE: f64 = 1.2;
 const OWN_PROJECTILE_RADIUS: f64 = 120.0;
 /// `isIncoming` in `BotGameState.ts`: a path passing this close within this
 /// many seconds is a threat.
@@ -37,6 +54,8 @@ pub(in crate::games::washoi) struct Moves {
     pub(in crate::games::washoi) strafe: i8,
     pub(in crate::games::washoi) jump: bool,
     pub(in crate::games::washoi) crouch: bool,
+    /// The jump is a strafe hop, not a dodge.
+    pub(in crate::games::washoi) hop: bool,
 }
 
 pub(in crate::games::washoi) struct CombatMovement {
@@ -47,6 +66,11 @@ pub(in crate::games::washoi) struct CombatMovement {
     dodge: Moves,
     dodge_jump_sent: bool,
     last_jump: Option<u32>,
+    /// The last strafe hop. Hops wait a second after any jump, but a dodge
+    /// waits only on dodges, so a hop never holds one back.
+    last_hop: Option<u32>,
+    /// When this run's hop is due.
+    hop_at: Option<u32>,
     /// Projectiles by entity: the tick first seen, whether the bot's own,
     /// and whether already dodged.
     projectiles: Vec<Tracked>,
@@ -76,6 +100,8 @@ impl Default for CombatMovement {
             dodge: Moves::default(),
             dodge_jump_sent: false,
             last_jump: None,
+            last_hop: None,
+            hop_at: None,
             projectiles: Vec::new(),
         }
     }
@@ -141,8 +167,30 @@ impl CombatMovement {
         if tick >= self.run_until {
             self.next_run(tick, skill, random);
         }
+        let hop = match self.hop_at {
+            Some(at) if tick > at + HOP_WINDOW_TICKS => {
+                self.hop_at = None;
+                false
+            }
+            Some(at) => {
+                tick >= at
+                    && body.grounded
+                    && [self.last_jump, self.last_hop]
+                        .into_iter()
+                        .flatten()
+                        .all(|last| tick.wrapping_sub(last) >= TICK_RATE as u32)
+            }
+            None => false,
+        };
+        if hop {
+            let again = tick + TICK_RATE as u32;
+            self.hop_at = (self.run_until >= again + HOP_MIN_RUN_TICKS).then_some(again);
+            self.last_hop = Some(tick);
+        }
         Moves {
             strafe: if tick < self.stop_until { 0 } else { self.side },
+            jump: hop,
+            hop,
             ..Moves::default()
         }
     }
@@ -230,6 +278,11 @@ impl CombatMovement {
         let pause = if stop { STOP_TICKS } else { 0 };
         self.stop_until = if stop { tick + STOP_TICKS } else { 0 };
         self.run_until = tick + length + pause;
+        self.hop_at = (!double_back
+            && !stop
+            && length >= HOP_MIN_RUN_TICKS
+            && random.next() < HOP_CHANCE * skill)
+            .then_some(tick + HOP_DELAY_TICKS);
     }
 
     fn start_dodge(&mut self, tick: u32, side: i8, jump: bool, crouch: bool, seconds: f64) {
@@ -238,7 +291,9 @@ impl CombatMovement {
             strafe: side,
             jump,
             crouch,
+            hop: false,
         };
+        self.hop_at = None;
         self.dodge_until = tick + (seconds * TICK_RATE).round() as u32;
         self.side = side;
         self.run_until = self.dodge_until + MIN_RUN_TICKS;
@@ -348,11 +403,8 @@ mod tests {
         // Not before the 280 ms reaction: 35 ticks.
         for tick in 0..35 {
             let at = 800.0 - 900.0 * f64::from(tick) / TICK_RATE;
-            assert!(
-                !moves
-                    .step(tick, skills(1.0), body, &[rocket(at)], &mut random)
-                    .jump
-            );
+            let step = moves.step(tick, skills(1.0), body, &[rocket(at)], &mut random);
+            assert!(!step.jump || step.hop);
         }
         let dodge = moves.step(35, skills(1.0), body, &[rocket(548.0)], &mut random);
         // A skilled bot jumps it and strafes to the side away from its path.
@@ -366,10 +418,8 @@ mod tests {
             velocity: [0.0, 0.0, 900.0],
         };
         for tick in 0..100 {
-            assert!(
-                !own.step(tick, skills(1.0), body, &[mine.clone_at(tick)], &mut random)
-                    .jump
-            );
+            let step = own.step(tick, skills(1.0), body, &[mine.clone_at(tick)], &mut random);
+            assert!(!step.jump || step.hop);
         }
         assert!(incoming([0.0; 3], [500.0, 0.0, 0.0], [-900.0, 0.0, 0.0]));
         assert!(!incoming([0.0; 3], [500.0, 0.0, 0.0], [900.0, 0.0, 0.0]));
@@ -436,6 +486,45 @@ mod tests {
         // An unskilled bot never dodges.
         let mut steady = CombatMovement::default();
         assert!(!steady.step(10, skills(0.0), walking, &[], &mut random).jump);
+    }
+
+    #[test]
+    fn a_skilled_bot_hops_some_long_runs_and_an_unskilled_one_never() {
+        let body = Body {
+            grounded: true,
+            speed: 300.0,
+            ..Body::default()
+        };
+        let hops = |skill: f64| {
+            let mut moves = CombatMovement::default();
+            let mut random = Random::new(11);
+            let mut hops = Vec::new();
+            let mut run_start = 0;
+            let mut side = 0;
+            for tick in 0..12_500 {
+                let step = moves.step(tick, skills(skill), body, &[], &mut random);
+                if step.strafe != side {
+                    side = step.strafe;
+                    run_start = tick;
+                }
+                if step.jump {
+                    assert!(step.hop && step.strafe != 0);
+                    hops.push(tick - run_start);
+                }
+            }
+            hops
+        };
+        assert!(hops(0.0).is_empty());
+        let skilled = hops(0.9);
+        // A hop comes 20 ticks into a run, later when the last jump was
+        // under a second ago, or a second after the run's first; over 100 s,
+        // close to one a run.
+        assert!(
+            skilled
+                .iter()
+                .all(|&into| (20..=40).contains(&into) || (145..=165).contains(&into))
+        );
+        assert!((60..=170).contains(&skilled.len()), "{}", skilled.len());
     }
 
     #[test]

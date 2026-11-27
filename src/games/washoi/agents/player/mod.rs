@@ -266,6 +266,8 @@ pub struct BotPlayer {
     /// (TypeScript `BotLife.climb`, `trickCheckTick`, `wallJumpPress`, and
     /// `lastJumpHeld`).
     climb_jump: Option<(super::super::Vec3, u32)>,
+    /// The first tick a chase may hop again.
+    chase_hop_at: u32,
     trick_check_tick: u32,
     wall_jump_press: bool,
     last_jump_held: bool,
@@ -422,6 +424,7 @@ impl BotPlayer {
             pad_rest: None,
             clear_ahead: 1.0,
             climb_jump: None,
+            chase_hop_at: 0,
             trick_check_tick: 0,
             wall_jump_press: false,
             last_jump_held: false,
@@ -864,6 +867,7 @@ impl BotPlayer {
         }
         self.keep_clear(world, position);
         self.try_tricks(world, position);
+        self.chase_hop(world, position);
         self.soften_landing(world, position);
         self.last_jump_held = self.planned_input.buttons & JUMP != 0;
         if self.tracing {
@@ -1154,6 +1158,43 @@ impl BotPlayer {
         if calm {
             self.planned_input.yaw = wrap(self.planned_input.yaw + turn);
         }
+    }
+
+    /// Departing from TypeScript, which runs a chase on the ground, a hop
+    /// along it now and then, as the human in the user's Duel demo runs
+    /// at an enemy (`strafe` has the numbers): at speed, heading where the
+    /// walk points, over walkable floor out to the landing, one every 1 to 2
+    /// s for a bot of full strafe-jump skill and less often below it.
+    fn chase_hop(&mut self, world: &Observation, position: Option<super::super::Vec3>) {
+        let tick = world.tick;
+        let skill = self.difficulty.strafe_jump_skill();
+        let (Some(position), Some(velocity), Some(sight)) = (
+            position,
+            world.body(&self.entity_id).and_then(|body| body.velocity),
+            self.sight.as_deref(),
+        ) else {
+            return;
+        };
+        if self.mover != "chase"
+            || tick < self.chase_hop_at
+            || skill <= 0.0
+            || !velocity.grounded
+            || self.exact_view
+            || self.planned_input.buttons & (JUMP | CROUCH) != 0
+        {
+            return;
+        }
+        let linear = velocity.linear;
+        let speed = linear.x.hypot(linear.z);
+        let [x, _, z] = self.planned_input.direction;
+        let along = (linear.x * x + linear.z * z) / (speed * x.hypot(z)).max(1.0);
+        if along < CHASE_HOP_ALIGNMENT || !hop_lands_on_floor(sight, position, linear) {
+            return;
+        }
+        self.planned_input.buttons |= JUMP;
+        self.mover = "chase_hop";
+        let wait = (1.0 + self.random.next()) / skill.min(1.0) * 125.0;
+        self.chase_hop_at = tick + wait.round() as u32;
     }
 
     /// `BotSteering.tryTricks`: on the way to the point a route walk makes
@@ -1665,8 +1706,19 @@ impl BotPlayer {
                 &floor_below,
             );
         }
-        if moves.jump {
+        // A strafe hop goes out only in a plain strafe, at speed, with
+        // walkable floor out to where it lands.
+        let jump = moves.jump
+            && (!moves.hop
+                || (self.mover == "strafe"
+                    && velocity.is_some_and(|velocity| {
+                        hop_lands_on_floor(sight, position, velocity.linear)
+                    })));
+        if jump {
             self.planned_input.buttons |= JUMP;
+            if moves.hop {
+                self.mover = "strafe_hop";
+            }
         }
         if moves.crouch {
             self.planned_input.buttons |= CROUCH;
@@ -3116,6 +3168,37 @@ fn teleported(seen: crate::games::washoi::Vec3, now: crate::games::washoi::Vec3)
     (x * x + y * y + z * z).sqrt() > TELEPORT_JUMP
 }
 
+/// A chase hops only when its walk points within about 35 degrees of
+/// where it is already going, so the flight follows the walk.
+const CHASE_HOP_ALIGNMENT: f64 = 0.82;
+/// Below this speed a strafe hop is not worth its flight.
+const STRAFE_HOP_MIN_SPEED: f64 = 200.0;
+/// A hop from flat ground flies about this long (`JUMP_VELOCITY` 320,
+/// gravity 1000 rising and 1250 falling), plus a body's length past it.
+const STRAFE_HOP_FLIGHT_SECONDS: f64 = 0.62;
+const STRAFE_HOP_MARGIN: f64 = 32.0;
+
+/// Whether a hop taken now, at `linear`, lands on floor the bot could walk
+/// to: every step of the flight's ground track is a local walk.
+fn hop_lands_on_floor(
+    sight: &Sight,
+    position: shagger_shared::net::game_state::Vec3,
+    linear: shagger_shared::net::game_state::Vec3,
+) -> bool {
+    let speed = linear.x.hypot(linear.z);
+    if speed < STRAFE_HOP_MIN_SPEED {
+        return false;
+    }
+    let reach =
+        (speed * STRAFE_HOP_FLIGHT_SECONDS + STRAFE_HOP_MARGIN).min(navigation::LOCAL_WALK_RADIUS);
+    let landing = shagger_shared::net::game_state::Vec3::new(
+        position.x + linear.x / speed * reach,
+        position.y,
+        position.z + linear.z / speed * reach,
+    );
+    navigation::local_walk(sight, position, landing)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3156,6 +3239,26 @@ mod tests {
         assert!(took_beside(&pickups, at, vitals(80, 30), vitals(100, 35)).is_empty());
         // Nothing felt without vitals from the update before, as after a death.
         assert!(took_beside(&pickups, at, OwnVitals::default(), vitals(180, 100)).is_empty());
+    }
+
+    #[test]
+    fn a_strafe_hop_needs_walkable_floor_where_it_lands() {
+        use crate::games::washoi::Vec3;
+        use crate::games::washoi::perception::sight::tests::{cube, encode};
+        // Floor from x = -300 to 150; the origin stands 24 above it.
+        let sight = Sight::parse(&encode(
+            "test",
+            &[cube([-300.0, -10.0, -100.0], [150.0, 0.0, 100.0])],
+            &[],
+        ))
+        .unwrap();
+        let at = Vec3::new(0.0, 24.0, 0.0);
+        // At 300 a hop flies about 220: toward -x it lands on the floor,
+        // toward +x it would leave the edge at 150.
+        assert!(hop_lands_on_floor(&sight, at, Vec3::new(-300.0, 0.0, 0.0)));
+        assert!(!hop_lands_on_floor(&sight, at, Vec3::new(300.0, 0.0, 0.0)));
+        // Too slow to be worth a hop.
+        assert!(!hop_lands_on_floor(&sight, at, Vec3::new(-100.0, 0.0, 0.0)));
     }
 
     #[test]
