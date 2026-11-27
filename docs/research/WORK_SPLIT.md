@@ -249,6 +249,17 @@ Session B, movement, navigation, and team play:
     - Decision time p50 143 against 144 µs, p95 870 against 825 µs.
   - Left: about half of Rust's remaining fall damage is one drop toward the Mega Health, from the ledge by node 62. Fall pricing (branch `fall-price`) is next.
 
+- [x] Fall pricing (session B, 2026-11-27, branch `fall-price`, `1e992b7`). This departs from TypeScript `RoamGraph`, which builds a fall edge between any two nodes that see each other, at 0.8 of their distance, with no landing check. At session setup, each walk edge that descends more than a step is walked from the sight: a box of five probes follows the floor, and where the floor ends, the bot falls ballistically (gravity 1250) to the floor it would land on. The fall damage that landing would deal, by the server's rule (256 minimum, 512 fatal), is added to the edge cost at 30 per hp. Planning uses perceivable map geometry only.
+  - On dm2, 2 edges price, in 46 ms: 62 → 67, the drop toward the Mega Health (1875), and 2 → 69 (694). Without the drop, node 62 reaches the Mega Health in 1668 instead of 860. 10 per hp (625 on that drop) was under the 808 detour and didn't change the routes (A/B on 9 per arm: node-62 drops not reduced).
+  - A/B against `476dc51`, Duel on dm2, 18 per arm over two runs:
+    - Frags +3.83 (13-5) against +0.94 (9-8-1); ahead in both runs (+4.00 against +0.78, +3.67 against +1.11).
+    - Falls under the node-62 drop 7 (472 hp) against 43 (2951 hp). Rust fall damage per match 97 against 263.
+    - Mega Health takes, Rust against TS, 55-34 against 51-37. Rust takes within 3 s of a spawn 7 against 12, and its median lag after a spawn 4.7 and 7.3 s against 9.2 and 4.3 s (by run). The runs disagree (2 → 6, then 10 → 1), so this is within noise, but it is the place to watch. Rust's hp + armor at its takes, median 100 against 100.
+    - Deaths not by TypeScript 23 against 29.
+    - Damage within 900 of the enemy, a minute: dealt 324 against 298, taken 331 against 337.
+    - Decision time p50 147 against 145 µs, p95 875 and 907 against 870 and 836 µs (by run).
+  - Next: price a fall by the bot's hp margin rather than a flat rate, so that a stacked bot still takes the drop when it would be late to a spawn.
+
 - [x] Enemy estimate overheal decay (session A, 2026-11-27, `ab2134b`). This departs from TypeScript `MatchRead`, which keeps overheal. Health over 100 in the estimate bleeds 1 a second, as the server's does (`PickupSystem.ts`, `decayOverheal`), and armor stays. A hit or a credited take lands on the decayed health. Before this, an enemy credited with a Mega Health read 200 for the rest of its life, which held back the fade's and the arbiter's stack checks.
   - A/B, Duel on dm2, 18 per arm over two runs, against `df51017`, together with the found-gone bound below (branch `perception-pair`). Frags +2.50 ± 2.24 (11-4) against +0.39 ± 2.27 (8-9), ahead in both runs (+1.00 against +0.78, +4.00 against 0.00) but within noise. Rust deaths 115 → 104, TypeScript deaths 121 → 147. Items held: all armor 166-138 against 175-122, RA 69-21 against 66-24, MH 54-34 against 55-33. Wasted trips: RA 37 → 31, YA 23 → 33, MH 67 → 60. Rust's stack while both live, p50 108 → 110.
   - Landed alone, because the bound made its own target worse (below). The frag lead can't be split between the two; the decay lands because it matches the server's rule.
