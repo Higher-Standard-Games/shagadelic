@@ -260,6 +260,14 @@ Session B, movement, navigation, and team play:
     - Decision time p50 147 against 145 µs, p95 875 and 907 against 870 and 836 µs (by run).
   - Next: price a fall by the bot's hp margin rather than a flat rate, so that a stacked bot still takes the drop when it would be late to a spawn.
 
+- [x] Fight hops (session B, 2026-11-27, branch `fight-hops-v2`, `e45b112`). This departs from TypeScript, which jumps in a fight only to dodge. Some long strafe runs hop, and a chase whose walk points where it already goes hops every 1 to 2 s. Either hop needs 200 u/s and walkable floor where it lands, and never holds back a dodge. It is a likeness item: in the user's Duel demo the human, within 900 units of the enemy, was airborne 44% of the time, and Rust 32%.
+  - A/B against `533ca04` (fall-price), Duel on dm2, 18 per arm over two runs:
+    - Frags +4.78 (15-3) against +5.67 (18-0); the runs disagree (+3.11 against +6.44, then +6.44 against +4.89), a tie within noise.
+    - Airborne within 900 of the enemy 44.2% against 37.4%, now the human's share.
+    - Damage within 900 of the enemy, a minute: dealt 319 against 332, taken 333 against 325. Again the runs disagree (run 1 295/346 against 343/310, run 2 345/319 against 321/339).
+    - Rust fall damage per match: run 1 153 against 118, mostly more trips through the pit teleporter (16 against 12).
+  - Landed for likeness at no clear cost. Watch the exchange in later A/Bs; if it settles below the base, try holding hops while a hitscan weapon is aimed.
+
 - [x] Enemy estimate overheal decay (session A, 2026-11-27, `ab2134b`). This departs from TypeScript `MatchRead`, which keeps overheal. Health over 100 in the estimate bleeds 1 a second, as the server's does (`PickupSystem.ts`, `decayOverheal`), and armor stays. A hit or a credited take lands on the decayed health. Before this, an enemy credited with a Mega Health read 200 for the rest of its life, which held back the fade's and the arbiter's stack checks.
   - A/B, Duel on dm2, 18 per arm over two runs, against `df51017`, together with the found-gone bound below (branch `perception-pair`). Frags +2.50 ± 2.24 (11-4) against +0.39 ± 2.27 (8-9), ahead in both runs (+1.00 against +0.78, +4.00 against 0.00) but within noise. Rust deaths 115 → 104, TypeScript deaths 121 → 147. Items held: all armor 166-138 against 175-122, RA 69-21 against 66-24, MH 54-34 against 55-33. Wasted trips: RA 37 → 31, YA 23 → 33, MH 67 → 60. Rust's stack while both live, p50 108 → 110.
   - Landed alone, because the bound made its own target worse (below). The frag lead can't be split between the two; the decay lands because it matches the server's rule.
