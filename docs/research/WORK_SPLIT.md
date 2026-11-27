@@ -259,6 +259,11 @@ Session B, movement, navigation, and team play:
   - Fights by stack lead at the start (`fightstack.mjs`, main / branch): the share of Rust's fights it starts 50+ behind went 15 → 17%, and Rust deaths in them stayed 36 → 36. Rust deaths in all fights 105 → 95, kills 159 → 149. Items: all armor 162-130 against 170-114, MH 54-35 against 55-35.
   - The bench reused an old trace folder, so each match folder also held a Nov 25 trace, and its `moves.jsonl` had that match appended before. The frag numbers come from this run alone. The run logs' trace statistics (decide time, movers) mix in the old matches; the numbers here come from copies cut to this run. Give each bench a fresh `--traces` folder.
 
+- [x] Own take felt on an item's return (session A, 2026-11-27, `43ec73f`). A bot standing on an item as it comes back can see it return and go between two decisions. It never saw the item vanish, so it kept the old timer, later believed the item up while it was down, and in a Duel found it gone and credited the opponent. Now a major spot within the self-take radius (180) whose grant the bot's own health and armor show since the last update is its own take: health over 100 that rose for a Mega Health, armor that rose to the armor's grant. This departs from TypeScript `BotPerception.ts`, which has the same gap.
+  - A/B, Duel on dm2, 18 per arm over two runs, against `f9f0a5b`, before tele v2 landed beside it. Frags +3.06 against +1.44, ahead in both runs (+4.44 against +1.89, +1.67 against +1.00) but within noise. Rust deaths 115 → 96.
+  - Wrong-up MH runs after Rust's own timed take (`wasteswhy.mjs`): 29 → 0. Wasted trips: MH 71 → 56, RA 51 → 37, YA 20 → 22. Items held: all armor 179-129 against 181-130, MH 56-32 against 53-33.
+  - Watch: Rust's stack while both live, p50 125 → 110.
+
 Mark items here as they land, with the commit.
 
 ## Notes between sessions
