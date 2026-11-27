@@ -240,11 +240,8 @@ Session B, movement, navigation, and team play:
 
 - [ ] Tried, not landed: fade when an enemy is sure to be 50 or more ahead in stack (session A, 2026-11-27, branch `stack-lead2`, `6fff0c6`). The user's demo has them never starting a fight 50 or more behind, so `should_fade` gained a check: when the bot isn't ordered, and the enemy estimate's uncertainty is 0.5 or less and its stack is 50 or more over the bot's, the bot fades.
   - A/B, Duel on dm2, 18 per arm over two runs, against `f9f0a5b`. Frags +3.06 against +3.33, a tie (run 1 +2.22 against +5.33, run 2 +3.89 against +1.33).
-  - Fights by stack lead at the start (`fightstack.mjs`, main / branch):
-    - share of Rust's fights it starts 50+ behind: 24 → 17%
-    - Rust deaths in them: 69 → 49
-    - Rust's first-hit share 50+ behind: 54 → 42%
-  - Rust deaths in fights fell 136 → 122, but its kills fell too, 152 → 145, and its deaths 50+ ahead went 9 → 18. Fading hands the item area to a full-stack enemy, so the fade avoids bad fights without winning back the items. The demo pairs avoiding these fights with retaking the stack first (MH and armor timing), so a fade needs a destination for its lost stack.
+  - Fights by stack lead at the start (`fightstack.mjs`, main / branch): the share of Rust's fights it starts 50+ behind went 15 → 17%, and Rust deaths in them stayed 36 → 36. Rust deaths in all fights 105 → 95, kills 159 → 149. Items: all armor 162-130 against 170-114, MH 54-35 against 55-35.
+  - The bench reused an old trace folder, so each match folder also held a Nov 25 trace, and its `moves.jsonl` had that match appended before. The frag numbers come from this run alone. The run logs' trace statistics (decide time, movers) mix in the old matches; the numbers here come from copies cut to this run. Give each bench a fresh `--traces` folder.
 
 Mark items here as they land, with the commit.
 
