@@ -233,6 +233,22 @@ Session B, movement, navigation, and team play:
   - Watch: Rust's stack while both live, p50 124 → 107. Main has spread 104 to 124 across runs, so this may be noise, but item control comes first.
   - Items: all armor 176-128 against 173-133; GA2 Rust 16 against 11 (TypeScript 56 against 58).
 
+- [x] Teleporter falls (session B, 2026-11-27, branch `tele-v2`). Three changes against the falls from washoi_dm2's pit teleporter, whose exit at (752, 449, 240) drops back into the pit by the Yellow Armor at about (755, 56, 17):
+  - The landing crouch softens the fall from a teleporter exit even under the route maneuver's exact view (`81c46cd`, tele-crouch). Before, every such fall was uncrouched and crushed.
+  - A teleport ends whatever script carried the bot in. A hop chain or maneuver through the trigger no longer marks the fall from the exit as scripted, so the crouch softens it too.
+  - Departing from TypeScript `ItemSlideApproachSequence` and `RouteCrouchslideSequence`, no slide starts toward a teleporter trigger within its reach. A slide under way stands up when its velocity would carry it into one within half a second, plus 48 units. The traces showed slides for the riot gun in the pit, deflected along the east wall at x 832, running on into the trigger at z about 200. Route slides never cover a maneuver, so no slide means to teleport. The trigger boxes come from the baked maneuvers (`Planner::teleporters`).
+  - Tele-crouch alone, against `df51017`, 18 per arm over two runs: frags +2.83 ± 1.99 (11 wins) against +1.56 ± 2.03 (10). Rust fall damage per match 177 against 288; exit crushes 1 against 8. It didn't land alone, since this item supersedes it.
+  - A/B of all three against `f9f0a5b`, Duel on dm2, 18 per arm over two runs:
+    - Frags +3.61 ± 2.16 (15-3) against +1.39 ± 2.02 (10-8); ahead in both runs (+1.67 against -0.67, +5.56 against +3.44).
+    - Rust fall damage per match 219 against 325.
+    - Exit crushes 0 against 9.
+    - Trips through that teleporter 22 against 32.
+    - Riot gun arrivals 2.67 against 3.61 a match, with its goal share flat (3.8% against 3.9%). Some of main's arrivals were loops: fall back into the pit and arrive again.
+    - Deaths not by TypeScript 32 against 33.
+    - Damage dealt within 900 of the enemy 318 a minute against 283; taken 339 against 327.
+    - Decision time p50 143 against 144 µs, p95 870 against 825 µs.
+  - Left: about half of Rust's remaining fall damage is one drop toward the Mega Health, from the ledge by node 62. Fall pricing (branch `fall-price`) is next.
+
 - [x] Enemy estimate overheal decay (session A, 2026-11-27, `ab2134b`). This departs from TypeScript `MatchRead`, which keeps overheal. Health over 100 in the estimate bleeds 1 a second, as the server's does (`PickupSystem.ts`, `decayOverheal`), and armor stays. A hit or a credited take lands on the decayed health. Before this, an enemy credited with a Mega Health read 200 for the rest of its life, which held back the fade's and the arbiter's stack checks.
   - A/B, Duel on dm2, 18 per arm over two runs, against `df51017`, together with the found-gone bound below (branch `perception-pair`). Frags +2.50 ± 2.24 (11-4) against +0.39 ± 2.27 (8-9), ahead in both runs (+1.00 against +0.78, +4.00 against 0.00) but within noise. Rust deaths 115 → 104, TypeScript deaths 121 → 147. Items held: all armor 166-138 against 175-122, RA 69-21 against 66-24, MH 54-34 against 55-33. Wasted trips: RA 37 → 31, YA 23 → 33, MH 67 → 60. Rust's stack while both live, p50 108 → 110.
   - Landed alone, because the bound made its own target worse (below). The frag lead can't be split between the two; the decay lands because it matches the server's rule.

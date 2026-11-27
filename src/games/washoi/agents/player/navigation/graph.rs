@@ -77,6 +77,8 @@ pub(in crate::games::washoi) struct Planner {
     neighbors: Vec<Vec<usize>>,
     corners: Corners,
     maneuvers: Maneuvers,
+    /// Every teleporter maneuver's trigger box, min and max.
+    teleporters: Vec<([f64; 3], [f64; 3])>,
     goals: Vec<PlannedGoal>,
     areas: Areas,
     /// Each learned takeoff with the landing of the same recording, from
@@ -380,6 +382,11 @@ impl Planner {
             .take(MAX_LOCAL_STARTS)
             .map(move |node| (node, horizontal_distance(position, self.nodes[node])));
         entry.into_iter().chain(edge).chain(local).chain(view)
+    }
+
+    /// Every baked teleporter's trigger box, min and max.
+    pub(in crate::games::washoi) fn teleporters(&self) -> &[([f64; 3], [f64; 3])] {
+        &self.teleporters
     }
 
     /// The view yaw a teleporter set, when the bot moved from `before` to
@@ -972,6 +979,10 @@ impl WalkGraph {
                 (takeoff != landing).then(|| (*takeoff, *landing, id.clone()))
             })
             .collect();
+        let teleporters = maneuvers
+            .values()
+            .filter_map(|maneuver| maneuver.teleporter_box())
+            .collect();
         Ok((
             routes,
             Planner {
@@ -979,6 +990,7 @@ impl WalkGraph {
                 neighbors,
                 corners,
                 maneuvers,
+                teleporters,
                 goals,
                 areas,
                 learned_pairs,

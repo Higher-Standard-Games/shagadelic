@@ -9,12 +9,22 @@
 //! `sequences/ItemSlideApproachSequence.ts` and
 //! `BotTraversal.tryStartItemSlideApproach`. TypeScript tries that first.
 //!
+//! Departing from TypeScript, no slide starts toward a teleporter's
+//! trigger within its reach, and one under way stands up when its course
+//! would carry it into one within half a second. A slide barely steers, so
+//! one deflected along a wall ran on into whatever lay that way: on
+//! `washoi_dm2`, slides for the riot gun in the pit by the Yellow Armor ran
+//! along the east wall into the teleporter there, whose exit drops back into
+//! the pit for 57 damage or a crush. Route slides never cover a maneuver
+//! (`RouteFollower::slide_lane`), so no slide means to teleport.
+//!
 //! Deviations: TypeScript also requires the sprint key, which Washoi's route
 //! walker here doesn't press, so the speed check stands in for it. Dodge
 //! slides belong to fight movement.
 
 use shagger_shared::net::game_state::{Vec3, Velocity};
 
+use super::traversal::near_trigger;
 use crate::games::washoi::hosting::net::protocol::PlayerInput;
 
 const TICK_RATE: f64 = 125.0;
@@ -44,6 +54,10 @@ const ITEM_RELEASE_DISTANCE: f64 = 190.0;
 const ITEM_CONFIRM_DISTANCE: f64 = 176.0;
 const ITEM_MISSED_GROWTH: f64 = 96.0;
 const ITEM_MAX_TICKS: u32 = 180;
+/// A slide under way looks this far ahead along its velocity, plus a
+/// body's length, for a teleporter trigger.
+const TELEPORTER_LOOK_SECONDS: f64 = 0.5;
+const TELEPORTER_LOOK_MARGIN: f64 = 48.0;
 
 const FORWARD: u16 = 1;
 const BACK: u16 = 1 << 1;
@@ -120,6 +134,8 @@ pub(in crate::games::washoi) struct SlideView<'a> {
     pub(in crate::games::washoi) strafe_jump_skill: f64,
     /// A fight or chase at the last decision. No slide starts in one.
     pub(in crate::games::washoi) fighting: bool,
+    /// The map's teleporter trigger boxes, which no slide may run into.
+    pub(in crate::games::washoi) teleporters: &'a [([f64; 3], [f64; 3])],
 }
 
 impl RouteSlide {
@@ -152,6 +168,9 @@ impl RouteSlide {
         let (ux, uz) = (dx / distance, dz / distance);
         let along_velocity = (velocity.linear.x * ux + velocity.linear.z * uz) / speed;
         if along_velocity.clamp(-1.0, 1.0).acos() > ITEM_SLIDE_MAX_VELOCITY_ERROR {
+            return None;
+        }
+        if into_teleporter(view, dx.atan2(dz), reach) {
             return None;
         }
         let blocked = view.allies.iter().any(|ally| {
@@ -206,6 +225,17 @@ impl RouteSlide {
     ) -> PlayerInput {
         let velocity = view.velocity.unwrap_or_default();
         let speed = velocity.linear.x.hypot(velocity.linear.z);
+        if self.active()
+            && speed > 1.0
+            && into_teleporter(
+                view,
+                velocity.linear.x.atan2(velocity.linear.z),
+                speed * TELEPORTER_LOOK_SECONDS + TELEPORTER_LOOK_MARGIN,
+            )
+        {
+            self.reset();
+            return input;
+        }
         if self.item.is_none()
             && self.running.is_none()
             && !view.fighting
@@ -245,6 +275,10 @@ impl RouteSlide {
             let Some(heading) = view.lane else {
                 return input;
             };
+            let reach = speed * ITEM_SLIDE_REACH_PER_SPEED + 120.0;
+            if into_teleporter(view, heading, reach) {
+                return input;
+            }
             self.cooldown_until = view.tick + SLIDE_COOLDOWN_TICKS;
             self.running = Some(Running {
                 phase: Phase::Engage,
@@ -266,6 +300,26 @@ impl RouteSlide {
         slide.buttons = (input.buttons & !(MOVE_KEYS | JUMP | CROUCH | SPRINT)) | buttons;
         slide
     }
+}
+
+/// Whether the line from the bot along `heading` meets a teleporter's
+/// trigger within `reach`, sampled every 16 units.
+fn into_teleporter(view: &SlideView<'_>, heading: f64, reach: f64) -> bool {
+    if view.teleporters.is_empty() {
+        return false;
+    }
+    let steps = (reach / 16.0).ceil().max(1.0) as u32;
+    (0..=steps).any(|step| {
+        let along = reach * f64::from(step) / f64::from(steps);
+        let at = Vec3::new(
+            view.position.x + heading.sin() * along,
+            view.position.y,
+            view.position.z + heading.cos() * along,
+        );
+        view.teleporters
+            .iter()
+            .any(|&(min, max)| near_trigger(at, min, max, 0.0))
+    })
 }
 
 /// One tick of the slide: the movement keys to press, and whether it ended.
@@ -357,6 +411,7 @@ mod tests {
             allies: &[],
             strafe_jump_skill: skill,
             fighting: false,
+            teleporters: &[],
         }
     }
 
@@ -408,6 +463,34 @@ mod tests {
                 .buttons,
             FORWARD | SPRINT
         );
+        assert!(!slide.active());
+    }
+
+    #[test]
+    fn no_slide_runs_into_a_teleporter() {
+        // A trigger across the lane 500 ahead, and one off to the right.
+        let ahead = [([-100.0, 0.0, 500.0], [100.0, 100.0, 510.0])];
+        let lane = |tick, z: f64, velocity| SlideView {
+            position: Vec3::new(0.0, 0.0, z),
+            teleporters: &ahead,
+            ..view(tick, velocity, Some(0.0), 0.0)
+        };
+        // At 420 a slide reaches about 520: none starts.
+        let mut slide = RouteSlide::default();
+        assert_eq!(
+            slide.filter(&lane(0, 0.0, moving(420.0, true, false)), walk()),
+            walk()
+        );
+        assert!(!slide.active());
+        // Started out of reach of it, the slide goes on until its course
+        // comes within half a second of the trigger, then stands up.
+        let mut slide = RouteSlide::default();
+        let far = lane(0, -400.0, moving(420.0, true, false));
+        assert_eq!(slide.filter(&far, walk()).buttons & CROUCH, CROUCH);
+        let sliding = lane(10, -100.0, moving(420.0, true, true));
+        assert_eq!(slide.filter(&sliding, walk()).buttons & CROUCH, CROUCH);
+        let close = lane(20, 260.0, moving(420.0, true, true));
+        assert_eq!(slide.filter(&close, walk()), walk());
         assert!(!slide.active());
     }
 

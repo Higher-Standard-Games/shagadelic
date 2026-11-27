@@ -351,6 +351,13 @@ impl WashoiNavigation {
         self.planner.as_ref()?.teleport_exit_yaw(before, after)
     }
 
+    /// Every baked teleporter's trigger box, min and max.
+    pub(in crate::games::washoi) fn teleporters(&self) -> &[([f64; 3], [f64; 3])] {
+        self.planner
+            .as_ref()
+            .map_or(&[], |planner| planner.teleporters())
+    }
+
     pub(in crate::games::washoi) fn nodes(&self) -> &[[f64; 3]] {
         self.planner.as_ref().map_or(&[], |planner| planner.nodes())
     }

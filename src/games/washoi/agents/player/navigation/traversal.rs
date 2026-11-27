@@ -54,6 +54,14 @@ impl Maneuver {
         matches!(self, Self::Jumppad { .. } | Self::Teleporter { .. })
     }
 
+    /// A teleporter's trigger box, min and max.
+    pub(in crate::games::washoi) fn teleporter_box(self) -> Option<([f64; 3], [f64; 3])> {
+        match self {
+            Self::Teleporter { min, max, .. } => Some((min, max)),
+            _ => None,
+        }
+    }
+
     /// A teleporter's exit origin and the view yaw it sets.
     pub(in crate::games::washoi) fn teleport_exit(self) -> Option<([f64; 3], f64)> {
         match self {
@@ -271,7 +279,12 @@ fn near(position: Vec3, target: [f64; 3], horizontal: f64, vertical: f64) -> boo
         && (target[1] - position.y).abs() <= vertical
 }
 
-fn near_trigger(p: Vec3, min: [f64; 3], max: [f64; 3], extra: f64) -> bool {
+pub(in crate::games::washoi) fn near_trigger(
+    p: Vec3,
+    min: [f64; 3],
+    max: [f64; 3],
+    extra: f64,
+) -> bool {
     p.x + 16.0 + extra >= min[0]
         && p.x - 16.0 - extra <= max[0]
         && p.y + 32.0 + extra >= min[1]

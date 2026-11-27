@@ -1290,14 +1290,17 @@ impl BotPlayer {
             self.teleport_fall = teleported;
             return;
         }
-        let scripted = (self.exact_view && !self.teleport_fall)
-            || self.traversal.active()
-            || self.ledge.active()
-            || self.hop.active()
-            || self.climb_jump.is_some()
-            || self.wall_jump_press
-            || self.lunge.active()
-            || self.mover == "liquid";
+        // A teleport ends whatever script carried the bot in: a hop chain
+        // or maneuver through the trigger no longer plans this fall.
+        let scripted = !self.teleport_fall
+            && (self.exact_view
+                || self.traversal.active()
+                || self.ledge.active()
+                || self.hop.active()
+                || self.climb_jump.is_some()
+                || self.wall_jump_press
+                || self.lunge.active()
+                || self.mover == "liquid");
         if !scripted
             && self
                 .fall_from
@@ -2059,6 +2062,10 @@ impl BotPlayer {
         }
         // Fast down a straight, plain walk, crouch-slide
         // (`navigation::slide`). A fight's movement replaces it.
+        let teleporters = self
+            .navigation
+            .as_deref()
+            .map_or(&[][..], |navigation| navigation.teleporters());
         self.planned_input = self.slide.filter(
             &SlideView {
                 tick: world.tick,
@@ -2070,6 +2077,7 @@ impl BotPlayer {
                 allies: &self.allies,
                 strafe_jump_skill: self.difficulty.strafe_jump_skill(),
                 fighting: self.engagement.is_some() || self.chasing.is_some(),
+                teleporters,
             },
             self.planned_input,
         );
