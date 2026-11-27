@@ -35,6 +35,8 @@ type Corners = BTreeMap<(usize, usize), Vec<[f64; 3]>>;
 type Maneuvers = BTreeMap<(usize, usize), Maneuver>;
 /// Learned links, takeoff to landing: the recording's ID and the link's cost.
 type LearnedLinks = BTreeMap<(usize, usize), (String, f64)>;
+/// What a walk edge's falls cost on top of its length (`Planner::price_falls`).
+type FallCosts = BTreeMap<(usize, usize), f64>;
 /// A learned link's cost is its recording's ticks as distance at this speed,
 /// TypeScript's `LEARNED_COST_SPEED` (`BotNavGraph.addLearnedRoutes`).
 const LEARNED_COST_SPEED: f64 = 320.0;
@@ -90,6 +92,8 @@ pub(in crate::games::washoi) struct Planner {
     /// Once linked, the walk graph's own goals and areas, for a bot that
     /// can't take off now (`Planner::walks`).
     walk: Option<WalkOnly>,
+    /// What each walk edge's falls cost, once priced. Empty: none priced.
+    falls: FallCosts,
 }
 
 /// The walk graph's own goals and areas, kept once learned links join them.
@@ -219,6 +223,105 @@ impl Planner {
         (self.areas.component.clone(), self.areas.goals.clone())
     }
 
+    fn edge_costs(&self) -> EdgeCosts<'_> {
+        EdgeCosts {
+            corners: &self.corners,
+            maneuvers: &self.maneuvers,
+            falls: &self.falls,
+        }
+    }
+
+    /// Price the falls along every walk edge: `price` is given the edge's
+    /// path, origin to origin through its corners, and returns what its
+    /// falls cost on top of its length. The goals' walks are planned again
+    /// with the prices, the learned links' as well when linked. A priced
+    /// edge stays an edge, so a goal reached only by a costly drop is still
+    /// reached.
+    pub(in crate::games::washoi) fn price_falls(&mut self, price: impl Fn(&[[f64; 3]]) -> f64) {
+        let mut falls = FallCosts::new();
+        for (from, adjacent) in self.neighbors.iter().enumerate() {
+            for &to in adjacent {
+                if self.maneuvers.contains_key(&(from, to)) {
+                    continue;
+                }
+                let mut path = vec![self.nodes[from]];
+                path.extend(self.corners.get(&(from, to)).into_iter().flatten().copied());
+                path.push(self.nodes[to]);
+                let cost = price(&path);
+                if cost > 0.0 && cost.is_finite() {
+                    falls.insert((from, to), cost);
+                }
+            }
+        }
+        if falls.is_empty() && self.falls.is_empty() {
+            return;
+        }
+        self.falls = falls;
+        let walk_reverse = reverse_of(&self.neighbors);
+        let empty = LearnedLinks::new();
+        let rewalk = |goals: &[PlannedGoal], reverse: &[Vec<usize>], links: &LearnedLinks| {
+            goals
+                .iter()
+                .map(|goal| {
+                    walks_to(
+                        &self.nodes,
+                        goal.node,
+                        reverse,
+                        links,
+                        self.edge_costs(),
+                        goal.pickup,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        match &self.walk {
+            Some(walk) => {
+                let walk_goals = rewalk(&walk.goals, &walk_reverse, &empty);
+                let mut forward = self.neighbors.clone();
+                for &(takeoff, landing) in self.links.keys() {
+                    if !forward[takeoff].contains(&landing) {
+                        forward[takeoff].push(landing);
+                    }
+                }
+                let linked = rewalk(&self.goals, &reverse_of(&forward), &self.links);
+                self.goals = linked;
+                if let Some(walk) = &mut self.walk {
+                    walk.goals = walk_goals;
+                }
+            }
+            None => self.goals = rewalk(&self.goals, &walk_reverse, &empty),
+        }
+    }
+
+    /// Every priced walk edge and what its falls cost, for the map check.
+    #[cfg(test)]
+    pub(in crate::games::washoi) fn priced_falls(&self) -> Vec<((usize, usize), f64)> {
+        self.falls
+            .iter()
+            .map(|(&edge, &cost)| (edge, cost))
+            .collect()
+    }
+
+    /// For each goal, how many nodes have a way to it.
+    #[cfg(test)]
+    pub(in crate::games::washoi) fn reachable_counts(&self) -> Vec<(usize, usize)> {
+        self.goals
+            .iter()
+            .map(|goal| {
+                (
+                    goal.node,
+                    goal.distance.iter().filter(|d| d.is_finite()).count(),
+                )
+            })
+            .collect()
+    }
+
+    /// What the walk edge's falls cost on top of its length.
+    #[cfg(test)]
+    pub(in crate::games::washoi) fn fall_cost(&self, from: usize, to: usize) -> f64 {
+        self.falls.get(&(from, to)).copied().unwrap_or(0.0)
+    }
+
     /// Link each learned takeoff to its recording's landing, for the
     /// recordings `ticks` knows, as TypeScript's `BotNavGraph.addLearnedRoutes`
     /// adds a learned route as a `jump` edge costing its ticks as distance at
@@ -272,9 +375,8 @@ impl Planner {
                     &self.nodes,
                     goal.node,
                     &reverse,
-                    &self.corners,
-                    &self.maneuvers,
                     &self.links,
+                    self.edge_costs(),
                     goal.pickup,
                 )
             })
@@ -527,7 +629,8 @@ impl Planner {
                 search.extend(
                     node,
                     next,
-                    edge_cost(&self.nodes, &self.corners, node, next),
+                    edge_cost(&self.nodes, &self.corners, node, next)
+                        + self.falls.get(&(node, next)).copied().unwrap_or(0.0),
                 );
             }
         }
@@ -961,9 +1064,12 @@ impl WalkGraph {
                     &self.nodes,
                     node,
                     &reverse,
-                    &corners,
-                    &maneuvers,
                     &links,
+                    EdgeCosts {
+                        corners: &corners,
+                        maneuvers: &maneuvers,
+                        falls: &FallCosts::new(),
+                    },
                     pickups[node],
                 )
             })
@@ -996,6 +1102,7 @@ impl WalkGraph {
                 learned_pairs,
                 links,
                 walk: None,
+                falls: FallCosts::new(),
             },
         ))
     }
@@ -1179,22 +1286,49 @@ fn edge_cost(nodes: &[[f64; 3]], corners: &Corners, from: usize, to: usize) -> f
     travel + edge_length(last, nodes[to])
 }
 
+/// Each node's incoming neighbors.
+fn reverse_of(forward: &[Vec<usize>]) -> Vec<Vec<usize>> {
+    let mut reverse = vec![Vec::new(); forward.len()];
+    for (from, adjacent) in forward.iter().enumerate() {
+        for &to in adjacent {
+            reverse[to].push(from);
+        }
+    }
+    reverse
+}
+
+/// What an edge costs before learned links: its travel and any fall
+/// damage priced on it (`Planner::price_falls`).
+#[derive(Clone, Copy)]
+struct EdgeCosts<'a> {
+    corners: &'a Corners,
+    maneuvers: &'a Maneuvers,
+    falls: &'a FallCosts,
+}
+
 /// Dijkstra over reversed edges, so each node learns its next hop toward
 /// `goal`. A learned link costs its recording's time (`LearnedLinks`).
 fn walks_to(
     nodes: &[[f64; 3]],
     goal: usize,
     reverse: &[Vec<usize>],
-    corners: &Corners,
-    maneuvers: &Maneuvers,
     links: &LearnedLinks,
+    edges: EdgeCosts<'_>,
     pickup: Option<PickupGoal>,
 ) -> PlannedGoal {
+    let EdgeCosts {
+        corners,
+        maneuvers,
+        falls,
+    } = edges;
     let mut search = Search::new(nodes.len(), goal);
     while let Some(node) = search.next() {
         for &previous in &reverse[node] {
             let cost = links.get(&(previous, node)).map_or_else(
-                || travel_cost(nodes, corners, maneuvers, previous, node),
+                || {
+                    travel_cost(nodes, corners, maneuvers, previous, node)
+                        + falls.get(&(previous, node)).copied().unwrap_or(0.0)
+                },
                 |&(_, cost)| cost,
             );
             search.extend(node, previous, cost);

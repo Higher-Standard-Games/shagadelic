@@ -115,8 +115,12 @@ impl WashoiSession {
     }
 
     /// The session's walk graph. With the session's learned routes, it plans
-    /// across their links (`WashoiNavigation::link_learned`), in either order.
+    /// across their links (`WashoiNavigation::link_learned`), and with its
+    /// sight it prices falls (`WashoiNavigation::price_falls`), in any order.
     pub fn with_navigation(mut self, mut navigation: WashoiNavigation) -> Self {
+        if let Some(sight) = &self.assets.sight {
+            navigation.price_falls(sight);
+        }
         if let Some(learned) = &self.assets.learned {
             navigation.link_learned(learned);
         }
@@ -133,6 +137,9 @@ impl WashoiSession {
     }
 
     pub fn with_sight(mut self, sight: Sight) -> Self {
+        if let Some(navigation) = self.assets.navigation.as_mut().and_then(Arc::get_mut) {
+            navigation.price_falls(&sight);
+        }
         self.assets.sight = Some(Arc::new(sight));
         self
     }

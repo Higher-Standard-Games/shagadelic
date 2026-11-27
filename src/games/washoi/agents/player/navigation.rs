@@ -48,6 +48,36 @@ const RUN_SPEED: f64 = 320.0;
 const LEDGE_SPEED: f64 = 100.0;
 const LEDGE_BRAKE_RADIUS: f64 = 96.0;
 const MIN_STEP_SPEED: f64 = 30.0;
+/// The standing origin above the feet, and the step a walk climbs or
+/// descends without falling.
+const STANDING_HEIGHT: f64 = 24.0;
+const STEP_UP: f64 = 18.0;
+// Fall damage, from TypeScript `FPSMovementSubsystem` and the
+// `sv_falldamage_*` defaults in `engine/movement/MovementVars.ts`: a drop
+// past the minimum hurts, ramping to 100 at the full drop, which crushes
+// the player to 1 health and no armor instead, and the fatal drop kills. A
+// crouched landing counts the soften less, and bots crouch their landings.
+const FALL_DAMAGE_MIN: f64 = 256.0;
+const FALL_DAMAGE_FULL: f64 = 384.0;
+const FALL_DAMAGE_FATAL: f64 = 512.0;
+const FALL_CROUCH_SOFTEN: f64 = 64.0;
+/// Gravity while falling: 1000 times the falling multiplier 1.25, as the
+/// hop chain has it (`hop::GRAVITY`).
+const FALL_GRAVITY: f64 = 1250.0;
+/// A crush is priced as this much damage, a fatal fall as this.
+const CRUSH_DAMAGE: f64 = 150.0;
+const FATAL_DAMAGE: f64 = 1000.0;
+/// Route length one point of fall damage costs, about 0.1 s of running:
+/// a Duel player gives a few seconds to keep 60 health. At 10, on
+/// `washoi_dm2` the drop by node 62 cost 625 against an 808 detour around
+/// it, and the bots went on taking it to the Mega Health.
+const FALL_COST_PER_DAMAGE: f64 = 30.0;
+/// Walks are tried at a ledge approach, a run and a fast hop speed; an edge
+/// costs its worst.
+const FALL_SPEEDS: [f64; 3] = [LEDGE_SPEED, RUN_SPEED, 450.0];
+const FALL_WALK_STEP: f64 = 8.0;
+const FALL_WALK_DONE: f64 = 0.5;
+const FALL_MAX_TICKS: u32 = 500;
 
 pub(in crate::games::washoi) struct ObjectiveWalk {
     route: Route,
@@ -270,6 +300,28 @@ impl WashoiNavigation {
 
     pub fn map(&self) -> &str {
         &self.map
+    }
+
+    /// Price the falls on every walk edge (`graph::Planner::price_falls`):
+    /// the walk along its path is run forward over the sight geometry at
+    /// each of `FALL_SPEEDS`, falling wherever the floor ends, and each
+    /// landing costs its fall damage. Departing from TypeScript, whose fall
+    /// edges join any two nodes in view of each other at 0.8 of their
+    /// length (`BotNavGraph`), wherever the fall lands. On `washoi_dm2` the
+    /// one from the ledge by node 62 toward the Mega Health lands 400 down
+    /// on the floor below, not on the walkway it was drawn to, for 63
+    /// damage crouched or a crush standing; the human in the user's demo
+    /// takes the 256 drop by node 63 instead, which costs nothing.
+    pub fn price_falls(&mut self, sight: &Sight) {
+        if let Some(planner) = &mut self.planner {
+            planner.price_falls(|path| {
+                FALL_SPEEDS
+                    .iter()
+                    .map(|&speed| walk_falls(sight, path, speed))
+                    .fold(0.0, f64::max)
+                    * FALL_COST_PER_DAMAGE
+            });
+        }
     }
 
     /// Plan across the baked learned links whose recordings `library` holds
@@ -1100,6 +1152,160 @@ fn jump_up_to_waypoint(
     input.buttons |= JUMP;
 }
 
+/// The damage a crouched landing from `drop` units above takes.
+fn landing_damage(drop: f64) -> f64 {
+    let drop = drop - FALL_CROUCH_SOFTEN;
+    if drop >= FALL_DAMAGE_FATAL {
+        FATAL_DAMAGE
+    } else if drop >= FALL_DAMAGE_FULL {
+        CRUSH_DAMAGE
+    } else if drop < FALL_DAMAGE_MIN {
+        0.0
+    } else {
+        (drop - FALL_DAMAGE_MIN) / (FALL_DAMAGE_FULL - FALL_DAMAGE_MIN) * 100.0
+    }
+}
+
+/// The fall damage a walk along `path`, standing origins, takes at
+/// `speed`: it keeps to the floor within a step up or down, and where the
+/// floor ends it falls on at that speed until it lands, then walks on from
+/// there. An edge that ends no lower than
+/// a step below its start has no fall to price: the walk flood made it.
+fn walk_falls(sight: &Sight, path: &[[f64; 3]], speed: f64) -> f64 {
+    let (Some(&start), Some(&end)) = (path.first(), path.last()) else {
+        return 0.0;
+    };
+    if end[1] >= start[1] - STEP_UP {
+        return 0.0;
+    }
+    let mut at = start;
+    let mut damage = 0.0;
+    let along = |at: [f64; 3], to: [f64; 3], (ux, uz): (f64, f64)| {
+        ((to[0] - at[0]) * ux + (to[2] - at[2]) * uz).max(0.0)
+    };
+    for pair in path.windows(2) {
+        let (dx, dz) = (pair[1][0] - pair[0][0], pair[1][2] - pair[0][2]);
+        let length = dx.hypot(dz);
+        if length < 1.0 {
+            continue;
+        }
+        let way = (dx / length, dz / length);
+        let mut left = along(at, pair[1], way);
+        // Under half a unit left is there: a fall that lands short of the
+        // end by a rounding error would otherwise step on forever.
+        while left > FALL_WALK_DONE {
+            let step = left.min(FALL_WALK_STEP);
+            left -= step;
+            let next = [at[0] + way.0 * step, at[1], at[2] + way.1 * step];
+            let feet = at[1] - STANDING_HEIGHT;
+            match ground(sight, next, feet + STEP_UP, feet - STEP_UP) {
+                // In a wall or a step too high: no step taken up it.
+                Ground::Wall => {
+                    at = next;
+                    continue;
+                }
+                Ground::Floor(y) => {
+                    at = [next[0], y + STANDING_HEIGHT, next[2]];
+                    continue;
+                }
+                Ground::None => {}
+            }
+            // Sight has no liquid, and some floors may be missing from it:
+            // a fall that finds nothing lands at the edge's end, which
+            // stands on something.
+            let Some(landing) = fall(sight, next, way, speed) else {
+                return damage + landing_damage(at[1] - end[1]);
+            };
+            damage += landing_damage(at[1] - landing[1]);
+            at = landing;
+            left = along(at, pair[1], way);
+        }
+    }
+    damage
+}
+
+/// What a body's box finds between `top` and `bottom` heights at `at`.
+enum Ground {
+    /// The highest floor under any part of the box, at the feet.
+    Floor(f64),
+    /// Solid all through the span: a wall, or a step up past it.
+    Wall,
+    None,
+}
+
+/// The box's centre and corners, as a body stands on any part of its box.
+const BOX_PROBES: [(f64, f64); 5] = [
+    (0.0, 0.0),
+    (15.0, 15.0),
+    (15.0, -15.0),
+    (-15.0, 15.0),
+    (-15.0, -15.0),
+];
+
+fn ground(sight: &Sight, at: [f64; 3], top: f64, bottom: f64) -> Ground {
+    let mut floor = None::<f64>;
+    let mut wall = false;
+    for (ox, oz) in BOX_PROBES {
+        let (x, z) = (at[0] + ox, at[2] + oz);
+        let (high, low) = ([x, top, z], [x, bottom, z]);
+        let reach = sight.reach(high, low);
+        if reach <= 0.0 {
+            wall = true;
+        } else if reach < 1.0 {
+            let y = top + (bottom - top) * reach;
+            floor = Some(floor.map_or(y, |floor| floor.max(y)));
+        } else if sight.reach(low, high) < 1.0 {
+            // A ray that starts inside a brush passes out of it unseen;
+            // the way back up finds it.
+            wall = true;
+        }
+    }
+    match floor {
+        Some(y) => Ground::Floor(y),
+        None if wall => Ground::Wall,
+        None => Ground::None,
+    }
+}
+
+/// A fall from standing origin `from` at `speed` along `way`, held off
+/// walls at the knee: the standing origin it lands at, or None if it never
+/// lands.
+fn fall(sight: &Sight, from: [f64; 3], way: (f64, f64), speed: f64) -> Option<[f64; 3]> {
+    let dt = 1.0 / 125.0;
+    let mut position = from;
+    let mut rising = 0.0;
+    let mut moving = true;
+    for _ in 0..FALL_MAX_TICKS {
+        rising -= FALL_GRAVITY * dt;
+        if moving {
+            let ahead = [
+                position[0] + way.0 * speed * dt,
+                position[1],
+                position[2] + way.1 * speed * dt,
+            ];
+            let knee = |point: [f64; 3]| [point[0], point[1] - 16.0, point[2]];
+            if sight.clear(knee(position), knee(ahead)) {
+                position = ahead;
+            } else {
+                moving = false;
+            }
+        }
+        let drop = rising * dt;
+        let feet = position[1] - STANDING_HEIGHT;
+        let landed = match ground(sight, position, feet, feet + drop) {
+            Ground::Floor(y) => Some(y),
+            // Already in something solid: down on it here.
+            Ground::Wall => Some(feet),
+            Ground::None => None,
+        };
+        if let Some(y) = landed {
+            return Some([position[0], y + STANDING_HEIGHT, position[2]]);
+        }
+        position[1] += drop;
+    }
+    None
+}
+
 /// A short connector on the present floor. The sight geometry supplies
 /// clearance and support samples, while the game server runs player physics.
 pub(in crate::games::washoi) fn local_walk(sight: &Sight, from: Vec3, to: Vec3) -> bool {
@@ -1162,6 +1368,105 @@ fn horizontal_distance(position: Vec3, target: [f64; 3]) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_landing_costs_the_servers_fall_damage_crouched() {
+        assert_eq!(landing_damage(256.0), 0.0);
+        assert_eq!(landing_damage(320.0), 0.0);
+        assert_eq!(landing_damage(400.0), 62.5);
+        assert_eq!(landing_damage(450.0), CRUSH_DAMAGE);
+        assert_eq!(landing_damage(600.0), FATAL_DAMAGE);
+    }
+
+    /// A ledge whose floor is 400 above the ground, a walkway 209 above the
+    /// ground 450 to 600 out from it, and a low step 256 above the ground.
+    fn ledge_sight() -> Sight {
+        use crate::games::washoi::perception::sight::tests::{cube, encode};
+        Sight::parse(&encode(
+            "test",
+            &[
+                cube([-2000.0, -10.0, -2000.0], [2000.0, 0.0, 2000.0]),
+                cube([-100.0, 380.0, -50.0], [100.0, 400.0, 50.0]),
+                cube([-100.0, 0.0, -600.0], [100.0, 209.0, -450.0]),
+                cube([900.0, 236.0, -50.0], [1100.0, 256.0, 50.0]),
+            ],
+            &[],
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_walk_off_a_ledge_falls_where_its_speed_carries_it() {
+        let sight = ledge_sight();
+        // Drawn to the walkway, the walk lands 400 down short of it at any
+        // speed: 62.5 crouched.
+        let toward_walkway = [[0.0, 424.0, 0.0], [0.0, 233.0, -500.0]];
+        for speed in FALL_SPEEDS {
+            let damage = walk_falls(&sight, &toward_walkway, speed);
+            assert!((damage - 62.5).abs() < 2.0, "{speed}: {damage}");
+        }
+        // Off the low step, 256 down: free.
+        let off_the_step = [[1000.0, 280.0, 0.0], [1000.0, 24.0, -300.0]];
+        assert_eq!(walk_falls(&sight, &off_the_step, RUN_SPEED), 0.0);
+        // Back from the walkway, its edge is a 209 drop, then level ground.
+        let back = [[0.0, 233.0, -500.0], [0.0, 24.0, -200.0]];
+        assert_eq!(walk_falls(&sight, &back, RUN_SPEED), 0.0);
+    }
+
+    /// Prints the priced edges of a baked map and how long pricing took,
+    /// and checks that every goal keeps every way to it.
+    #[test]
+    #[ignore = "needs SHAGADELIC_TEST_WASHOI_ROAM_GRAPH and SHAGADELIC_TEST_WASHOI_SIGHT"]
+    fn prices_the_falls_of_a_baked_map() {
+        let graph = std::env::var("SHAGADELIC_TEST_WASHOI_ROAM_GRAPH").unwrap();
+        let sight = Sight::load(std::env::var("SHAGADELIC_TEST_WASHOI_SIGHT").unwrap()).unwrap();
+        let mut navigation = WashoiNavigation::load(graph).unwrap();
+        let before = navigation.planner.as_ref().unwrap().reachable_counts();
+        let started = std::time::Instant::now();
+        navigation.price_falls(&sight);
+        let took = started.elapsed();
+        let planner = navigation.planner.as_ref().unwrap();
+        let mut priced = planner.priced_falls();
+        priced.sort_by(|a, b| b.1.total_cmp(&a.1));
+        let nodes = planner.nodes();
+        for ((from, to), cost) in &priced {
+            println!(
+                "{from:>4} {:?} -> {to:>4} {:?}: {cost:.0}",
+                nodes[*from].map(f64::round),
+                nodes[*to].map(f64::round)
+            );
+        }
+        println!("{} edges priced in {took:?}", priced.len());
+        assert_eq!(planner.reachable_counts(), before);
+    }
+
+    #[test]
+    fn a_priced_fall_stays_a_way_to_its_goal() {
+        let mut navigation: WashoiNavigation = serde_json::from_str(
+            r#"{"map":"test","graph":{
+                "bsp_sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                "nodes":[[0,424,0],[0,233,-500]],
+                "edges":[[0,1],[1,0]],
+                "entries":[0],"goals":[1]
+            }}"#,
+        )
+        .unwrap();
+        navigation.price_falls(&ledge_sight());
+        let planner = navigation.planner.as_ref().unwrap();
+        assert!((planner.fall_cost(0, 1) - 62.5 * FALL_COST_PER_DAMAGE).abs() < 20.0);
+        assert_eq!(planner.fall_cost(1, 0), 0.0);
+        assert!(
+            navigation
+                .objective_walk(
+                    Vec3::new(0.0, 424.0, 0.0),
+                    Vec3::new(0.0, 233.0, -500.0),
+                    48.0,
+                    None,
+                    None
+                )
+                .is_some()
+        );
+    }
 
     #[test]
     fn an_objective_walk_starts_partway_up_a_cornered_stair_edge() {
