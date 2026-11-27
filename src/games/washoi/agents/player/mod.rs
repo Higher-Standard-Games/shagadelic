@@ -333,6 +333,8 @@ pub struct BotPlayer {
     items: ItemBeliefs,
     item_random: Random,
     item_news: ItemNews,
+    /// Own vitals at the last item update while alive.
+    item_vitals: OwnVitals,
     /// The server restored the map's items since the last item update.
     match_started: bool,
     match_context: Option<MatchContext>,
@@ -450,6 +452,7 @@ impl BotPlayer {
             opponents: Opponents::default(),
             items: ItemBeliefs::default(),
             item_news: ItemNews::default(),
+            item_vitals: OwnVitals::default(),
             match_started: false,
             match_context: None,
             recent_damage: Vec::new(),
@@ -2589,24 +2592,30 @@ impl BotPlayer {
     /// What the bot believes of the map's items, before anything plans on
     /// them. Decisions read this, never the server's mask.
     fn read_items(&mut self, world: &Observation) {
-        let spots: Vec<Spot> = self
+        let pickups = self
             .navigation
             .as_deref()
-            .map(|navigation| {
-                navigation
-                    .pickups()
-                    .into_iter()
-                    .map(|(pickup, at)| spot(pickup, at))
-                    .collect()
-            })
+            .map(|navigation| navigation.pickups())
             .unwrap_or_default();
+        let spots: Vec<Spot> = pickups
+            .iter()
+            .map(|&(pickup, at)| spot(pickup, at))
+            .collect();
         if std::mem::take(&mut self.match_started) {
             self.items.match_started(world.tick, &spots);
         }
+        // The vitals at the last update while alive, to feel a take by.
+        let felt = std::mem::take(&mut self.item_vitals);
         let Some(position) = world.body(&self.entity_id).and_then(|body| body.position) else {
             self.items.unseen(world);
             self.item_news = ItemNews::default();
             return;
+        };
+        let took = if self.respawn_at.is_none() {
+            self.item_vitals = self.vitals;
+            took_beside(&pickups, position, felt, self.vitals)
+        } else {
+            Vec::new()
         };
         let view_yaw = self
             .aim
@@ -2619,6 +2628,7 @@ impl BotPlayer {
                 view_yaw,
                 sight: self.sight.as_deref(),
                 skill: self.difficulty.item_timing_skill(),
+                took: &took,
             },
             world,
             &spots,
@@ -3015,6 +3025,50 @@ impl NetworkedPlayer for BotPlayer {
 }
 
 /// A pickup as item perception knows it.
+/// `SELF_TAKE_RADIUS` in `BotPerception.ts`.
+const SELF_TAKE_RADIUS: f64 = 180.0;
+
+/// Major health and armor spots within reach whose grant the bot's own
+/// vitals show between two updates: health over 100 that rose, for a Mega or
+/// Ultra Health, or armor that rose to at least the armor's grant. A shard
+/// or small health beside the spot can't pass for one. This departs from
+/// TypeScript, which credits its own take only when it sees the item vanish.
+fn took_beside(
+    pickups: &[(strategy::goals::PickupGoal, [f64; 3])],
+    position: crate::games::washoi::Vec3,
+    before: OwnVitals,
+    now: OwnVitals,
+) -> Vec<usize> {
+    let rose = |before: Option<u16>, now: Option<u16>| match (before, now) {
+        (Some(before), Some(now)) if now > before => Some((before, now)),
+        _ => None,
+    };
+    let health = rose(before.health, now.health);
+    let armor = rose(before.armor, now.armor);
+    if health.is_none() && armor.is_none() {
+        return Vec::new();
+    }
+    pickups
+        .iter()
+        .filter(|(pickup, [x, y, z])| {
+            pickup.is_major()
+                && ((position.x - x).powi(2) + (position.y - y).powi(2) + (position.z - z).powi(2))
+                    .sqrt()
+                    <= SELF_TAKE_RADIUS
+        })
+        .filter(|(pickup, _)| match pickup.kind {
+            strategy::goals::PickupKind::Health => {
+                health.is_some_and(|(_, now)| now > strategy::items::HEALTH_MAX)
+            }
+            strategy::goals::PickupKind::Armor => armor.is_some_and(|(before, now)| {
+                now >= strategy::items::armor_after(before, pickup.item.0)
+            }),
+            _ => false,
+        })
+        .map(|(pickup, _)| pickup.id)
+        .collect()
+}
+
 fn spot(pickup: strategy::goals::PickupGoal, [x, y, z]: [f64; 3]) -> Spot {
     Spot {
         id: pickup.id,
@@ -3050,6 +3104,44 @@ fn teleported(seen: crate::games::washoi::Vec3, now: crate::games::washoi::Vec3)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn feels_a_take_from_its_own_vitals_only_where_the_grant_explains_them() {
+        let goal = |json: &str| serde_json::from_str::<strategy::goals::PickupGoal>(json).unwrap();
+        let pickups = [
+            (
+                goal(r#"{"id":0,"kind":"health","item":"mega"}"#),
+                [0.0, 0.0, 0.0],
+            ),
+            (
+                goal(r#"{"id":1,"kind":"armor","item":"ra"}"#),
+                [100.0, 0.0, 0.0],
+            ),
+            (
+                goal(r#"{"id":2,"kind":"armor","item":"shard"}"#),
+                [0.0, 0.0, 50.0],
+            ),
+            (
+                goal(r#"{"id":3,"kind":"armor","item":"ya"}"#),
+                [1000.0, 0.0, 0.0],
+            ),
+        ];
+        let at = crate::games::washoi::Vec3::new(0.0, 0.0, 0.0);
+        let vitals = |health, armor| OwnVitals {
+            health: Some(health),
+            armor: Some(armor),
+        };
+        // Health over 100 and red armor's grant, beside both spots; the far
+        // yellow armor and the shard, no major, are not it.
+        assert_eq!(
+            took_beside(&pickups, at, vitals(80, 30), vitals(180, 100)),
+            [0, 1]
+        );
+        // A shard's 5 armor and health that only came back to 100 are no take.
+        assert!(took_beside(&pickups, at, vitals(80, 30), vitals(100, 35)).is_empty());
+        // Nothing felt without vitals from the update before, as after a death.
+        assert!(took_beside(&pickups, at, OwnVitals::default(), vitals(180, 100)).is_empty());
+    }
 
     #[test]
     fn a_fall_that_would_hurt_crouches_for_its_landing() {
